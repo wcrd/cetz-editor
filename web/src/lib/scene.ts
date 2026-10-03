@@ -34,6 +34,10 @@ export interface Point {
   y_range: Range;
   /** CeTZ anchor names bound to it. */
   anchors: string[];
+  /** Where its own name is written, if it has one to rename. */
+  name_range: Range | null;
+  /** Whether that name is a string (an anchor) rather than an identifier. */
+  name_quoted: boolean;
 }
 
 export interface Call {
@@ -88,6 +92,8 @@ export type Edit =
   | { kind: "move"; calls: number[]; dx: number; dy: number; detach?: boolean }
   | { kind: "set-point"; point: number; x: number; y: number }
   | { kind: "extract-point"; call: number; arg: number; name: string | null }
+  | { kind: "add-point"; canvas: number | null; x: number; y: number; name: string | null }
+  | { kind: "rename-point"; point: number; name: string }
   | { kind: "set-coord"; call: number; arg: number; x: number; y: number }
   | { kind: "set-arg-text"; call: number; arg: number; text: string }
   | { kind: "set-named"; call: number; key: string; text: string | null }

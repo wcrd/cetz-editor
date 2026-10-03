@@ -347,10 +347,77 @@
     return { frame: editor.frameFor(canvas), transform: last?.transform };
   }
 
+  // --- Point and join tools -----------------------------------------------
+
+  /** Where the point/join tools would place their next point, while hovering. */
+  let toolHover = $state<{ page: Point; snap?: Snap }>();
+
+  /** A path being joined point by point: each step's source text and page position. */
+  let joining = $state<{ refs: string[]; pages: Point[] }>();
+
+  // Leaving the join tool abandons a half-made path.
+  $effect(() => {
+    if (editor.tool !== "join") joining = undefined;
+    if (editor.tool !== "point" && editor.tool !== "join") toolHover = undefined;
+  });
+
+  /** Snaps a pointer for the point/join tools: to a named point (join only), else the grid. */
+  function toolTarget(p: Point, points: boolean): { page: Point; local: Point; snap?: Snap } {
+    const { frame, transform } = creationFrame();
+    const snap = points ? findSnap(p, undefined, { anchors: false }) : undefined;
+    if (snap) return { page: snap.point, local: pageToLocal(frame, transform, snap.point), snap };
+    const local = snapPoint(frame, transform, p);
+    return { page: editor.toPage(frame, transformPoint(transform, local)), local };
+  }
+
+  function placePoint(p: Point) {
+    const { local } = toolTarget(p, false);
+    if (!editor.edit({ kind: "add-point", canvas: editor.activeCanvas ?? null, x: local[0], y: local[1], name: null })) return;
+    // The edit reports the new point as "created"; it isn't a shape to select.
+    const point = editor.selection[0];
+    editor.selection = [];
+    editor.tool = "select";
+    editor.renamingPoint = point;
+  }
+
+  function joinAt(p: Point, double: boolean) {
+    const target = toolTarget(p, true);
+    const path = joining ?? { refs: [], pages: [] };
+    const near = (a: Point) => Math.hypot(a[0] - target.page[0], a[1] - target.page[1]) * editor.zoom < 8;
+    // Back on the first point: close the shape. Double-click: finish it open.
+    if (path.pages.length >= 3 && near(path.pages[0])) return finishJoin(path, true);
+    if (double && path.pages.length >= 2) return finishJoin(path, false);
+    if (path.pages.length > 0 && near(path.pages[path.pages.length - 1])) return;
+    const ref = target.snap?.ref ?? `(${num(target.local[0])}, ${num(target.local[1])})`;
+    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page] };
+  }
+
+  function finishJoin(path: { refs: string[] }, closed: boolean) {
+    joining = undefined;
+    if (path.refs.length < 2) return;
+    const text = `line(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
+    if (editor.edit({ kind: "insert", canvas: editor.activeCanvas ?? null, text })) editor.tool = "select";
+  }
+
+  const joinPreview = $derived.by(() => {
+    if (!joining || joining.pages.length === 0) return undefined;
+    const pages = toolHover ? [...joining.pages, toolHover.page] : joining.pages;
+    return pages.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
+  });
+
   function onpointerdown(e: PointerEvent) {
     if (e.button === 2) return;
     viewport.setPointerCapture(e.pointerId);
     const p = pagePoint(e);
+
+    if (e.button === 0 && !spaceHeld && editor.tool === "point") {
+      placePoint(p);
+      return;
+    }
+    if (e.button === 0 && !spaceHeld && editor.tool === "join") {
+      joinAt(p, e.detail >= 2);
+      return;
+    }
 
     if (e.button === 1 || spaceHeld) {
       drag = { kind: "pan", start: [e.clientX, e.clientY], pan: [...editor.pan] };
@@ -409,6 +476,10 @@
     const p = pagePoint(e);
     const r = viewport.getBoundingClientRect();
     pointer = [e.clientX - r.left, e.clientY - r.top];
+    if (!drag && (editor.tool === "point" || editor.tool === "join")) {
+      toolHover = toolTarget(p, editor.tool === "join");
+      return;
+    }
     if (!drag) {
       const el = e.target as Element;
       const hit = el.closest("[data-id]")?.getAttribute("data-id");
@@ -630,7 +701,11 @@
   });
 
   const activeSnap = $derived(
-    drag?.kind === "handle" || drag?.kind === "point" ? drag.snap : drag?.kind === "create" ? (drag.endSnap ?? drag.startSnap) : undefined,
+    drag?.kind === "handle" || drag?.kind === "point"
+      ? drag.snap
+      : drag?.kind === "create"
+        ? (drag.endSnap ?? drag.startSnap)
+        : toolHover?.snap,
   );
 
   // --- Grid ----------------------------------------------------------------
@@ -664,6 +739,17 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (joining && !(e.target as HTMLElement).closest?.(".cm-editor") && !(e.target instanceof HTMLInputElement)) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finishJoin(joining, false);
+        return;
+      }
+      if (e.key === "Escape") {
+        joining = undefined;
+        return;
+      }
+    }
     if (e.key === " " && !(e.target instanceof HTMLInputElement) && !(e.target as HTMLElement).closest?.(".cm-editor")) {
       spaceHeld = true;
     }
@@ -799,6 +885,18 @@
         {/if}
 
         {#if preview}<path class="preview" d={preview} />{/if}
+        {#if joinPreview}<path class="preview" d={joinPreview} />{/if}
+        {#if joining}
+          {#each joining.pages as q, i (i)}
+            <circle class="join-step" class:first={i === 0} cx={q[0]} cy={q[1]} r={(i === 0 ? 4.5 : 3) / editor.zoom} />
+          {/each}
+        {/if}
+        {#if toolHover && !toolHover.snap}
+          <path
+            class="tool-ghost"
+            d="M{toolHover.page[0] - 6 / editor.zoom},{toolHover.page[1]}h{12 / editor.zoom}M{toolHover.page[0]},{toolHover.page[1] - 6 / editor.zoom}v{12 / editor.zoom}"
+          />
+        {/if}
 
         {#if activeSnap}
           <circle class="snap" class:named={activeSnap.named !== undefined} cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
@@ -991,6 +1089,21 @@
     fill: none;
     stroke: var(--snap);
     stroke-width: 2;
+    pointer-events: none;
+  }
+  .join-step {
+    fill: var(--accent);
+    stroke: white;
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .join-step.first {
+    fill: white;
+    stroke: var(--accent);
+  }
+  .tool-ghost {
+    stroke: var(--point);
+    stroke-width: 1.5;
     pointer-events: none;
   }
   .snap.named {

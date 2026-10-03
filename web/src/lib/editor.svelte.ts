@@ -21,7 +21,7 @@ import {
   type Range,
 } from "./scene";
 
-export type Tool = "select" | "line" | "arrow" | "rect" | "circle" | "text";
+export type Tool = "select" | "line" | "arrow" | "rect" | "circle" | "text" | "point" | "join";
 
 /** What the code pane exposes to the editor. */
 export interface CodeHandle {
@@ -137,6 +137,8 @@ export class Editor {
   get showRulers() { return this.prefs.showRulers; }
   set showRulers(v) { this.prefs.showRulers = v; }
   hoveredPoint = $state<number>();
+  /** A point whose name is being edited in the outline (e.g. just placed). */
+  renamingPoint = $state<number>();
   /** Where the current hover came from: the canvas shows panel hovers more strongly. */
   hoverSource = $state<"canvas" | "panel">("canvas");
   /** One repetition of a call in a loop: the call id and which probe of it. */

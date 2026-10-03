@@ -13,6 +13,41 @@
   let folded = $state(new Set<string>());
   let unfolded = $state(new Set<number>());
 
+  // --- Renaming points ----------------------------------------------------
+
+  /** Commits an inline rename; an unchanged or empty name just closes the field. */
+  function rename(id: number, value: string) {
+    if (editor.renamingPoint !== id) return;
+    editor.renamingPoint = undefined;
+    const p = editor.pointById.get(id);
+    const name = value.trim();
+    if (!p || !name || name === displayName(p)) return;
+    editor.edit({ kind: "rename-point", point: id, name });
+  }
+
+  /** The name a point is written by: its key, variable, or anchor name. */
+  function displayName(p: Point): string {
+    if (p.name_range === null) return p.anchors[0] ?? p.path;
+    return p.name_quoted ? (p.anchors[0] ?? p.path) : editor.index.slice(p.name_range.start, p.name_range.end);
+  }
+
+  function focusOnMount(input: HTMLInputElement) {
+    input.focus();
+    input.select();
+    input.scrollIntoView({ block: "nearest" });
+  }
+
+  // A point being renamed (e.g. just placed) must be visible: open its group.
+  $effect(() => {
+    const id = editor.renamingPoint;
+    const p = id === undefined ? undefined : editor.pointById.get(id);
+    if (!p) return;
+    const v = editor.scene.variables.find((v) => p.path.startsWith(`${v.name}.`) || p.path.startsWith(`${v.name}[`));
+    if (v && folded.has(v.name)) folded = toggle(folded, v.name);
+    const call = editor.calls.find((c) => c.range.start <= p.range.start && p.range.end <= c.range.end);
+    if (!v && call && !unfolded.has(call.id)) unfolded = toggle(unfolded, call.id);
+  });
+
   function toggle<T>(set: Set<T>, key: T): Set<T> {
     const next = new Set(set);
     if (!next.delete(key)) next.add(key);
@@ -210,6 +245,31 @@
   }
 </script>
 
+{#snippet pointName(p: Point, label: string)}
+  {#if editor.renamingPoint === p.id}
+    <input
+      class="rename"
+      value={displayName(p)}
+      use:focusOnMount
+      onkeydown={(e) => {
+        if (e.key === "Enter") rename(p.id, e.currentTarget.value);
+        if (e.key === "Escape") editor.renamingPoint = undefined;
+      }}
+      onblur={(e) => rename(p.id, e.currentTarget.value)}
+      spellcheck="false"
+      aria-label="Point name"
+    />
+  {:else}
+    <span
+      class="label"
+      role="button"
+      tabindex="-1"
+      title={p.name_range ? "Double-click to rename" : p.path}
+      ondblclick={() => p.name_range && (editor.renamingPoint = p.id)}>{label}</span
+    >
+  {/if}
+{/snippet}
+
 <div class="outline">
   {#if editor.scene.variables.length > 0}
     <h3>Variables</h3>
@@ -224,7 +284,7 @@
             onpointerenter={() => hoverPoint(p.id)}
             onpointerleave={() => (editor.hoveredPoint = undefined)}
           >
-            <span class="name point-name"><span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.point} /></svg></span>{v.name}</span>
+            <span class="name point-name"><span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.point} /></svg></span>{@render pointName(p, v.name)}</span>
             <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
             <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
             <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
@@ -247,7 +307,7 @@
                     onpointerenter={() => hoverPoint(p.id)}
                     onpointerleave={() => (editor.hoveredPoint = undefined)}
                   >
-                    <span class="name point-name" title={p.anchors.length ? `anchor ${p.anchors.join(", ")}` : p.path}>{entryName(v, p)}</span>
+                    <span class="name point-name">{@render pointName(p, entryName(v, p))}</span>
                     <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
                     <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
                     <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
@@ -320,7 +380,7 @@
                 onpointerenter={() => hoverPoint(p.id)}
                 onpointerleave={() => (editor.hoveredPoint = undefined)}
               >
-                <span class="name point-name">{p.anchors[0] ?? p.path}</span>
+                <span class="name point-name">{@render pointName(p, p.anchors[0] ?? p.path)}</span>
                 <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
                 <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
                 <span class="uses">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
@@ -432,6 +492,15 @@
   .name {
     font: 500 12px ui-monospace, "SF Mono", Menlo, monospace;
     white-space: nowrap;
+  }
+  .rename {
+    width: 100%;
+    font: inherit;
+    color: var(--point);
+    padding: 0 3px;
+  }
+  .point-name .label {
+    cursor: text;
   }
   .point-name {
     color: var(--point);

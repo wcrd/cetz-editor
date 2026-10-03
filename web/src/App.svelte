@@ -136,6 +136,8 @@
     { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
     { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
     { id: "text", label: "Text", key: "T", icon: "M5 6V4h14v2M12 4v16M9 20h6" },
+    { id: "point", label: "Named point", key: ".", icon: "M12 3v4M12 17v4M3 12h4M17 12h4M12 9.5a2.5 2.5 0 1 0 0.01 0z" },
+    { id: "join", label: "Join points", key: "J", icon: "M5 18L9 6l10 4-4 9zM5 18h.01M9 6h.01M19 10h.01M15 19h.01" },
   ];
 
   function isEditingText(target: EventTarget | null): boolean {

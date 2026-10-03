@@ -51,6 +51,8 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | | |
 |---|---|
 | **V** / **L** / **A** / **R** / **C** / **T** | Select, line, arrow, rectangle, circle, text tools |
+| **.** | Named point: click to place one, then type its name |
+| **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
 | Drag a shape | Move it (snaps its first point to the grid) |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
@@ -75,6 +77,16 @@ into its own coordinate (dropping it on another anchor reconnects it). The
 inspector shows each corner's point (`→ A (pts.A)`) with a Detach button, and
 a Share button turns a literal coordinate into a shared `anchor(...)`. Hover a
 point to highlight the shapes using it, and click its marker to select them.
+
+**Drawing with named points.** While a drawing tool is active every named
+point shows, and the start or end of a line, rect, circle or label snaps to
+one and writes its name (`line("A", "G")`, `rect("E", "C")`) instead of
+numbers. Handles snap to them the same way. The point tool (**.**) adds a
+point to a dictionary an anchor loop names (`pts = (…, I: (3, 5.75))`), or
+inserts `anchor("P1", (x, y))` before the first shape, and opens its name for
+editing. Double-click a point's name in the outline to rename it everywhere
+it's used by that name. The join tool (**J**) builds a path from points:
+`line("A", "B", "G", close: true)`.
 
 **Outline.** With nothing selected, the right panel shows the document:
 **Variables** (every `let`; point variables and dictionaries of points are
