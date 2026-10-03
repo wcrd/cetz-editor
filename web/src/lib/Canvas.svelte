@@ -1729,11 +1729,19 @@
 
   /** Tools drawn out from a centre: the drag sets a radius and an angle. */
   function isRadialTool() {
-    return editor.tool === "polygon" || editor.tool === "arc";
+    return editor.tool === "polygon" || editor.tool === "star" || editor.tool === "arc";
   }
 
   /** Sides of a polygon the polygon tool draws. */
   const POLYGON_SIDES = 6;
+  /** Points of a star the star tool draws. */
+  const STAR_POINTS = 5;
+
+  /**
+   * The `angle:` that puts a star's first outer point at `deg`: CeTZ starts
+   * a star with an inner point at its angle, and the outer one half a step on.
+   */
+  const starAngle = (deg: number) => deg - 180 / STAR_POINTS;
 
   /**
    * Radius and angle (degrees) of `p` around `c`, both local. They snap to
@@ -1861,6 +1869,13 @@
         text = `polygon(${a}, ${POLYGON_SIDES}, radius: ${num(r > 1e-6 ? r : 1)}${angle ? `, angle: ${num(angle)}deg` : ""})`;
         break;
       }
+      case "star": {
+        // The drag ends on an outer point, which sets the size and rotation; a click points it up.
+        const { r, deg } = polar(d.start, d.end);
+        const angle = starAngle(r > 1e-6 ? deg : 90);
+        text = `n-star(${a}, ${STAR_POINTS}, radius: ${num(r > 1e-6 ? r : 1)}${angle ? `, angle: ${num(angle)}deg` : ""})`;
+        break;
+      }
       case "arc": {
         // The drag places the centre and the start; the arc is swept next.
         const { r, deg } = polar(d.start, d.end);
@@ -1934,6 +1949,14 @@
         const { r, deg } = polar(c, drag.end);
         const corners = Array.from({ length: POLYGON_SIDES }, (_, i) => around(c, r, deg + (360 / POLYGON_SIDES) * i));
         return localPath(drag.frame, drag.transform, corners, true);
+      }
+      case "star": {
+        const c = drag.start;
+        const { r, deg } = polar(c, drag.end);
+        // Inner points (CeTZ's default 50%) then outer, the first outer one under the pointer.
+        const step = 360 / STAR_POINTS;
+        const points = Array.from({ length: 2 * STAR_POINTS }, (_, i) => around(c, i % 2 ? r : r / 2, starAngle(deg) + (step / 2) * i));
+        return localPath(drag.frame, drag.transform, points, true);
       }
       case "arc":
         return radiusGuide(drag.frame, drag.transform, drag.start, drag.end);
@@ -2326,8 +2349,8 @@
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
       <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
-    {:else if drag?.kind === "create" && editor.tool === "polygon"}
-      <div class="hint">Drag to a corner · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "create" && (editor.tool === "polygon" || editor.tool === "star")}
+      <div class="hint">Drag to {editor.tool === "star" ? "an outer point" : "a corner"} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if (drag?.kind === "create" && editor.tool === "arc") || (arcing && arcing.r === undefined)}
       <div class="hint">{drag ? "Drag" : "Click"} where the arc starts · Esc cancels</div>
     {:else if arcing}

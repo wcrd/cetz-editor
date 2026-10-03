@@ -182,6 +182,7 @@
     { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
     { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
     { id: "polygon", label: "Polygon", key: "N", icon: "M8 5h8l4 7-4 7H8l-4-7z" },
+    { id: "star", label: "Star", key: "S", icon: "M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6l-5.4 2.9 1.2-6-4.5-4.2 6.1-.7z" },
     { id: "arc", label: "Arc", key: "U", icon: "M5 19A14 14 0 0 1 19 5" },
     { id: "text", label: "Text", key: "T", icon: "M5 6V4h14v2M12 4v16M9 20h6" },
     { id: "point", label: "Named point", key: ".", icon: "M12 3v4M12 17v4M3 12h4M17 12h4M12 9.5a2.5 2.5 0 1 0 0.01 0z" },

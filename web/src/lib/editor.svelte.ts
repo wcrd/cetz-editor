@@ -25,7 +25,7 @@ import {
   type Range,
 } from "./scene";
 
-export type Tool = "select" | "line" | "arrow" | "rect" | "circle" | "polygon" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
+export type Tool = "select" | "line" | "arrow" | "rect" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
 
 /** What the code pane exposes to the editor. */
 export interface CodeHandle {
