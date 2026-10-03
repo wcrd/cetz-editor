@@ -2,6 +2,7 @@
   // The drawing surface: the Typst render, with an interaction overlay built
   // from the probe geometry. Works in page points (the SVG's viewBox units);
   // `zoom` maps points to screen pixels.
+  import { untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe } from "./probe";
   import type { Call, Edit } from "./scene";
@@ -61,6 +62,45 @@
     void editor.loads;
     fitted = false;
   });
+
+  // Auto-sized pages grow (and shift their content) as shapes are added at the
+  // edges. Keep the drawing still on screen by panning by however far the
+  // canvas origin moved on the page — including mid-drag.
+  let lastOrigin: { x: number; y: number; loads: number } | undefined;
+  $effect(() => {
+    const frame = editor.frames.values().next().value;
+    if (!frame) return;
+    const { x, y } = frame.origin;
+    untrack(() => {
+      if (lastOrigin && lastOrigin.loads === editor.loads) {
+        const dx = x - lastOrigin.x;
+        const dy = y - lastOrigin.y;
+        if (dx !== 0 || dy !== 0) {
+          editor.pan = [editor.pan[0] - dx * editor.zoom, editor.pan[1] - dy * editor.zoom];
+          shiftDrag(dx, dy);
+        }
+      }
+      lastOrigin = { x, y, loads: editor.loads };
+    });
+  });
+
+  /** Keeps an in-progress drag's page-space points in step with a page shift. */
+  function shiftDrag(dx: number, dy: number) {
+    if (!drag) return;
+    const shift = (p: Point): Point => [p[0] + dx, p[1] + dy];
+    switch (drag.kind) {
+      case "move":
+        drag.start = shift(drag.start);
+        break;
+      case "marquee":
+        drag.start = shift(drag.start);
+        drag.end = shift(drag.end);
+        break;
+      case "create":
+        drag.frame = { ...drag.frame, origin: { x: drag.frame.origin.x + dx, y: drag.frame.origin.y + dy } };
+        break;
+    }
+  }
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
@@ -431,21 +471,30 @@
 
   // --- Grid ----------------------------------------------------------------
 
+  /** The page-space area the grid covers: the page, or everything in view. */
+  const gridArea = $derived.by(() => {
+    if (!pageSize) return undefined;
+    if (!editor.infinite) return { x0: 0, y0: 0, x1: pageSize.w, y1: pageSize.h };
+    const [px, py] = editor.pan;
+    return { x0: -px / editor.zoom, y0: -py / editor.zoom, x1: (width - px) / editor.zoom, y1: (height - py) / editor.zoom };
+  });
+
   const grid = $derived.by(() => {
-    if (!editor.showGrid || !pageSize || editor.activeCanvas === undefined) return undefined;
+    if (!editor.showGrid || !gridArea || editor.activeCanvas === undefined) return undefined;
+    const { x0, y0, x1, y1 } = gridArea;
     const frame = editor.frameFor(editor.activeCanvas);
     let step = editor.gridStep;
     while (step * frame.length * editor.zoom < 8) step *= 2;
-    const [cx0, cy1] = editor.toCanvas(frame, [0, 0]);
-    const [cx1, cy0] = editor.toCanvas(frame, [pageSize.w, pageSize.h]);
+    const [cx0, cy1] = editor.toCanvas(frame, [x0, y0]);
+    const [cx1, cy0] = editor.toCanvas(frame, [x1, y1]);
     let d = "";
     for (let x = Math.ceil(cx0 / step) * step; x <= cx1; x += step) {
       const [px] = editor.toPage(frame, [x, 0]);
-      d += `M${px},0V${pageSize.h}`;
+      d += `M${px},${y0}V${y1}`;
     }
     for (let y = Math.ceil(cy0 / step) * step; y <= cy1; y += step) {
       const [, py] = editor.toPage(frame, [0, y]);
-      d += `M0,${py}H${pageSize.w}`;
+      d += `M${x0},${py}H${x1}`;
     }
     return d;
   });
@@ -468,6 +517,7 @@
 
 <div
   class="viewport"
+  class:infinite={editor.infinite}
   bind:this={viewport}
   bind:clientWidth={width}
   bind:clientHeight={height}
@@ -497,7 +547,11 @@
         {#if grid}<path class="grid" d={grid} />{/if}
         {#each editor.pageHeights.slice(0, -1) as _, i}
           {@const y = editor.pageHeights.slice(0, i + 1).reduce((a, b) => a + b, 0)}
-          <rect class="page-gap" x="0" y={y - 0.5 / editor.zoom} width={pageSize.w} height={6 / editor.zoom} />
+          {#if editor.infinite && gridArea}
+            <path class="page-break" d="M{gridArea.x0},{y}H{gridArea.x1}" />
+          {:else}
+            <rect class="page-gap" x="0" y={y - 0.5 / editor.zoom} width={pageSize.w} height={6 / editor.zoom} />
+          {/if}
         {/each}
 
         {#each shapes as s, i (i)}
@@ -596,6 +650,16 @@
   .page.stale {
     opacity: 0.45;
   }
+  /* Infinite: the whole viewport is the sheet, and nothing is clipped at the page edge. */
+  .viewport.infinite {
+    background: white;
+  }
+  .infinite .page {
+    box-shadow: none;
+  }
+  .infinite .page > :global(svg) {
+    overflow: visible;
+  }
   .page > :global(svg) {
     display: block;
     width: 100%;
@@ -615,6 +679,13 @@
     stroke: var(--grid);
     stroke-width: 1;
     fill: none;
+    pointer-events: none;
+  }
+  .page-break {
+    stroke: var(--muted);
+    stroke-width: 1;
+    stroke-dasharray: 6 4;
+    opacity: 0.5;
     pointer-events: none;
   }
   .page-gap {

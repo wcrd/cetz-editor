@@ -52,6 +52,22 @@
     }
   }
 
+  // Infinite canvas view; remembered in this browser like the code panel.
+  const INFINITE_KEY = "cetz-editor:infinite";
+  try {
+    editor.infinite = localStorage.getItem(INFINITE_KEY) === "true";
+  } catch {
+    // Default view.
+  }
+  function toggleInfinite() {
+    editor.infinite = !editor.infinite;
+    try {
+      localStorage.setItem(INFINITE_KEY, String(editor.infinite));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+
   let dropping = $state(false);
   function ondragover(e: DragEvent) {
     if (e.dataTransfer?.types.includes("Files")) {
@@ -181,6 +197,7 @@
       return;
     }
     if (e.key === "g") editor.showGrid = !editor.showGrid;
+    if (e.key === "i") toggleInfinite();
   }
 
   // Browsers only reveal a picked file's name, never its folder or path.
@@ -269,6 +286,15 @@
     </div>
 
     <div class="group toggles">
+      <button
+        class:active={editor.infinite}
+        title="Infinite canvas (I)"
+        aria-label="Infinite canvas"
+        aria-pressed={editor.infinite}
+        onclick={toggleInfinite}
+      >
+        <svg viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" /></svg>
+      </button>
       <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
       <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
       <select bind:value={editor.gridStep} title="Grid step (canvas units)">

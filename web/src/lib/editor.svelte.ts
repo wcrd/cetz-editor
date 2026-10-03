@@ -87,6 +87,8 @@ export class Editor {
   snap = $state(true);
   gridStep = $state(0.25);
   showGrid = $state(true);
+  /** View the page as an endless sheet: no page edge, grid everywhere. */
+  infinite = $state(false);
 
   /** Screen pixels per page point, and where the page's corner sits. */
   zoom = $state(1);

@@ -62,6 +62,7 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
 | ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
 | G | Toggle the grid |
+| I | Infinite canvas: hide the page edge, extend the grid everywhere, and keep the drawing still as an auto-sized page grows |
 | ⌘\ | Show or hide the code panel (left). The inspector stays on the right |
 
 The inspector edits coordinates, text, the name and any named argument
