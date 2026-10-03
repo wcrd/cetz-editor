@@ -791,6 +791,10 @@
       joinAt(p, e.detail >= 2);
       return;
     }
+    if (e.button === 0 && !spaceHeld && arcing) {
+      arcClick(arcing, p);
+      return;
+    }
 
     if (e.button === 1 || spaceHeld) {
       drag = { kind: "pan", start: [e.clientX, e.clientY], pan: [...editor.pan] };
@@ -865,6 +869,10 @@
     readMods(e);
     const r = viewport.getBoundingClientRect();
     pointer = [e.clientX - r.left, e.clientY - r.top];
+    if (!drag && arcing) {
+      arcMove(arcing, p);
+      return;
+    }
     if (!drag && (editor.tool === "point" || editor.tool === "join")) {
       toolHover = toolTarget(p, editor.tool === "join");
       return;
@@ -977,6 +985,11 @@
           drag.end = angled(drag.frame, drag.transform, from, p).local;
           break;
         }
+        // Polygons and arcs snap their radius and angle instead (see `polar`).
+        if (isRadialTool()) {
+          drag.end = pageToLocal(drag.frame, drag.transform, p);
+          break;
+        }
         drag.endSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool() });
         drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPoint(drag.frame, drag.transform, p);
         break;
@@ -1050,6 +1063,105 @@
     return editor.tool === "line" || editor.tool === "arrow";
   }
 
+  /** Tools drawn out from a centre: the drag sets a radius and an angle. */
+  function isRadialTool() {
+    return editor.tool === "polygon" || editor.tool === "arc";
+  }
+
+  /** Sides of a polygon the polygon tool draws. */
+  const POLYGON_SIDES = 6;
+
+  /**
+   * Radius and angle (degrees) of `p` around `c`, both local. They snap to
+   * the grid step and to 15° unless ⌘ is held.
+   */
+  function polar(c: Point, p: Point): { r: number; deg: number } {
+    let r = Math.hypot(p[0] - c[0], p[1] - c[1]);
+    let deg = (Math.atan2(p[1] - c[1], p[0] - c[0]) * 180) / Math.PI;
+    if (!mods.free) {
+      r = editor.snapValue(r);
+      deg = Math.round(deg / 15) * 15;
+    }
+    return { r, deg };
+  }
+
+  /** The point at `deg` and radius `r` around `c`. */
+  function around(c: Point, r: number, deg: number): Point {
+    const a = (deg * Math.PI) / 180;
+    return [c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)];
+  }
+
+  /** SVG path data, in page points, through local points. */
+  function localPath(frame: Frame, transform: number[][] | undefined, pts: Point[], close = false): string {
+    const page = pts.map((q) => editor.toPage(frame, transformPoint(transform, q)));
+    return page.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ") + (close ? " Z" : "");
+  }
+
+  /** Points along an arc of radius `r` around `c`, `sweep` degrees from `from`. */
+  function arcPoints(c: Point, r: number, from: number, sweep: number): Point[] {
+    const n = Math.max(2, Math.ceil(Math.abs(sweep) / 5));
+    return Array.from({ length: n + 1 }, (_, i) => around(c, r, from + (sweep * i) / n));
+  }
+
+  /** The circle an arc lies on and its radius out to `p`, while its radius is being set. */
+  function radiusGuide(frame: Frame, transform: number[][] | undefined, c: Point, p: Point): string {
+    const { r, deg } = polar(c, p);
+    return `${localPath(frame, transform, arcPoints(c, r, deg, 360))} ${localPath(frame, transform, [c, around(c, r, deg)])}`;
+  }
+
+  // --- Arc tool ------------------------------------------------------------
+
+  /**
+   * A half-made arc. Dragging out from the centre (or clicking the centre and
+   * then the start) sets its radius and start; moving then sweeps it either
+   * way round, and a click finishes it.
+   */
+  type Arcing = {
+    center: Point;
+    centerSnap?: Snap;
+    frame: Frame;
+    transform?: number[][];
+    /** Set once the start is placed. */
+    r?: number;
+    start?: number;
+    /** Degrees from the start, negative for clockwise. */
+    sweep: number;
+    /** The pointer, local, while placing the start. */
+    pointer?: Point;
+  };
+  let arcing = $state<Arcing>();
+
+  function arcMove(a: Arcing, p: Point) {
+    const local = pageToLocal(a.frame, a.transform, p);
+    if (a.r === undefined || a.start === undefined) {
+      a.pointer = local;
+      return;
+    }
+    // Of the angles that reach the pointer, take the one nearest the current
+    // sweep, so the arc follows the pointer round and past the start.
+    let d = polar(a.center, local).deg - a.start;
+    d += 360 * Math.round((a.sweep - d) / 360);
+    a.sweep = Math.max(-360, Math.min(360, d));
+  }
+
+  function arcClick(a: Arcing, p: Point) {
+    arcMove(a, p);
+    if (a.r === undefined) {
+      const { r, deg } = polar(a.center, pageToLocal(a.frame, a.transform, p));
+      if (r > 1e-6) Object.assign(a, { r, start: deg, sweep: 0 });
+      return;
+    }
+    if (Math.abs(a.sweep) < 1e-6 || a.start === undefined) return;
+    const center = a.centerSnap?.ref ?? `(${num(a.center[0])}, ${num(a.center[1])})`;
+    arcing = undefined;
+    insertShape(`arc(${center}, start: ${num(a.start)}deg, stop: ${num(a.start + a.sweep)}deg, radius: ${num(a.r)}, anchor: "origin")`, [[0, a.centerSnap]]);
+  }
+
+  // Leaving the arc tool abandons a half-made arc.
+  $effect(() => {
+    if (editor.tool !== "arc") arcing = undefined;
+  });
+
   function create(d: Extract<Drag, { kind: "create" }>) {
     const [x0, y0] = d.start;
     let [x1, y1] = d.end;
@@ -1078,16 +1190,37 @@
         text = `circle(${a}, radius: ${num(r)})`;
         break;
       }
+      case "polygon": {
+        // The drag ends on the first corner, which sets the rotation.
+        const { r, deg } = polar(d.start, d.end);
+        const angle = r > 1e-6 ? deg : 0;
+        text = `polygon(${a}, ${POLYGON_SIDES}, radius: ${num(r > 1e-6 ? r : 1)}${angle ? `, angle: ${num(angle)}deg` : ""})`;
+        break;
+      }
+      case "arc": {
+        // The drag places the centre and the start; the arc is swept next.
+        const { r, deg } = polar(d.start, d.end);
+        arcing = { center: d.start, centerSnap: d.startSnap, frame: d.frame, transform: d.transform, sweep: 0, ...(r > 1e-6 ? { r, start: deg } : {}) };
+        return;
+      }
       case "text":
         text = `content(${a}, [Text])`;
         break;
       default:
         return;
     }
+    insertShape(text, [
+      [0, d.startSnap],
+      [1, tiny ? undefined : d.endSnap],
+    ]);
+  }
+
+  /** Adds a new shape to the active canvas and selects it. `snaps` are where its point arguments were snapped. */
+  function insertShape(text: string, snaps: [number, Snap | undefined][]) {
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
     // Ends snapped to another shape's anchor connect to it (naming it if
     // needed); ends on a line's vertex share it.
-    for (const [arg, snap] of [[0, d.startSnap], [1, tiny ? undefined : d.endSnap]] as const) {
+    for (const [arg, snap] of snaps) {
       if (snap && snap.ref === undefined) steps.push(({ created, map }) => snapEdit(created[0], arg, snap, map));
     }
     if (editor.chain(steps)) {
@@ -1098,6 +1231,16 @@
   }
 
   const preview = $derived.by(() => {
+    if (arcing) {
+      const { center, frame, transform, r, start, sweep, pointer } = arcing;
+      if (r !== undefined && start !== undefined) {
+        const arc = sweep ? ` ${localPath(frame, transform, arcPoints(center, r, start, sweep))}` : "";
+        return localPath(frame, transform, [center, around(center, r, start)]) + arc;
+      }
+      if (pointer) return radiusGuide(frame, transform, center, pointer);
+      const c = editor.toPage(frame, transformPoint(transform, center));
+      return `M${c[0] - 3},${c[1]} h6 M${c[0]},${c[1] - 3} v6`;
+    }
     if (drag?.kind !== "create") return undefined;
     const a = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
     const b = editor.toPage(drag.frame, transformPoint(drag.transform, drag.end));
@@ -1111,6 +1254,14 @@
         const r = Math.hypot(b[0] - a[0], b[1] - a[1]);
         return `M${a[0] - r},${a[1]} a${r},${r} 0 1,0 ${2 * r},0 a${r},${r} 0 1,0 ${-2 * r},0`;
       }
+      case "polygon": {
+        const c = drag.start;
+        const { r, deg } = polar(c, drag.end);
+        const corners = Array.from({ length: POLYGON_SIDES }, (_, i) => around(c, r, deg + (360 / POLYGON_SIDES) * i));
+        return localPath(drag.frame, drag.transform, corners, true);
+      }
+      case "arc":
+        return radiusGuide(drag.frame, drag.transform, drag.start, drag.end);
       default:
         return `M${a[0] - 3},${a[1]} h6 M${a[0]},${a[1] - 3} v6`;
     }
@@ -1190,6 +1341,10 @@
         joining = undefined;
         return;
       }
+    }
+    if (arcing && e.key === "Escape") {
+      arcing = undefined;
+      return;
     }
     if (e.key === " " && !(e.target instanceof HTMLInputElement) && !(e.target as HTMLElement).closest?.(".cm-editor")) {
       spaceHeld = true;
@@ -1420,6 +1575,12 @@
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "create" && isLineTool()}
       <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "create" && editor.tool === "polygon"}
+      <div class="hint">Drag to a corner · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if (drag?.kind === "create" && editor.tool === "arc") || (arcing && arcing.r === undefined)}
+      <div class="hint">{drag ? "Drag" : "Click"} where the arc starts · Esc to cancel · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if arcing}
+      <div class="hint">Move to sweep the arc, either way · click to finish · Esc to cancel · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {/if}
     {#if sharing}
       <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>

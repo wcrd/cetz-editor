@@ -53,6 +53,14 @@
     </section>
 
     <section>
+      <h3><kbd>N</kbd> Polygon · <kbd>U</kbd> Arc</h3>
+      <p>
+        Both start at the centre. A polygon's drag ends on a corner, setting its size and rotation. An arc's drag ends where
+        it starts (or click the centre, then the start); move to sweep it either way round, and click to finish. Radii snap to
+        the grid and angles to 15°.
+      </p>
+    </section>
+    <section>
       <h3>Modifiers</h3>
       <dl>
         <dt><kbd>{cmd}</kbd></dt>

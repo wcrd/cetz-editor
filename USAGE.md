@@ -7,6 +7,8 @@ Press **?** in the app for a quick version of this guide.
 | | |
 |---|---|
 | **V** / **L** / **A** / **R** / **C** / **T** | Select, line, arrow, rectangle, circle, text tools |
+| **N** | Polygon: drag from the centre to a corner, which sets its size and rotation (`polygon((0, 0), 6, radius: 1)`) |
+| **U** | Arc: drag from the centre to where it starts (or click both), then move to sweep it either way and click to finish |
 | **.** | Named point: click to place one, then type its name |
 | **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
@@ -109,6 +111,7 @@ default.
 
 **Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
 15° steps (lengths still snap to the grid along horizontal and vertical ones).
+Polygon and arc radii snap to the grid step and their angles to 15°.
 Hold **⌘** (Ctrl elsewhere) to place without any snapping: no grid, points or
 anchors. It works for every drawing tool, handle and move.
 
