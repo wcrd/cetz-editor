@@ -104,6 +104,8 @@ export class Editor {
   notice = $state<string>();
 
   fileName = $state("untitled.typ");
+  /** The file's line ending. The source always uses `\n`; saving restores this. */
+  lineEnding = $state<"\n" | "\r\n">("\n");
   /** Bumped whenever a document is loaded, so views can reset (e.g. refit). */
   loads = $state(0);
   savedSource = $state("");
@@ -127,6 +129,7 @@ export class Editor {
   #noticeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(source: string) {
+    source = normalizeNewlines(source);
     this.source = source;
     this.savedSource = source;
     this.#compiler = new TypstCompiler((status, id) => this.#onCompiled(status, id));
@@ -226,6 +229,8 @@ export class Editor {
 
   /** Replaces the document, e.g. when opening a file. */
   load(source: string, fileName: string) {
+    this.lineEnding = /\r\n/.test(source) && !/(^|[^\r])\n/.test(source) ? "\r\n" : "\n";
+    source = normalizeNewlines(source);
     this.draft = undefined;
     this.pendingMove = undefined;
     this.selection = [];
@@ -332,6 +337,11 @@ export class Editor {
   callText(call: Call): string {
     return this.index.slice(call.range.start, call.range.end);
   }
+}
+
+/** CodeMirror (and so the editor) works in `\n`-only text. */
+export function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
 }
 
 /** Maps an offset in patched text back to the original text. */

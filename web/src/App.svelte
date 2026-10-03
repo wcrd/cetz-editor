@@ -12,6 +12,7 @@
   if (session) {
     editor.fileName = session.fileName;
     editor.savedSource = session.savedSource;
+    editor.lineEnding = session.lineEnding ?? "\n";
   } else {
     editor.fileName = "zone_diagram.typ";
   }
@@ -47,9 +48,11 @@
   // Handy for poking at state from the console during development.
   if (import.meta.env.DEV) (window as unknown as { editor: Editor }).editor = editor;
 
-  // Compile on every change: immediately while dragging, debounced while typing.
+  // Compile on every change (and every load, even of identical text):
+  // immediately while dragging, debounced while typing.
   $effect(() => {
     void editor.source;
+    void editor.loads;
     if (editor.draft) {
       editor.compile();
       return;

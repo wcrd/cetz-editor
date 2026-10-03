@@ -564,7 +564,15 @@
       </g>
     </svg>
   {:else}
-    <div class="empty">{editor.hasErrors ? "Fix the errors to see the drawing." : "Compiling…"}</div>
+    <div class="empty">
+      {editor.hasErrors
+        ? "Fix the errors to see the drawing."
+        : editor.status.kind === "done"
+          ? "Nothing to show."
+          : editor.status.kind === "fetching"
+            ? `Fetching ${editor.status.packages.join(", ")}…`
+            : "Compiling…"}
+    </div>
   {/if}
 </div>
 

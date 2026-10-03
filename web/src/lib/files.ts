@@ -73,36 +73,40 @@ export async function openDropped(editor: Editor, file: File, confirm = true) {
 }
 
 export async function save(editor: Editor, saveAs = false) {
-  const text = editor.source;
+  const source = editor.source;
+  // Write the file back with the line endings it was opened with.
+  const text = editor.lineEnding === "\n" ? source : source.replace(/\n/g, editor.lineEnding);
   try {
     if (!handle || saveAs) {
-      if (!fsWindow.showSaveFilePicker) return download(editor, text);
+      if (!fsWindow.showSaveFilePicker) return download(editor, text, source);
       handle = await fsWindow.showSaveFilePicker({ suggestedName: editor.fileName, types: TYPES });
     }
     const writable = await handle.createWritable();
     await writable.write(text);
     await writable.close();
     editor.fileName = handle.name;
-    editor.savedSource = text;
+    editor.savedSource = source;
     editor.flash(`Saved ${handle.name}`);
   } catch (err) {
     if (!isAbort(err)) editor.flash(`Couldn't save: ${err}`);
   }
 }
 
-function download(editor: Editor, text: string) {
+function download(editor: Editor, text: string, source: string) {
   const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
   const a = Object.assign(document.createElement("a"), { href: url, download: editor.fileName });
   a.click();
   URL.revokeObjectURL(url);
-  editor.savedSource = text;
+  editor.savedSource = source;
 }
 
 // The last session is kept in this browser so a reload doesn't lose work.
 // Best effort: storage can be unavailable or full.
 const SESSION_KEY = "cetz-editor:session";
 
-export function loadSession(): { source: string; fileName: string; savedSource: string } | undefined {
+export function loadSession():
+  | { source: string; fileName: string; savedSource: string; lineEnding?: "\n" | "\r\n" }
+  | undefined {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     const s = raw && JSON.parse(raw);
@@ -116,7 +120,12 @@ export function saveSession(editor: Editor) {
   try {
     localStorage.setItem(
       SESSION_KEY,
-      JSON.stringify({ source: editor.source, fileName: editor.fileName, savedSource: editor.savedSource }),
+      JSON.stringify({
+        source: editor.source,
+        fileName: editor.fileName,
+        savedSource: editor.savedSource,
+        lineEnding: editor.lineEnding,
+      }),
     );
   } catch {
     // Ignore: the session just won't be restored.

@@ -39,6 +39,10 @@
   const selectedMark = Decoration.mark({ class: "cm-call-selected" });
   const hoveredMark = Decoration.mark({ class: "cm-call-hovered" });
 
+  function createState(text: string): EditorState {
+    return EditorState.create({ doc: text, extensions: extensions() });
+  }
+
   function extensions(): Extension[] {
     return [
       lineNumbers(),
@@ -81,8 +85,9 @@
   onMount(() => {
     view = new EditorView({
       parent: host,
-      state: EditorState.create({ doc: editor.source, extensions: extensions() }),
+      state: createState(editor.source),
     });
+    syncNormalized();
     editor.code = {
       applyPatches(steps) {
         // Compose the steps into one change set so they undo together.
@@ -98,8 +103,9 @@
       },
       replaceAll(text: string, resetHistory: boolean) {
         if (resetHistory) {
-          view.setState(EditorState.create({ doc: text, extensions: extensions() }));
-          editor.sourceChanged(text, [{ start: 0, end: editor.index.byteLength, text }]);
+          view.setState(createState(text));
+          const doc = view.state.doc.toString();
+          editor.sourceChanged(doc, [{ start: 0, end: editor.index.byteLength, text: doc }]);
         } else {
           view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: external.of(true) });
         }
@@ -116,6 +122,12 @@
       view.destroy();
     };
   });
+
+  /** CodeMirror turns `\r\n` into `\n`; adopt its text so offsets agree. */
+  function syncNormalized() {
+    const doc = view.state.doc.toString();
+    if (doc !== editor.source) editor.sourceChanged(doc, [{ start: 0, end: editor.index.byteLength, text: doc }]);
+  }
 
   // Mirror selection/hover into highlights, and scroll to a new selection.
   let lastRevealed: number | undefined;
