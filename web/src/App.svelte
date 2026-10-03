@@ -331,7 +331,7 @@
 <div
   class="app"
   class:resizing
-  style:--code-width={codeWidth === undefined ? null : `clamp(200px, ${codeWidth}px, 100vw - 600px)`}
+  style:--code-width={codeWidth === undefined ? null : `clamp(var(--code-min), ${codeWidth}px, 100vw - 600px)`}
 >
   <header class="toolbar" class:code-open={codeOpen}>
     <div class="section code-section">
@@ -359,7 +359,7 @@
         </button>
       </div>
 
-      <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
+      <div class="status" class:failed={editor.hasErrors} title={compileLabel}>{compileLabel}</div>
     </div>
 
     <div class="section canvas-section">
@@ -570,6 +570,8 @@
   }
 
   .app {
+    /* Room for the toolbar's code section: its buttons plus "Loading compiler…". */
+    --code-min: 320px;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -585,7 +587,7 @@
     min-height: 34px;
   }
   .toolbar.code-open {
-    grid-template-columns: var(--code-width, minmax(280px, 30%)) minmax(0, 1fr);
+    grid-template-columns: var(--code-width, minmax(var(--code-min), 30%)) minmax(0, 1fr);
   }
   /* Too narrow to line up with the code column and still fit the canvas
      controls; let the file controls take only what they need. */
@@ -684,6 +686,9 @@
   }
   .status {
     margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -818,7 +823,7 @@
     grid-template-areas: "code stage side";
   }
   main.code-open {
-    grid-template-columns: var(--code-width, minmax(280px, 30%)) minmax(0, 1fr) 340px;
+    grid-template-columns: var(--code-width, minmax(var(--code-min), 30%)) minmax(0, 1fr) 340px;
   }
   .stage {
     grid-area: stage;
