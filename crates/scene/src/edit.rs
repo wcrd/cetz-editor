@@ -64,6 +64,10 @@ pub enum Edit {
     Delete { calls: Vec<usize> },
     /// Append a statement to the end of a canvas body (default: the first).
     Insert { canvas: Option<usize>, text: String },
+    /// Several edits as one: each is worked out against the same source and
+    /// their changes combined. Identical changes (two moves of one shared
+    /// point) count once; conflicting ones fail. `created` is empty.
+    Batch { edits: Vec<Edit> },
     /// Append copied statements (source text, as the editor copies them) to
     /// the end of a canvas, their literal coordinates moved by `(dx, dy)`. A
     /// name the canvas already uses gets a fresh one (`box` → `box-2`), and
@@ -346,6 +350,15 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (at, prefix, suffix) = insertion_point(source, canvas);
             created.push((patches.len(), prefix.len()));
             patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
+        }
+        Edit::Batch { edits } => {
+            for edit in edits {
+                for p in apply(source, edit)?.patches {
+                    if !patches.contains(&p) {
+                        patches.push(p);
+                    }
+                }
+            }
         }
         Edit::Paste { canvas, text, dx, dy } => {
             let canvas = match canvas {
@@ -1762,6 +1775,25 @@ mod tests {
         let out = apply(src, &Edit::Insert { canvas: None, text: "rect((0,0), (1,1))".into() }).unwrap();
         assert_eq!(out.source, "#canvas({ line((0,0), (1,1)) \n  rect((0,0), (1,1))\n})");
         assert_eq!(crate::parse(&out.source).canvases[0].calls.len(), 2);
+    }
+
+    #[test]
+    fn batch_combines_edits() {
+        let out = run(Edit::Batch {
+            edits: vec![
+                Edit::SetCoord { call: id("line"), arg: 0, x: 1.0, y: 2.0 },
+                Edit::Move { calls: vec![id("content")], dx: 1.0, dy: 0.0, detach: false },
+                Edit::Move { calls: vec![id("content")], dx: 1.0, dy: 0.0, detach: false },
+            ],
+        });
+        assert!(out.source.contains("line((1, 2), (1.5,-2)") && out.source.contains("content((3, 3), [Hi])"), "{}", out.source);
+        let clash = Edit::Batch {
+            edits: vec![
+                Edit::SetCoord { call: id("line"), arg: 0, x: 1.0, y: 2.0 },
+                Edit::SetCoord { call: id("line"), arg: 0, x: 3.0, y: 2.0 },
+            ],
+        };
+        assert!(apply(SRC, &clash).is_err());
     }
 
     #[test]

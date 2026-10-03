@@ -49,6 +49,7 @@
     | { kind: "marquee"; start: Point; end: Point; base: number[]; basePoints: number[] }
     | { kind: "rotate"; spin: Spin; from: number; angle: number; edit?: Edit }
     | { kind: "radius"; reach: Reach; r: number; edit?: Edit }
+    | { kind: "reshape"; reshape: Reshape; edit?: Edit }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -402,6 +403,48 @@
   function overSpin(p: Point): boolean {
     return !!spinHandle && Math.hypot(p[0] - spinHandle.knob[0], p[1] - spinHandle.knob[1]) * editor.zoom < 9;
   }
+
+  // --- Rect corners and edges ------------------------------------------------
+
+  /**
+   * A rect's (or grid's) other two corners and its four edges, which move
+   * parts of its two literal corners. `edit` takes where it's dragged, local.
+   */
+  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined };
+
+  const reshapes = $derived.by((): Reshape[] => {
+    if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
+    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const probe = call && probeOf.get(call.id);
+    if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
+    const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
+    if (at.length < 2 || at.some((i) => call.args[i].point !== null)) return [];
+    const [a, b] = at.map((i) => call.args[i].value);
+    if (a.type !== "coord" || b.type !== "coord") return [];
+    // Only the corners that change are written.
+    const set = (pa: Point, pb: Point): Edit | undefined => {
+      const edits: Edit[] = [];
+      if (pa[0] !== a.x || pa[1] !== a.y) edits.push({ kind: "set-coord", call: call.id, arg: at[0], x: pa[0], y: pa[1] });
+      if (pb[0] !== b.x || pb[1] !== b.y) edits.push({ kind: "set-coord", call: call.id, arg: at[1], x: pb[0], y: pb[1] });
+      return edits.length ? { kind: "batch", edits } : undefined;
+    };
+    const [mx, my] = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+    const items: [Point, boolean, (p: Point) => Edit | undefined][] = [
+      [[a.x, b.y], false, (p) => set([p[0], a.y], [b.x, p[1]])],
+      [[b.x, a.y], false, (p) => set([a.x, p[1]], [p[0], b.y])],
+      [[a.x, my], true, (p) => set([p[0], a.y], [b.x, b.y])],
+      [[b.x, my], true, (p) => set([a.x, a.y], [p[0], b.y])],
+      [[mx, a.y], true, (p) => set([a.x, p[1]], [b.x, b.y])],
+      [[mx, b.y], true, (p) => set([a.x, a.y], [b.x, p[1]])],
+    ];
+    return items.map(([q, edge, edit]) => ({ point: localToPage(probe, q), edge, probe, edit }));
+  });
+
+  function reshapeAt(p: Point): Reshape | undefined {
+    return reshapes.find((r) => Math.hypot(p[0] - r.point[0], p[1] - r.point[1]) * editor.zoom < 7);
+  }
+
+  let nearReshape = $state(false);
 
   // --- Radius ---------------------------------------------------------------
 
@@ -988,6 +1031,11 @@
       return;
     }
 
+    const reshape = reshapeAt(p);
+    if (reshape) {
+      drag = { kind: "reshape", reshape };
+      return;
+    }
     if (reach && overReach(p)) {
       drag = { kind: "radius", reach, r: reach.r };
       return;
@@ -1071,10 +1119,11 @@
     }
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
-      nearReach = editor.tool === "select" && !spaceHeld && overReach(p);
+      nearReshape = editor.tool === "select" && !spaceHeld && reshapeAt(p) !== undefined;
+      nearReach = editor.tool === "select" && !spaceHeld && !nearReshape && overReach(p);
       nearSpin = editor.tool === "select" && !spaceHeld && !nearReach && overSpin(p);
-      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach ? grabAt(p) : undefined;
-      const hit = nearGrab || nearSpin || nearReach ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach && !nearReshape ? grabAt(p) : undefined;
+      const hit = nearGrab || nearSpin || nearReach || nearReshape ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
@@ -1184,6 +1233,13 @@
         else editor.endDrag();
         break;
       }
+      case "reshape": {
+        const { probe } = drag.reshape;
+        drag.edit = drag.reshape.edit(snapPoint(frameOf(probe), probe.transform, p));
+        if (drag.edit) editor.previewEdit(drag.edit);
+        else editor.endDrag();
+        break;
+      }
       case "radius": {
         drag.r = radiusAt(drag.reach, p);
         drag.edit = { kind: "set-named", call: drag.reach.call, key: "radius", text: num(drag.r) };
@@ -1238,6 +1294,7 @@
       case "handle":
       case "rotate":
       case "radius":
+      case "reshape":
         editor.endDrag(d.edit);
         break;
       case "create":
@@ -1572,7 +1629,7 @@
   const cursor = $derived(
     drag?.kind === "rotate"
       ? "grabbing"
-      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach
+      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach || nearReshape
       ? "grab"
       : editor.tool !== "select"
         ? "crosshair"
@@ -1674,6 +1731,10 @@
           <line class="spin-stem" x1={spinHandle.stem[0]} y1={spinHandle.stem[1]} x2={spinHandle.knob[0]} y2={spinHandle.knob[1]} />
           <circle class="handle spin" class:near={nearSpin} cx={spinHandle.knob[0]} cy={spinHandle.knob[1]} r={4.5 / editor.zoom} />
         {/if}
+
+        {#each reshapes as r, i (i)}
+          <circle class="handle" class:edge={r.edge} cx={r.point[0]} cy={r.point[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+        {/each}
 
         {#if reach}
           {@const r = 4 / editor.zoom}

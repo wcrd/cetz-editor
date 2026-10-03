@@ -106,6 +106,7 @@ export type Edit =
   | { kind: "set-named"; call: number; key: string; text: string | null }
   | { kind: "delete"; calls: number[] }
   | { kind: "insert"; canvas: number | null; text: string }
+  | { kind: "batch"; edits: Edit[] }
   | { kind: "paste"; canvas: number | null; text: string; dx: number; dy: number }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
