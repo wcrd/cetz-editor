@@ -1,3 +1,5 @@
+<img src="web/public/icon.svg" width="96" height="96" alt="">
+
 # CeTZ Editor
 
 A canvas-style visual editor for [CeTZ](https://github.com/cetz-package/cetz)
