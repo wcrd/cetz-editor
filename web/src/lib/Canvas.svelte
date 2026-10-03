@@ -231,11 +231,13 @@
   /**
    * Point markers: all of them with "Points" on, while drawing, or while
    * dragging a handle (they're snap targets then); else the hovered and
-   * selected ones. Handles cover the selected shape's own points.
+   * selected ones. Handles cover the selected shape's own points. Picking
+   * which end of a selected line to continue shows just that line's.
    */
   const markers = $derived.by(() => {
     const withHandles = new Set(handles.map((h) => h.shared));
-    const all = editor.showPoints || editor.tool !== "select" || drag?.kind === "handle" || (drag?.kind === "point" && drag.detach);
+    const drawing = editor.tool !== "select" && !continuable;
+    const all = editor.showPoints || drawing || drag?.kind === "handle" || (drag?.kind === "point" && drag.detach);
     const some = new Set(editor.selectedPoints);
     if (editor.hoveredPoint !== undefined) some.add(editor.hoveredPoint);
     const ids = all ? editor.scene.points.map((p) => p.id) : [...some];
@@ -517,11 +519,17 @@
     joining = { refs: [], pages: [], links: [], extend };
   }
 
-  /** The open selected line whose end vertex is near `p`, for the join tool to continue. */
-  function selectedEndAt(p: Point): { call: number; start: boolean } | undefined {
-    if (editor.selected.length !== 1) return undefined;
+  /** The open selected line the join tool would continue, before its first click. */
+  const continuable = $derived.by(() => {
+    if (editor.tool !== "join" || joining || editor.selected.length !== 1) return undefined;
     const path = editablePath(editor.selected[0]);
-    if (!path || path.closed || path.verts.length < 2) return undefined;
+    return path && !path.closed && path.verts.length >= 2 ? path : undefined;
+  });
+
+  /** The end of the continuable line near `p`, if any. */
+  function selectedEndAt(p: Point): { call: number; start: boolean } | undefined {
+    const path = continuable;
+    if (!path) return undefined;
     const ends = [path.verts[0], path.verts[path.verts.length - 1]];
     for (const [k, arg] of ends.entries()) {
       const at = argHandle(path.call, path.probe, arg)?.point;
@@ -1293,7 +1301,9 @@
         {/each}
       </div>
     {/if}
-    {#if joining?.extend}
+    {#if continuable}
+      <div class="hint">Click an end to continue this line</div>
+    {:else if joining?.extend}
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
