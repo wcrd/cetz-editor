@@ -7,7 +7,7 @@
 
 import { TypstCompiler, type CompilerStatus, type Diagnostic } from "./compiler";
 import { OffsetIndex } from "./offsets";
-import type { Probe, Vec3 } from "./probe";
+import { isVec, transformPoint, type Probe, type Vec3 } from "./probe";
 import {
   allCalls,
   applyEdit,
@@ -36,12 +36,25 @@ export interface CodeHandle {
   reveal(range: Range): void;
   /** Re-measures layout, e.g. after the pane was hidden. */
   refresh(): void;
+  /** Selects a range in the code and scrolls to it. */
+  select(range: Range): void;
 }
 
 /** Where a canvas sits on the page: canvas (0, 0) and points per unit. */
 export interface Frame {
   origin: { x: number; y: number };
   length: number;
+}
+
+export interface Instance {
+  call: number;
+  index: number;
+}
+
+export interface Placed {
+  page: [number, number];
+  frame: Frame;
+  transform?: number[][];
 }
 
 export interface ChainState {
@@ -101,6 +114,9 @@ export class Editor {
   /** Show every shared point's marker, not just the selection's. */
   showPoints = $state(false);
   hoveredPoint = $state<number>();
+  /** One repetition of a call in a loop: the call id and which probe of it. */
+  hoveredInstance = $state<Instance>();
+  focusedInstance = $state<Instance>();
   /** View the page as an endless sheet: no page edge, grid everywhere. */
   infinite = $state(false);
 
@@ -111,6 +127,8 @@ export class Editor {
   viewport?: { fit(): void; zoomBy(factor: number): void };
   /** Registered by the inspector: focus its primary text field. */
   focusInspector?: () => void;
+  /** Registered by the app: show the code panel if it's collapsed. */
+  openCode?: () => void;
 
   svg = $state<string>();
   probes = $state<Probe[]>([]);
@@ -130,6 +148,39 @@ export class Editor {
   loads = $state(0);
   savedSource = $state("");
   dirty = $derived(this.source !== this.savedSource);
+
+  /** Every probe of each call, in drawing order (several for calls in loops). */
+  probesById = $derived.by(() => {
+    const map = new Map<number, Probe[]>();
+    for (const p of this.probes) map.set(p.id, [...(map.get(p.id) ?? []), p]);
+    return map;
+  });
+
+  /**
+   * Where a shared point is on the page, and the frame its literal is written
+   * in: from the anchor it defines if there is one, else from a shape using it.
+   */
+  placePoint(id: number): Placed | undefined {
+    const p = this.pointById.get(id);
+    if (!p) return undefined;
+    const frameOf = (probe: Probe): Frame => ({ origin: probe.origin, length: probe.length });
+    const anchor = this.probes.find((probe) => {
+      const callee = this.callById.get(probe.id)?.callee ?? "";
+      return probe.name !== null && p.anchors.includes(probe.name) && callee.slice(callee.lastIndexOf(".") + 1) === "anchor";
+    });
+    const value = anchor?.anchors["default"];
+    if (anchor && isVec(value)) {
+      return { page: this.toPage(frameOf(anchor), value), frame: frameOf(anchor), transform: anchor.transform };
+    }
+    for (const user of this.pointUsers.get(id) ?? []) {
+      const probe = this.probesById.get(user)?.[0];
+      if (probe) {
+        return { page: this.toPage(frameOf(probe), transformPoint(probe.transform, [p.x, p.y])), frame: frameOf(probe), transform: probe.transform };
+      }
+    }
+    const frame = this.frameFor(this.scene.canvases[0]?.id);
+    return { page: this.toPage(frame, [p.x, p.y]), frame };
+  }
 
   /** Canvas placement on the page, from the probes. */
   frames = $derived.by(() => {
@@ -204,6 +255,8 @@ export class Editor {
     if (this.scope !== undefined) this.scope = map(this.scope);
     this.hovered = undefined;
     this.hoveredPoint = undefined;
+    this.hoveredInstance = undefined;
+    this.focusedInstance = undefined;
     this.source = next;
   }
 

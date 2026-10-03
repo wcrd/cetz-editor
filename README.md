@@ -73,17 +73,22 @@ loop). Dragging a shared corner, or a shape that uses one, edits the definition,
 so every shape using it follows. Hold ⌥ while dragging to detach just that use
 into its own coordinate (dropping it on another anchor reconnects it). The
 inspector shows each corner's point (`→ A (pts.A)`) with a Detach button, and
-a Share button turns a literal coordinate into a shared `anchor(...)`. With
-nothing selected, it lists every point. Hover a point to highlight the shapes
-using it, and click its marker to select them.
+a Share button turns a literal coordinate into a shared `anchor(...)`. Hover a
+point to highlight the shapes using it, and click its marker to select them.
+
+**Outline.** With nothing selected, the right panel shows the document:
+**Variables** (every `let`; point variables and dictionaries of points are
+editable here, other values show a summary and jump to the code) and
+**Shapes** (every draw call). Calls in loops show how many shapes they drew
+(`line ×4`) and expand into those repetitions, read-only and labelled by the
+points they connect (`A → E`); hover or click one to highlight just it.
 
 The inspector edits coordinates, text, the name and any named argument.
 Common values get fields: text size, color, bold and italic for
 `text(5pt)[...]`, `strong[...]` and the like; color, thickness and dash for
 `stroke`; start and end marks; swatches for colors such as `luma(90%)` or
 `orange.lighten(85%)`. Anything else, or any field after clicking `</>`, is
-edited as a Typst expression. With nothing selected,
-it lists every draw call. Your last session is restored on reload, and you can
+edited as a Typst expression. Your last session is restored on reload, and you can
 drop a `.typ` file on the window to open it. Hover the file name to see whether
 Save writes back to the opened file. Browsers only reveal a picked file's name,
 not its folder, so the full path can't be shown.

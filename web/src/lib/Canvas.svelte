@@ -2,9 +2,9 @@
   // The drawing surface: the Typst render, with an interaction overlay built
   // from the probe geometry. Works in page points (the SVG's viewBox units);
   // `zoom` maps points to screen pixels.
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
-  import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe } from "./probe";
+  import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, type Call, type Edit } from "./scene";
   import { num } from "./format";
 
@@ -154,13 +154,18 @@
 
   // --- Shapes --------------------------------------------------------------
 
-  const shapes = $derived(
-    editor.probes.map((probe) => ({
-      probe,
-      d: probe.drawables.map((d) => pathData(probe, d)).join(" "),
-      target: editor.selectableFor(probe.id),
-    })),
-  );
+  const shapes = $derived.by(() => {
+    const seen = new Map<number, number>();
+    return editor.probes.map((probe) => {
+      const index = seen.get(probe.id) ?? 0;
+      seen.set(probe.id, index + 1);
+      return { probe, index, d: probe.drawables.map((d) => pathData(probe, d)).join(" "), target: editor.selectableFor(probe.id) };
+    });
+  });
+
+  /** The single loop repetition being pointed at in the outline. */
+  const instance = $derived(editor.hoveredInstance ?? editor.focusedInstance);
+  const instanceShape = $derived(instance && shapes.find((s) => s.probe.id === instance.call && s.index === instance.index));
 
   const selectedFamily = $derived(new Set(editor.selected.flatMap((id) => [...editor.family(id)])));
   const hoveredFamily = $derived.by(() => {
@@ -203,31 +208,7 @@
 
   // --- Shared points -------------------------------------------------------
 
-  type Placed = { page: Point; frame: Frame; transform?: number[][] };
-
-  /**
-   * Where a shared point is on the page, and the frame its literal is written
-   * in: from the anchor it defines if there is one, else from a shape using it.
-   */
-  function placePoint(id: number): Placed | undefined {
-    const p = editor.pointById.get(id);
-    if (!p) return undefined;
-    const anchor = editor.probes.find(
-      (probe) => probe.name !== null && p.anchors.includes(probe.name) && baseName(editor.callById.get(probe.id)?.callee ?? "") === "anchor",
-    );
-    const value = anchor?.anchors["default"];
-    if (anchor && isVec(value)) {
-      return { page: editor.toPage(frameOf(anchor), value), frame: frameOf(anchor), transform: anchor.transform };
-    }
-    for (const user of editor.pointUsers.get(id) ?? []) {
-      const probe = probeOf.get(user);
-      if (probe) return { page: localToPage(probe, [p.x, p.y]), frame: frameOf(probe), transform: probe.transform };
-    }
-    const frame = editor.frameFor(editor.scene.canvases[0]?.id);
-    return { page: editor.toPage(frame, [p.x, p.y]), frame };
-  }
-
-  const placed = $derived(new Map(editor.scene.points.map((p) => [p.id, placePoint(p.id)] as const)));
+  const placed = $derived(new Map(editor.scene.points.map((p) => [p.id, editor.placePoint(p.id)] as const)));
 
   function pointLabel(id: number): string {
     const p = editor.pointById.get(id);
@@ -518,7 +499,7 @@
       editor.scope = id;
       editor.selection = [];
     } else {
-      editor.focusInspector?.();
+      void tick().then(() => editor.focusInspector?.());
     }
   }
 
@@ -563,7 +544,8 @@
     }
     if (editor.chain(steps)) {
       editor.tool = "select";
-      if (text.startsWith("content")) editor.focusInspector?.();
+      // The inspector mounts once the new shape is selected.
+      if (text.startsWith("content")) void tick().then(() => editor.focusInspector?.());
     }
   }
 
@@ -686,6 +668,15 @@
             <path class="hovered" d={s.d} />
           {/if}
         {/each}
+
+        {#if instanceShape}
+          {#if instanceShape.d}
+            <path class="instance" d={instanceShape.d} />
+          {:else if isVec(instanceShape.probe.anchors["default"])}
+            {@const [ix, iy] = editor.toPage(frameOf(instanceShape.probe), instanceShape.probe.anchors["default"] as Vec3)}
+            <circle class="instance" cx={ix} cy={iy} r={7 / editor.zoom} />
+          {/if}
+        {/if}
 
         <g transform="translate({moveShift[0]} {moveShift[1]})">
           {#each shapes as s, i (i)}
@@ -843,6 +834,12 @@
     fill: none;
     stroke: var(--accent);
     stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .instance {
+    fill: color-mix(in srgb, var(--snap) 12%, transparent);
+    stroke: var(--snap);
+    stroke-width: 2.5;
     pointer-events: none;
   }
   .selection-box {

@@ -46,7 +46,29 @@ export interface Call {
   args_close: number | null;
   parent: number | null;
   in_loop: boolean;
+  /** The innermost loop around the call. */
+  loop_id: number | null;
   conditional: boolean;
+}
+
+export interface Variable {
+  name: string;
+  /** The whole `let` binding. */
+  range: Range;
+  value_range: Range;
+  kind: "point" | "points" | "function" | "value";
+  /** The value's source, shortened to one line. */
+  summary: string;
+  canvas: number | null;
+}
+
+export interface Loop {
+  id: number;
+  range: Range;
+  /** `(k, p)` in `for (k, p) in pts`. */
+  pattern: string;
+  /** `pts` in `for (k, p) in pts`. */
+  iterable: string;
 }
 
 export interface Canvas {
@@ -58,6 +80,8 @@ export interface Canvas {
 export interface Scene {
   canvases: Canvas[];
   points: Point[];
+  variables: Variable[];
+  loops: Loop[];
 }
 
 export type Edit =

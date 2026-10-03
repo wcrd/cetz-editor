@@ -3,6 +3,7 @@
   import Canvas from "./lib/Canvas.svelte";
   import CodeEditor from "./lib/CodeEditor.svelte";
   import Inspector from "./lib/Inspector.svelte";
+  import Outline from "./lib/Outline.svelte";
   import { Editor, type Tool } from "./lib/editor.svelte";
   import { loadSession, newDocument, openDropped, openFile, save, saveSession } from "./lib/files";
 
@@ -41,6 +42,8 @@
       return true;
     }
   }
+  editor.openCode = () => toggleCode(true);
+
   function toggleCode(open = !codeOpen) {
     codeOpen = open;
     // CodeMirror can't measure while hidden; re-measure once it's visible.
@@ -348,7 +351,11 @@
       {#if dropping}<div class="drop">Drop a .typ file to open it</div>{/if}
     </section>
     <aside class="side" aria-label="Inspector">
-      <Inspector {editor} />
+      {#if editor.selected.length > 0}
+        <Inspector {editor} />
+      {:else}
+        <Outline {editor} />
+      {/if}
     </aside>
   </main>
 </div>

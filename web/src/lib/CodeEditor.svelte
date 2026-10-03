@@ -113,6 +113,12 @@
       undo: () => undo(view),
       redo: () => redo(view),
       refresh: () => view.requestMeasure(),
+      select(range: Range) {
+        const anchor = editor.index.toUtf16(range.start);
+        const head = editor.index.toUtf16(range.end);
+        view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+        view.focus();
+      },
       reveal(range: Range) {
         const from = editor.index.toUtf16(range.start);
         view.dispatch({ effects: EditorView.scrollIntoView(from, { y: "center" }) });
