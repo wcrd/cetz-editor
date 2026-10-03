@@ -48,6 +48,44 @@ const style = (...opts: Opt[]): Group => ({ title: "Style", opts });
 
 const PATH_STYLE = style(stroke, mark, fill, fillRule);
 
+const ignore = (what: string, def = "false"): Opt => ({ key: `ignore-${what}`, kind: "bool", default: def, help: `Leave out ${what} elements` });
+
+/** `cetz.angle.angle` and `right-angle` share these. */
+const ANGLE_SIZE: Opt[] = [
+  { key: "radius", kind: "number", step: 0.1, default: "0.5", help: "Radius of the arc, or a ratio of the shorter side" },
+  { key: "label-radius", kind: "code", default: "50%", help: "Distance of the label from the origin: a number or a ratio of the radius" },
+];
+
+/** The `cetz.decorations` path decorations (`zigzag`, `wave`, `coil`, `square`). */
+const decoration = (extra: Opt[]): Group[] => [
+  shape("Shape", [
+    { key: "segments", kind: "number", step: 1, default: "10", help: "Number of segments" },
+    { key: "segment-length", kind: "code", default: "none", help: "Length of one segment, instead of a count" },
+    { key: "amplitude", kind: "number", step: 0.1, default: "1", help: "Height of each segment" },
+    ...extra,
+    { key: "start", kind: "code", default: "0%", help: "Where on the path the decoration starts: a number or ratio" },
+    { key: "stop", kind: "code", default: "100%", help: "Where on the path it stops: a number or ratio" },
+    { key: "align", kind: "choice", options: quoted(["START", "MID", "STOP"]), default: '"START"', help: "Where whole segments line up when they don't fill the length" },
+    { key: "rest", kind: "choice", options: quoted(["LINE", "NONE"]), default: '"LINE"', help: "Draw the undecorated rest of the path as a line, or leave it out" },
+    { key: "close", kind: "bool", default: "auto", help: "Join the last point back to the first" },
+  ]),
+  style(stroke, mark, fill),
+];
+
+/** `ortho` and `perspective`. */
+const projection = (perspective: boolean): Opt[] => [
+  { key: "x", kind: "number", step: 15, unit: "deg", default: "35.264deg", help: "View rotation around the x axis" },
+  { key: "y", kind: "number", step: 15, unit: "deg", default: "45deg", help: "View rotation around the y axis" },
+  { key: "z", kind: "number", step: 15, unit: "deg", default: "0deg", help: "View rotation around the z axis" },
+  ...(perspective ? [{ key: "distance", kind: "code", default: "auto", help: "Camera distance" } as Opt] : []),
+  { key: "sorted", kind: "bool", default: "true", help: "Draw far faces first" },
+  { key: "cull-face", kind: "choice", options: quoted(["cw", "ccw"]), default: "none", help: "Hide faces wound this way" },
+  { key: "reset-transform", kind: "bool", default: "false", help: "Ignore the transform outside" },
+  ...(perspective ? [] : [{ key: "flatten", kind: "bool", default: "false", help: "Set every z coordinate to 0" } as Opt]),
+];
+
+const onPlane = (axis: string): Opt => ({ key: axis, kind: "number", step: 0.1, default: "0", help: `The plane's ${axis} coordinate` });
+
 const SCHEMA: Record<string, Group[]> = {
   line: [shape("Shape", [close]), PATH_STYLE],
   bezier: [PATH_STYLE],
@@ -116,10 +154,96 @@ const SCHEMA: Record<string, Group[]> = {
     ]),
     style(stroke, fill, fillRule),
   ],
+  "compound-path": [style(stroke, fill, fillRule)],
+  "rect-around": [
+    shape("Shape", [
+      { key: "padding", kind: "number", step: 0.1, default: "none", help: "Space around the bounds: a number or (top: .., ..)" },
+      radius("0"),
+      ignore("marks"),
+      ignore("hidden"),
+      ignore("floating"),
+      { key: "ignore-shapes", kind: "bool", default: "false", help: "Measure elements by their anchors only" },
+    ]),
+    style(stroke, fill),
+  ],
+  "svg-path": [
+    shape("Shape", [{ key: "anchor", kind: "code", default: "none", help: "Which of its anchors sits at the origin" }]),
+    PATH_STYLE,
+  ],
+  boolean: [
+    shape("Shape", [
+      { key: "op", kind: "choice", options: quoted(["union", "intersection", "difference", "xor"]), default: '"difference"', help: "How the two shapes combine" },
+      { key: "fill-rule-a", kind: "choice", options: quoted(["non-zero", "even-odd"]), default: "auto", help: "How the first shape's own overlaps count as filled" },
+      { key: "fill-rule-b", kind: "choice", options: quoted(["non-zero", "even-odd"]), default: "auto", help: "How the second shape's own overlaps count as filled" },
+      { key: "eps", kind: "code", default: "auto", help: "Numerical tolerance" },
+      ignore("marks", "true"),
+      ignore("hidden", "true"),
+    ]),
+    style(stroke, fill, fillRule),
+  ],
+  intersections: [
+    shape("Shape", [
+      { key: "samples", kind: "number", step: 1, default: "10", help: "Samples per curve when finding crossings" },
+      { key: "sort", kind: "code", default: "none", help: "Function to order the found points" },
+      ignore("marks", "true"),
+    ]),
+  ],
   mark: [
     shape("Shape", [{ key: "scale", kind: "number", step: 0.1, default: "1", help: "Size factor" }]),
     style(stroke, fill),
   ],
+  // `cetz.angle`
+  angle: [
+    shape("Shape", [
+      { key: "direction", kind: "choice", options: quoted(["ccw", "cw", "near", "far"]), default: '"ccw"', help: "Counter-clockwise or clockwise from a to b, or the inner or outer angle" },
+      { key: "label", kind: "code", default: "none", help: "Content at the label anchor, or a function of the angle" },
+      ...ANGLE_SIZE,
+    ]),
+    style(stroke, mark, fill),
+  ],
+  "right-angle": [
+    shape("Shape", [{ key: "label", kind: "code", default: '"•"', help: "Content at the label anchor" }, ...ANGLE_SIZE]),
+    style(stroke, fill),
+  ],
+  // `cetz.decorations`
+  brace: [
+    shape("Shape", [
+      { key: "amplitude", kind: "number", step: 0.05, default: "0.25", help: "How far the spike rises from the base line" },
+      { key: "flip", kind: "bool", default: "false", help: "Point the other way" },
+      { key: "taper", kind: "bool", default: "true", help: "Thin towards the tips" },
+      { key: "thickness", kind: "code", default: ".015cm", help: "Thickness of the brace" },
+      { key: "pointiness", kind: "code", default: "80%", help: "How sharp the spike is" },
+      { key: "outer-inset", kind: "code", default: ".5cm", help: "Inset of the curves at the tips" },
+      { key: "outer-curvyness", kind: "code", default: "60%", help: "Curvature at the tips" },
+      { key: "inner-outset", kind: "code", default: ".2cm", help: "Outset of the curves at the spike" },
+      { key: "inner-curvyness", kind: "code", default: "80%", help: "Curvature at the spike" },
+      { key: "outer-thickness", kind: "code", default: "0", help: "Extra thickness at both tips" },
+      { key: "content-offset", kind: "code", default: ".3cm", help: "Gap between the spike and the content anchor" },
+    ]),
+    style({ ...fill, default: "black" }, { ...stroke, default: "none" }),
+  ],
+  "flat-brace": [
+    shape("Shape", [
+      { key: "amplitude", kind: "number", step: 0.05, default: "0.3", help: "How far the spike rises from the base line" },
+      { key: "flip", kind: "bool", default: "false", help: "Point the other way" },
+      { key: "aspect", kind: "code", default: "50%", help: "Where along the length the spike sits" },
+      { key: "curves", kind: "code", default: "(1, .5, .6, .15)", help: "Curviness: a factor, or one per curve" },
+      { key: "outer-curves", kind: "code", default: "auto", help: "Curviness of the curves at the tips" },
+      { key: "content-offset", kind: "code", default: "0.3", help: "Gap between the spike and the content anchor" },
+    ]),
+    style(stroke, fill),
+  ],
+  zigzag: decoration([{ key: "factor", kind: "code", default: "50%", help: "Where the peak sits in each segment: 0% and 100% give a sawtooth" }]),
+  wave: decoration([{ key: "tension", kind: "number", step: 0.1, default: "0.5", help: "How rounded the waves are" }]),
+  coil: decoration([{ key: "factor", kind: "code", default: "150%", help: "How far each loop overshoots" }]),
+  square: decoration([{ key: "factor", kind: "code", default: "50%", help: "Where the step sits in each segment" }]),
+  // 3D projection. The planes come first so `optFor` reads a stray `x` as a
+  // plain number, not as `ortho`'s angle.
+  "on-xy": [shape("Plane", [onPlane("z")])],
+  "on-xz": [shape("Plane", [onPlane("y")])],
+  "on-zy": [shape("Plane", [onPlane("x")])],
+  ortho: [shape("View", projection(false))],
+  perspective: [shape("View", projection(true))],
   "set-style": [
     style(stroke, fill, fillRule, mark, radius("1"), { key: "padding", kind: "number", step: 0.1, default: "none", help: "Default padding" }),
   ],

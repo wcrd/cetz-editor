@@ -174,6 +174,8 @@ export const STATE_CALLS = new Set([
   "set-origin",
   "set-transform",
   "set-viewport",
+  "transform",
+  "move-to",
   "anchor",
   "copy-anchors",
   "get-ctx",
