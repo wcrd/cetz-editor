@@ -283,21 +283,19 @@
     const call = editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop) return [];
-    const out: Handle[] = [];
-    call.args.forEach((arg, i) => {
-      if (arg.key !== null) return;
-      const shared = arg.point !== null ? placed.get(arg.point) : undefined;
-      if (arg.point !== null && shared) {
-        out.push({ call: call.id, arg: i, point: shared.page, linked: true, shared: arg.point });
-      } else if (arg.value.type === "coord") {
-        out.push({ call: call.id, arg: i, point: localToPage(probe, [arg.value.x, arg.value.y]), linked: false });
-      } else if (arg.value.type === "str") {
-        const point = anchorPoint(arg.value.value);
-        if (point) out.push({ call: call.id, arg: i, point, linked: true });
-      }
-    });
-    return out;
+    return call.args.flatMap((_, i) => argHandle(call, probe, i) ?? []);
   });
+
+  /** Where a positional coordinate argument is on the page, as a handle. */
+  function argHandle(call: Call, probe: Probe, i: number): Handle | undefined {
+    const arg = call.args[i];
+    if (arg.key !== null) return undefined;
+    const shared = arg.point !== null ? placed.get(arg.point) : undefined;
+    if (arg.point !== null && shared) return { call: call.id, arg: i, point: shared.page, linked: true, shared: arg.point };
+    if (arg.value.type === "coord") return { call: call.id, arg: i, point: localToPage(probe, [arg.value.x, arg.value.y]), linked: false };
+    const point = arg.value.type === "str" ? anchorPoint(arg.value.value) : undefined;
+    return point && { call: call.id, arg: i, point, linked: true };
+  }
 
   /** Resolves `"name.anchor"` against the probes. */
   function anchorPoint(ref: string): Point | undefined {
@@ -474,10 +472,130 @@
   /**
    * A path being joined point by point: each step's source text and page
    * position, plus snaps to apply once it exists (an unnamed shape's anchor
-   * to connect, another line's vertex to share).
+   * to connect, another line's vertex to share). With `extend`, the steps
+   * continue an existing line from one of its ends instead.
    */
-  type Joining = { refs: string[]; pages: Point[]; links: { arg: number; snap: Snap }[] };
+  type Joining = { refs: string[]; pages: Point[]; links: { arg: number; snap: Snap }[]; extend?: Extending };
+  /**
+   * Continuing line `call` from its first vertex (`start`) or last: where
+   * that end is, where the other end is (clicking it closes the line), and
+   * the frame new vertices are written in.
+   */
+  type Extending = { call: number; start: boolean; from: Point; other: Point; frame: Frame; transform?: number[][] };
   let joining = $state<Joining>();
+
+  /** Where the next joined segment starts: the last step, or the end being continued. */
+  function lastJoined(path: Joining | undefined): Point | undefined {
+    return path?.pages[path.pages.length - 1] ?? path?.extend?.from;
+  }
+
+  /**
+   * A line whose vertices can be edited: a plain `line(..)` outside loops.
+   * `verts` are its positional arguments' indices.
+   */
+  function editablePath(id: number) {
+    const call = editor.callById.get(id);
+    const probe = probeOf.get(id);
+    if (!call || !probe || call.in_loop || baseName(call.callee) !== "line") return undefined;
+    const verts = call.args.flatMap((a, i) => (a.key === null ? [i] : []));
+    const closed = call.args.some((a) => a.key === "close" && a.text.trim() === "true");
+    return { call, probe, verts, closed };
+  }
+
+  /** Starts continuing an open line from its first or last vertex with the join tool. */
+  function continueLine(id: number, start: boolean) {
+    const path = editablePath(id);
+    if (!path || path.closed || path.verts.length < 2) return;
+    const [first, last] = [path.verts[0], path.verts[path.verts.length - 1]];
+    const from = argHandle(path.call, path.probe, start ? first : last)?.point;
+    const other = argHandle(path.call, path.probe, start ? last : first)?.point;
+    if (!from || !other) return;
+    editor.selection = [id];
+    editor.pointSelection = [];
+    editor.tool = "join";
+    const extend = { call: id, start, from, other, frame: frameOf(path.probe), transform: path.probe.transform };
+    joining = { refs: [], pages: [], links: [], extend };
+  }
+
+  /** The open selected line whose end vertex is near `p`, for the join tool to continue. */
+  function selectedEndAt(p: Point): { call: number; start: boolean } | undefined {
+    if (editor.selected.length !== 1) return undefined;
+    const path = editablePath(editor.selected[0]);
+    if (!path || path.closed || path.verts.length < 2) return undefined;
+    const ends = [path.verts[0], path.verts[path.verts.length - 1]];
+    for (const [k, arg] of ends.entries()) {
+      const at = argHandle(path.call, path.probe, arg)?.point;
+      if (at && Math.hypot(at[0] - p[0], at[1] - p[1]) * editor.zoom < 8) return { call: path.call.id, start: k === 0 };
+    }
+    return undefined;
+  }
+
+  /** Inserts a vertex on the line's segment nearest `p`, on the grid when snapping. */
+  function addVertexAt(id: number, p: Point) {
+    const path = editablePath(id);
+    if (!path) return;
+    const pages = path.verts.map((arg) => argHandle(path.call, path.probe, arg)?.point);
+    let best: { at: number; q: Point; dist: number } | undefined;
+    const count = path.closed ? pages.length : pages.length - 1;
+    for (let k = 0; k < count; k++) {
+      const [a, b] = [pages[k], pages[(k + 1) % pages.length]];
+      if (!a || !b) continue;
+      const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+      const q: Point = [a[0] + t * dx, a[1] + t * dy];
+      const dist = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      // The closing segment's new vertex goes after the last one.
+      if (!best || dist < best.dist) best = { at: k + 1 < pages.length ? path.verts[k + 1] : path.verts[k] + 1, q, dist };
+    }
+    if (!best) return;
+    const [x, y] = pageToLocal(frameOf(path.probe), path.probe.transform, best.q).map((v) => editor.snapValue(v));
+    editor.edit({ kind: "insert-args", call: id, at: best.at, texts: [`(${num(x)}, ${num(y)})`] });
+  }
+
+  // --- Context menu --------------------------------------------------------
+
+  type MenuItem = { label: string; run: () => void };
+  /** The right-click menu, at screen pixels in the viewport. */
+  let menu = $state<{ at: Point; items: MenuItem[] }>();
+
+  function oncontextmenu(e: MouseEvent) {
+    if (joining || drag || editor.tool !== "select") return;
+    const p = pagePoint(e);
+    const items: MenuItem[] = [];
+    const grab = grabAt(p);
+    const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+    if (grab && "handle" in grab) {
+      const { call, arg } = grab.handle;
+      const path = editablePath(call);
+      if (path) {
+        const end = path.verts.indexOf(arg) === 0 ? "start" : arg === path.verts[path.verts.length - 1] ? "end" : undefined;
+        if (end && !path.closed) items.push({ label: "Continue line from here", run: () => continueLine(call, end === "start") });
+        if (path.verts.length > (path.closed ? 3 : 2)) {
+          items.push({ label: "Remove point", run: () => editor.edit({ kind: "remove-arg", call, arg, keep: path.closed ? 3 : 2 }) });
+        }
+      }
+    } else if (hit !== null && hit !== undefined && editablePath(Number(hit))) {
+      const id = Number(hit);
+      const path = editablePath(id)!;
+      editor.selection = [id];
+      editor.pointSelection = [];
+      items.push({ label: "Add point here", run: () => addVertexAt(id, p) });
+      if (!path.closed) {
+        items.push({ label: "Continue from start", run: () => continueLine(id, true) });
+        items.push({ label: "Continue from end", run: () => continueLine(id, false) });
+      }
+      if (path.closed || path.verts.length >= 3) {
+        items.push({
+          label: path.closed ? "Open path" : "Close path",
+          run: () => editor.edit({ kind: "set-named", call: id, key: "close", text: path.closed ? null : "true" }),
+        });
+      }
+    }
+    if (items.length === 0) return;
+    e.preventDefault();
+    const r = viewport.getBoundingClientRect();
+    menu = { at: [e.clientX - r.left, e.clientY - r.top], items };
+  }
 
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
@@ -491,10 +609,11 @@
    * vertex or shape anchor; else the grid. ⌘ skips all snapping.
    */
   function toolTarget(p: Point, join: boolean): { page: Point; local: Point; snap?: Snap } {
-    const { frame, transform } = creationFrame();
-    const last = joining?.pages[joining.pages.length - 1];
+    const extend = join ? joining?.extend : undefined;
+    const { frame, transform } = extend ?? creationFrame();
+    const last = lastJoined(joining);
     if (join && mods.angle && last) return angled(frame, transform, last, p);
-    const snap = join ? findSnap(p, undefined, { vertices: true }) : undefined;
+    const snap = join ? findSnap(p, extend?.call, { vertices: true }) : undefined;
     if (snap) return { page: snap.point, local: pageToLocal(frame, transform, snap.point), snap };
     const local = snapPoint(frame, transform, p);
     return { page: editor.toPage(frame, transformPoint(transform, local)), local };
@@ -512,14 +631,19 @@
   }
 
   function joinAt(p: Point, double: boolean) {
+    // Starting on an end of the selected line continues it.
+    const end = joining ? undefined : selectedEndAt(p);
+    if (end) return continueLine(end.call, end.start);
     const path = joining ?? { refs: [], pages: [], links: [] };
+    const { extend } = path;
     // Closing on the first point is checked against the raw pointer, so an
     // angle-locked ray doesn't stop you landing on it.
     const near = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]) * editor.zoom < 8;
-    if (path.pages.length >= 3 && near(path.pages[0], p)) return finishJoin(path, true);
-    if (double && path.pages.length >= 2) return finishJoin(path, false);
+    if (extend ? path.pages.length >= 1 && near(extend.other, p) : path.pages.length >= 3 && near(path.pages[0], p)) return finishJoin(path, true);
+    if (double && path.pages.length >= (extend ? 1 : 2)) return finishJoin(path, false);
     const target = toolTarget(p, true);
-    if (path.pages.length > 0 && near(path.pages[path.pages.length - 1], target.page)) return;
+    const last = lastJoined(path);
+    if (last && near(last, target.page)) return;
     const literal = `(${num(target.local[0])}, ${num(target.local[1])})`;
     // With ⌥ the point lands where it snapped but stays a literal.
     const snap = mods.detach ? undefined : target.snap;
@@ -529,11 +653,12 @@
     const name = snap?.target !== undefined ? editor.callById.get(snap.target)?.name : undefined;
     if (name && snap?.anchor !== undefined) ref = JSON.stringify(`${name}.${snap.anchor}`);
     else if (snap && snap.ref === undefined) links = [...links, { arg: path.refs.length, snap }];
-    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page], links };
+    joining = { ...path, refs: [...path.refs, ref], pages: [...path.pages, target.page], links };
   }
 
   function finishJoin(path: Joining, closed: boolean) {
     joining = undefined;
+    if (path.extend) return finishExtend(path, path.extend, closed);
     if (path.refs.length < 2) return;
     const text = `line(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
@@ -541,13 +666,31 @@
     if (editor.chain(steps)) editor.tool = "select";
   }
 
+  /** Adds the joined steps to the end of the line being continued, and closes it if asked. */
+  function finishExtend(path: Joining, extend: Extending, closed: boolean) {
+    const line = editablePath(extend.call);
+    const n = path.refs.length;
+    if (!line || n === 0) return;
+    // From the start, the steps go in before the first vertex, nearest it last.
+    const at = extend.start ? line.verts[0] : line.verts[line.verts.length - 1] + 1;
+    const texts = extend.start ? [...path.refs].reverse() : path.refs;
+    const argOf = (k: number) => (extend.start ? at + n - 1 - k : at + k);
+    const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert-args", call: extend.call, at, texts }];
+    for (const { arg, snap } of path.links) steps.push(({ map }) => snapEdit(map(extend.call), argOf(arg), snap, map));
+    if (closed) steps.push(({ map }) => ({ kind: "set-named", call: map(extend.call), key: "close", text: "true" }));
+    if (editor.chain(steps)) editor.tool = "select";
+  }
+
   const joinPreview = $derived.by(() => {
-    if (!joining || joining.pages.length === 0) return undefined;
-    const pages = toolHover ? [...joining.pages, toolHover.page] : joining.pages;
+    if (!joining) return undefined;
+    const from = joining.extend ? [joining.extend.from] : [];
+    const pages = [...from, ...joining.pages, ...(toolHover ? [toolHover.page] : [])];
+    if (pages.length < 2) return undefined;
     return pages.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
   });
 
   function onpointerdown(e: PointerEvent) {
+    menu = undefined;
     if (e.button === 2) return;
     viewport.setPointerCapture(e.pointerId);
     const p = pagePoint(e);
@@ -925,6 +1068,11 @@
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "Shift" || e.key === "Meta" || e.key === "Control" || e.key === "Alt") readMods(e);
+    if (menu && e.key === "Escape") {
+      e.stopImmediatePropagation();
+      menu = undefined;
+      return;
+    }
     if (joining && !(e.target as HTMLElement).closest?.(".cm-editor") && !(e.target instanceof HTMLInputElement)) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -970,6 +1118,7 @@
   {onpointermove}
   {onpointerup}
   {ondblclick}
+  {oncontextmenu}
   onpointerleave={() => {
     editor.hovered = undefined;
     nearGrab = undefined;
@@ -1082,9 +1231,14 @@
         {#if preview}<path class="preview" d={preview} />{/if}
         {#if joinPreview}<path class="preview" d={joinPreview} />{/if}
         {#if joining}
+          <!-- The white step is where clicking closes the path. -->
+          {@const closer = joining.extend?.other ?? joining.pages[0]}
           {#each joining.pages as q, i (i)}
-            <circle class="join-step" class:first={i === 0} cx={q[0]} cy={q[1]} r={(i === 0 ? 4.5 : 3) / editor.zoom} />
+            <circle class="join-step" cx={q[0]} cy={q[1]} r={3 / editor.zoom} />
           {/each}
+          {#if closer}
+            <circle class="join-step first" cx={closer[0]} cy={closer[1]} r={4.5 / editor.zoom} />
+          {/if}
         {/if}
         {#if toolHover && !toolHover.snap}
           <path
@@ -1118,7 +1272,30 @@
         }}
       />
     {/if}
-    {#if joining}
+    {#if menu}
+      <div
+        class="menu"
+        role="menu"
+        tabindex="-1"
+        style:left="{Math.min(menu.at[0], width - 190)}px"
+        style:top="{Math.min(menu.at[1], height - 8 - 32 * menu.items.length)}px"
+        onpointerdown={(e) => e.stopPropagation()}
+        oncontextmenu={(e) => e.preventDefault()}
+      >
+        {#each menu.items as item (item.label)}
+          <button
+            role="menuitem"
+            onclick={() => {
+              menu = undefined;
+              item.run();
+            }}>{item.label}</button
+          >
+        {/each}
+      </div>
+    {/if}
+    {#if joining?.extend}
+      <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "create" && isLineTool()}
       <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
@@ -1285,6 +1462,35 @@
     font-size: 12px;
     pointer-events: none;
     white-space: nowrap;
+  }
+  .menu {
+    position: absolute;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    min-width: 180px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  }
+  .menu button {
+    padding: 6px 10px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: default;
+  }
+  .menu button:hover,
+  .menu button:focus-visible {
+    background: var(--accent);
+    color: white;
+    outline: none;
   }
   .marquee {
     fill: color-mix(in srgb, var(--accent) 8%, transparent);

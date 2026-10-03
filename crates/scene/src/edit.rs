@@ -53,6 +53,12 @@ pub enum Edit {
     SetCoord { call: usize, arg: usize, x: f64, y: f64 },
     /// Replace an argument's value with raw Typst source text.
     SetArgText { call: usize, arg: usize, text: String },
+    /// Insert positional arguments (raw Typst source text) before argument
+    /// `at`, or after the last argument when `at` is past the end: new
+    /// vertices for a path.
+    InsertArgs { call: usize, at: usize, texts: Vec<String> },
+    /// Remove one positional argument, leaving at least `keep` of them.
+    RemoveArg { call: usize, arg: usize, keep: usize },
     /// Set (`Some`) or remove (`None`) a named argument.
     SetNamed { call: usize, key: String, text: Option<String> },
     Delete { calls: Vec<usize> },
@@ -242,6 +248,34 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
         Edit::SetArgText { call, arg, text } => {
             let arg = find_arg(&scene, *call, *arg)?;
             patches.push(patch(arg.value_range.clone(), text.clone()));
+        }
+        Edit::InsertArgs { call, at, texts } => {
+            let call = find_call(&scene, *call)?;
+            if texts.is_empty() {
+                return Err("nothing to insert".into());
+            }
+            let list = texts.join(", ");
+            match (call.args.get(*at), call.args.last()) {
+                (Some(arg), _) => patches.push(patch(arg.range.start..arg.range.start, format!("{list}, "))),
+                (None, Some(last)) => patches.push(patch(last.range.end..last.range.end, format!(", {list}"))),
+                (None, None) => {
+                    let close = call.args_close.ok_or("call has no argument list")?;
+                    patches.push(patch(close..close, list));
+                }
+            }
+        }
+        Edit::RemoveArg { call, arg, keep } => {
+            let call = find_call(&scene, *call)?;
+            let target = call.args.get(*arg).filter(|a| a.key.is_none()).ok_or("only a positional argument can be removed")?;
+            if call.args.iter().filter(|a| a.key.is_none()).count() <= *keep {
+                return Err(format!("a {} needs at least {keep} points", base_name(&call.callee)));
+            }
+            let range = match (arg.checked_sub(1).and_then(|i| call.args.get(i)), call.args.get(arg + 1)) {
+                (_, Some(next)) => target.range.start..next.range.start,
+                (Some(prev), None) => prev.range.end..target.range.end,
+                (None, None) => target.range.clone(),
+            };
+            patches.push(patch(range, String::new()));
         }
         Edit::SetNamed { call, key, text } => {
             let call = find_call(&scene, *call)?;
@@ -1054,6 +1088,33 @@ mod tests {
         let src = "#canvas({ circle() })";
         let out = apply(src, &Edit::SetNamed { call: 10, key: "radius".into(), text: Some("2".into()) }).unwrap();
         assert_eq!(out.source, "#canvas({ circle(radius: 2) })");
+    }
+
+    #[test]
+    fn insert_args_adds_vertices_anywhere() {
+        let line = id("line");
+        let texts = vec!["(9, 9)".to_string(), "\"B\"".to_string()];
+        let out = run(Edit::InsertArgs { call: line, at: 0, texts: texts.clone() });
+        assert!(out.source.contains(r#"line((9, 9), "B", (0, 0), (1.5,-2)"#), "{}", out.source);
+        let out = run(Edit::InsertArgs { call: line, at: 3, texts: texts.clone() });
+        assert!(out.source.contains(r#""a.east", (9, 9), "B", stroke: red"#), "{}", out.source);
+        let src = "#canvas({ line((0, 0), (1, 1)) })";
+        let out = apply(src, &Edit::InsertArgs { call: 10, at: 2, texts }).unwrap();
+        assert_eq!(out.source, r#"#canvas({ line((0, 0), (1, 1), (9, 9), "B") })"#);
+    }
+
+    #[test]
+    fn remove_arg_keeps_the_commas_right() {
+        let line = id("line");
+        let out = run(Edit::RemoveArg { call: line, arg: 1, keep: 2 });
+        assert!(out.source.contains(r#"line((0, 0), "a.east", stroke"#), "{}", out.source);
+        let out = run(Edit::RemoveArg { call: line, arg: 0, keep: 2 });
+        assert!(out.source.contains(r#"line((1.5,-2), "a.east""#), "{}", out.source);
+        assert!(apply(SRC, &Edit::RemoveArg { call: line, arg: 0, keep: 3 }).is_err());
+        assert!(apply(SRC, &Edit::RemoveArg { call: line, arg: 3, keep: 2 }).is_err());
+        let src = "#canvas({ line((0, 0), (1, 1), (2, 2)) })";
+        let out = apply(src, &Edit::RemoveArg { call: 10, arg: 2, keep: 2 }).unwrap();
+        assert_eq!(out.source, "#canvas({ line((0, 0), (1, 1)) })");
     }
 
     #[test]

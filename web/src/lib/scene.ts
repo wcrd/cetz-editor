@@ -99,6 +99,8 @@ export type Edit =
   | { kind: "rename-point"; point: number; name: string }
   | { kind: "set-coord"; call: number; arg: number; x: number; y: number }
   | { kind: "set-arg-text"; call: number; arg: number; text: string }
+  | { kind: "insert-args"; call: number; at: number; texts: string[] }
+  | { kind: "remove-arg"; call: number; arg: number; keep: number }
   | { kind: "set-named"; call: number; key: string; text: string | null }
   | { kind: "delete"; calls: number[] }
   | { kind: "insert"; canvas: number | null; text: string }

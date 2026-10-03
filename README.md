@@ -90,6 +90,13 @@ it's used by that name. The join tool (**J**) builds a path from points:
 `line("A", "B", "G", close: true)`, snapping to named points and to other
 shapes' anchors (an unnamed shape gets a name in the same undo step).
 
+**Editing a line's points.** Right-click a line for **Add point here** (on
+the nearest segment, on the grid when snapping), **Continue from start/end**
+and **Close/Open path**; right-click one of its points to remove it or carry
+on from it. With a line selected, starting the join tool on either end also
+carries on from there: the new points go into the same `line(..)`, and
+clicking the other end closes it.
+
 **Groups.** ⌘G (or Group in the inspector) wraps the selected shapes in
 `group(name: "group", { ... })` where the first of them was, and anything
 outside that used their names now goes through the group (`"box.east"` becomes
