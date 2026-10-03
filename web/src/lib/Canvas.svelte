@@ -7,6 +7,7 @@
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, type Call, type Edit } from "./scene";
   import { num } from "./format";
+  import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
 
   let { editor }: { editor: Editor } = $props();
@@ -837,22 +838,27 @@
     return { x0: -px / editor.zoom, y0: -py / editor.zoom, x1: (width - px) / editor.zoom, y1: (height - py) / editor.zoom };
   });
 
+  /**
+   * Grid lines in screen pixels, snapped like the rulers' ticks so the two
+   * line up exactly and stay sharp.
+   */
   const grid = $derived.by(() => {
     if (!editor.showGrid || !gridArea || editor.activeCanvas === undefined) return undefined;
     const { x0, y0, x1, y1 } = gridArea;
     const frame = editor.frameFor(editor.activeCanvas);
-    let step = editor.gridStep;
-    while (step * frame.length * editor.zoom < 8) step *= 2;
+    const step = visibleStep(editor.gridStep, frame.length * editor.zoom);
     const [cx0, cy1] = editor.toCanvas(frame, [x0, y0]);
     const [cx1, cy0] = editor.toCanvas(frame, [x1, y1]);
+    const [sx0, sy0] = [editor.pan[0] + x0 * editor.zoom, editor.pan[1] + y0 * editor.zoom];
+    const [sx1, sy1] = [editor.pan[0] + x1 * editor.zoom, editor.pan[1] + y1 * editor.zoom];
     let d = "";
-    for (let x = Math.ceil(cx0 / step) * step; x <= cx1; x += step) {
-      const [px] = editor.toPage(frame, [x, 0]);
-      d += `M${px},${y0}V${y1}`;
+    for (let i = Math.ceil(cx0 / step); i * step <= cx1; i++) {
+      const [px] = editor.toPage(frame, [i * step, 0]);
+      d += `M${crisp(editor.pan[0] + px * editor.zoom)},${sy0}V${sy1}`;
     }
-    for (let y = Math.ceil(cy0 / step) * step; y <= cy1; y += step) {
-      const [, py] = editor.toPage(frame, [0, y]);
-      d += `M${x0},${py}H${x1}`;
+    for (let i = Math.ceil(cy0 / step); i * step <= cy1; i++) {
+      const [, py] = editor.toPage(frame, [0, i * step]);
+      d += `M${sx0},${crisp(editor.pan[1] + py * editor.zoom)}H${sx1}`;
     }
     return d;
   });
@@ -917,8 +923,8 @@
     </div>
 
     <svg class="overlay" width={width} height={height}>
+      {#if grid}<path class="grid" d={grid} />{/if}
       <g transform="translate({editor.pan[0]} {editor.pan[1]}) scale({editor.zoom})">
-        {#if grid}<path class="grid" d={grid} />{/if}
         {#each editor.pageHeights.slice(0, -1) as _, i}
           {@const y = editor.pageHeights.slice(0, i + 1).reduce((a, b) => a + b, 0)}
           {#if editor.infinite && gridArea}

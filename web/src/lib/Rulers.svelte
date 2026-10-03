@@ -9,6 +9,7 @@
   // extent. Drawn over the viewport in screen pixels.
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
+  import { crisp, visibleStep } from "./pixels";
 
   type Box = { x0: number; y0: number; x1: number; y1: number };
   let {
@@ -38,8 +39,7 @@
 
   /** Minor ticks on the grid step (thinned like the grid); labels on round numbers that land on one. */
   const steps = $derived.by(() => {
-    let minor = editor.gridStep;
-    while (minor * scale < 6) minor *= 2;
+    const minor = visibleStep(editor.gridStep, scale);
     for (let exp = -3; exp <= 9; exp++) {
       for (const m of [1, 2, 2.5, 5]) {
         const major = m * 10 ** exp;
@@ -58,7 +58,7 @@
     for (let i = Math.ceil(lo / minor); i <= Math.floor(hi / minor); i++) {
       const v = i * minor;
       const r = v / major;
-      out.push({ at: Math.round(toScreen(v)) + 0.5, label: Math.abs(r - Math.round(r)) < 1e-6 ? num(v) : undefined });
+      out.push({ at: crisp(toScreen(v)), label: Math.abs(r - Math.round(r)) < 1e-6 ? num(v) : undefined });
     }
     return out;
   }
@@ -101,7 +101,7 @@
   {/each}
 
   {#if cursor}
-    <path class="cursor" d="M{Math.round(cursor[0]) + 0.5},0V{RULER}M0,{Math.round(cursor[1]) + 0.5}H{RULER}" />
+    <path class="cursor" d="M{crisp(cursor[0])},0V{RULER}M0,{crisp(cursor[1])}H{RULER}" />
   {/if}
 
   <rect class="bg corner" x="0" y="0" width={RULER} height={RULER} />
