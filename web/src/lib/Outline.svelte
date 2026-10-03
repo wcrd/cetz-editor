@@ -708,13 +708,14 @@
     color: var(--text);
     background: color-mix(in srgb, var(--text) 10%, transparent);
   }
-  /* The delete button stands in for the use count while the row is hovered. */
+  /* The delete button stands in for the use count while the row is hovered,
+     or tabbed to (a clicked button keeps focus, but shouldn't stay shown). */
   .row:hover .remove,
-  .row:focus-within .remove {
+  .row:has(:focus-visible) .remove {
     display: block;
   }
   .row.point:hover .uses,
-  .row.point:focus-within .uses {
+  .row.point:has(:focus-visible) .uses {
     display: none;
   }
   .chevron {
