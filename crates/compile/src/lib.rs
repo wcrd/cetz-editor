@@ -352,7 +352,7 @@ mod tests {
             return;
         };
         let source = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\
-            #canvas({\n  import draw: *\n  rect((0, 0), (2, 1), name: \"r\")\n  \
+            #canvas({\n  import draw: *\n  rect((0, 0), (2, 1), name: \"r\", fill: blue)\n  \
             for x in (0, 1) { circle((x, 3), radius: 0.5) }\n})";
         let mut world = EditorWorld::new();
         world.set_main_probed(source);
@@ -370,6 +370,8 @@ mod tests {
         assert_eq!(rect["name"], "r");
         assert_point(&rect["anchors"]["north-east"], [2.0, 1.0]);
         assert_eq!(rect["drawables"][0]["type"], "path");
+        assert_eq!(rect["drawables"][0]["fill"], "#0074d9");
+        assert_eq!(probes[1]["drawables"][0]["fill"], serde_json::Value::Null);
         assert_point(&probes[2]["anchors"]["center"], [1.0, 3.0]);
     }
 

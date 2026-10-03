@@ -228,6 +228,15 @@
     return call.args.some((a) => a.key === "mark") || paths.length > 1 ? "arrow" : "line";
   }
 
+  /** The colour a closed shape is filled with, from the first repetition that has one. */
+  function fillOf(call: Call, kind: Kind): string | undefined {
+    if (kind !== "rect" && kind !== "circle" && kind !== "polygon") return undefined;
+    for (const probe of editor.probesById.get(call.id) ?? []) {
+      const path = probe.drawables.find((d) => d.type === "path" && d.segments[0]?.[1]);
+      if (path?.type === "path" && path.fill) return path.fill;
+    }
+  }
+
   // Hovers from here get the canvas's stronger (orange) highlight.
   function hoverShape(id: number) {
     editor.hoverSource = "panel";
@@ -436,7 +445,7 @@
             onpointerleave={() => (editor.hovered = undefined)}
           >
             <span class="icon" title={kind}>
-              <svg viewBox="0 0 24 24"><path d={ICONS[kind]} /></svg>
+              <svg viewBox="0 0 24 24"><path d={ICONS[kind]} style:fill={fillOf(call, kind)} /></svg>
               {#if looped}
                 <span class="flow" title="Drawn by a loop">↻</span>
               {:else if call.conditional}

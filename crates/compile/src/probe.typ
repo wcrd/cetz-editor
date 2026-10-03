@@ -7,6 +7,13 @@
 // size, and has zero size so it never changes the rendering. Coupled to CeTZ
 // 0.5's element/drawable structures.
 
+// A fill as a CSS colour: gradients by their middle colour, tilings dropped.
+#let __cetz_probe_fill(fill) = if type(fill) == color {
+  rgb(fill).to-hex()
+} else if type(fill) == gradient {
+  rgb(fill.sample(50%)).to-hex()
+} else { none }
+
 #let __cetz_probe(id, elements) = {
   if type(elements) != array { return elements }
   elements.map(el => if type(el) != function { el } else { ctx => {
@@ -28,7 +35,7 @@
         "hidden" not in tags and "cetz-editor-probe" not in tags
       })
       .map(d => if d.type == "path" {
-        (type: "path", segments: d.segments)
+        (type: "path", segments: d.segments, fill: __cetz_probe_fill(d.at("fill", default: none)))
       } else {
         (type: d.type, pos: d.pos, width: d.width, height: d.height)
       })

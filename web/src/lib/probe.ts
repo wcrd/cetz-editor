@@ -10,7 +10,8 @@ export type Segment = ["l", ...Vec3[]] | ["c", Vec3, Vec3, Vec3];
 export type SubPath = [Vec3, boolean, Segment[]];
 
 export type ProbeDrawable =
-  | { type: "path"; segments: SubPath[] }
+  /** `fill` is the CSS colour CeTZ filled the path with, or null. */
+  | { type: "path"; segments: SubPath[]; fill: string | null }
   | { type: "content"; pos: Vec3; width: number; height: number };
 
 export interface Probe {
