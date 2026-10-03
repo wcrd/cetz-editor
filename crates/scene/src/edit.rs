@@ -90,6 +90,11 @@ pub enum Edit {
     /// in their block, refusing like `Arrange` would. `created` holds the
     /// calls, or is empty when nothing changed.
     Reorder { calls: Vec<usize>, target: usize, after: bool },
+    /// Move every `anchor(..)` statement (and loop of them) up to the top of
+    /// its block, before the first statement that draws, keeping their
+    /// order. One stops early below a transform (its coordinates are in that
+    /// frame) or anything it uses. Fails if none move.
+    GatherAnchors,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -360,6 +365,19 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (stmts, selected) = block_stmts(source, &scene, &root, &calls)?;
             let order = arrange(&stmts, &selected, *to)?;
             restack(source, &stmts, &order, &selected, &mut patches, &mut created);
+        }
+        Edit::GatherAnchors => {
+            let text = gather_anchors(source)?;
+            // One patch over what changed.
+            let mut start = source.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+            let mut end = source.bytes().rev().zip(text.bytes().rev()).take_while(|(a, b)| a == b).count().min(source.len().min(text.len()) - start);
+            while !source.is_char_boundary(start) || !text.is_char_boundary(start) {
+                start -= 1;
+            }
+            while !source.is_char_boundary(source.len() - end) || !text.is_char_boundary(text.len() - end) {
+                end -= 1;
+            }
+            patches.push(patch(start..source.len() - end, text[start..text.len() - end].to_string()));
         }
         Edit::Reorder { calls, target, after } => {
             let calls = outermost(&scene, calls)?;
@@ -1039,12 +1057,82 @@ fn block_stmts<'a>(source: &str, scene: &Scene, root: &LinkedNode<'a>, calls: &[
             None => code = Some(parent.clone()),
         }
     }
-    let code = code.ok_or("nothing to reorder")?;
-    let nodes: Vec<LinkedNode> = code.children().filter(|c| !is_trivia(c.kind())).collect();
-    let own_lines = nodes.iter().all(|n| own_line(source, &n.range()));
-    let stmts: Vec<Stmt> = nodes.into_iter().map(|node| stmt(source, scene, node, own_lines, code.offset())).collect();
+    let stmts = code_stmts(source, scene, &code.ok_or("nothing to reorder")?);
     let selected = calls.iter().filter_map(|c| stmts.iter().position(|s| s.node.range() == c.range)).collect();
     Ok((stmts, selected))
+}
+
+fn code_stmts<'a>(source: &str, scene: &Scene, code: &LinkedNode<'a>) -> Vec<Stmt<'a>> {
+    let nodes: Vec<LinkedNode> = code.children().filter(|c| !is_trivia(c.kind())).collect();
+    let own_lines = nodes.iter().all(|n| own_line(source, &n.range()));
+    nodes.into_iter().map(|node| stmt(source, scene, node, own_lines, code.offset())).collect()
+}
+
+/// The source with each block's anchors gathered (see `Edit::GatherAnchors`).
+fn gather_anchors(source: &str) -> Result<String, String> {
+    let mut text = source.to_string();
+    // A block at a time, re-parsing after each since moves shift offsets.
+    'blocks: loop {
+        let scene = scene::parse(&text);
+        let root = typst_syntax::parse(&text);
+        let root = LinkedNode::new(&root);
+        let mut blocks = Vec::new();
+        for canvas in &scene.canvases {
+            if let Some(body) = find_node(&root, &canvas.body, SyntaxKind::CodeBlock) {
+                code_blocks(&body, &mut blocks);
+            }
+        }
+        for code in blocks {
+            let stmts = code_stmts(&text, &scene, &code);
+            let order = gathered(&scene, &stmts);
+            if order.iter().enumerate().any(|(i, &o)| i != o) {
+                let (mut patches, mut created) = (Vec::new(), Vec::new());
+                restack(&text, &stmts, &order, &[], &mut patches, &mut created);
+                text = finish(&text, patches, vec![])?.source;
+                continue 'blocks;
+            }
+        }
+        break;
+    }
+    if text == source {
+        return Err("the anchors are already at the top".into());
+    }
+    Ok(text)
+}
+
+/// Every `Code` node in the tree: block bodies, nested ones included.
+fn code_blocks<'a>(node: &LinkedNode<'a>, out: &mut Vec<LinkedNode<'a>>) {
+    if node.kind() == SyntaxKind::Code {
+        out.push(node.clone());
+    }
+    for child in node.children() {
+        code_blocks(&child, out);
+    }
+}
+
+/// The block's order with its anchor statements moved up in turn, each as
+/// far as it can go past statements that draw.
+fn gathered(scene: &Scene, stmts: &[Stmt]) -> Vec<usize> {
+    let is_anchor = |s: &Stmt| {
+        let calls = top_calls(scene, &s.node.range());
+        !s.is_let && !calls.is_empty() && calls.iter().all(|c| matches!(base_name(&c.callee), "anchor" | "copy-anchors"))
+    };
+    let mut order: Vec<usize> = (0..stmts.len()).collect();
+    for s in (0..stmts.len()).filter(|&s| is_anchor(&stmts[s])) {
+        let at = order.iter().position(|&o| o == s).unwrap();
+        let mut dest = at;
+        for k in (0..at).rev() {
+            if conflict(&stmts[s], &stmts[order[k]]).is_some() {
+                break;
+            }
+            if stmts[order[k]].draws {
+                dest = k;
+            }
+        }
+        order.remove(at);
+        order.insert(dest, s);
+    }
+    order
 }
 
 /// Whether the statement at `range` has its line to itself, but for a `;` and
@@ -1461,6 +1549,11 @@ mod tests {
             let scene = crate::parse(&src);
             let count = |s: &Scene| s.canvases.iter().map(|c| c.calls.len()).sum::<usize>();
             let total = count(&scene);
+            if let Ok(out) = apply(&src, &Edit::GatherAnchors) {
+                let summary = crate::summarize(&out.source);
+                assert!(summary.errors.is_empty(), "gathering anchors in {path:?}: {:?}\n{}", summary.errors, out.source);
+                assert_eq!(count(&crate::parse(&out.source)), total);
+            }
             for call in scene.canvases.iter().flat_map(|c| &c.calls) {
                 let edits = [
                     Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5, detach: false },
@@ -1583,6 +1676,20 @@ mod tests {
         let out = apply(src, &Edit::AddPoint { canvas: None, x: 2.0, y: 1.0, name: None }).unwrap();
         assert!(out.source.contains("anchor(\"P1\", (0, 0))\n  anchor(\"P2\", (2, 1))\n  rect("), "{}", out.source);
         assert_eq!(&out.source[out.created[0]..out.created[0] + 6], "(2, 1)");
+    }
+
+    #[test]
+    fn gather_anchors_moves_them_up_in_order_within_their_frame() {
+        let src = "#canvas({\n  import draw: *\n  anchor(\"A\", (0, 0))\n  rect(\"A\", (1, 1), name: \"r\")\n  // the tip\n  anchor(\"B\", (2, 2))\n  anchor(\"C\", \"r.east\")\n  line(\"A\", \"B\", \"C\")\n  rotate(30deg)\n  circle((0, 0))\n  anchor(\"D\", (1, 0))\n  group({\n    circle((0, 0))\n    anchor(\"E\", (1, 1))\n  })\n})\n";
+        let out = apply(src, &Edit::GatherAnchors).unwrap();
+        assert_eq!(
+            out.source,
+            "#canvas({\n  import draw: *\n  anchor(\"A\", (0, 0))\n  // the tip\n  anchor(\"B\", (2, 2))\n  rect(\"A\", (1, 1), name: \"r\")\n  anchor(\"C\", \"r.east\")\n  line(\"A\", \"B\", \"C\")\n  rotate(30deg)\n  anchor(\"D\", (1, 0))\n  circle((0, 0))\n  group({\n    anchor(\"E\", (1, 1))\n    circle((0, 0))\n  })\n})\n"
+        );
+        assert_eq!(apply(&out.source, &Edit::GatherAnchors).unwrap_err(), "the anchors are already at the top");
+        // A loop of anchors stays below the dictionary it reads.
+        let out = apply(SHARED, &Edit::GatherAnchors);
+        assert!(out.is_err() || out.unwrap().source.contains("let pts"));
     }
 
     #[test]

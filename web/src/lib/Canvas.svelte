@@ -676,6 +676,7 @@
         { label: "Select all", keys: `${modKey}A`, run: () => (editor.selection = editor.calls.filter((c) => editor.isSelectable(c)).map((c) => c.id)) },
         { label: "Zoom to fit", keys: `${modKey}0`, run: fit },
       ],
+      ...(editor.calls.some((c) => baseName(c.callee) === "anchor") ? [[{ label: "Gather anchors at top", run: () => editor.gatherAnchors() }]] : []),
       [
         { label: editor.showPoints ? "Hide points" : "Show points", keys: "P", run: () => (editor.showPoints = !editor.showPoints) },
         { label: editor.showGrid ? "Hide grid" : "Show grid", keys: "G", run: () => (editor.showGrid = !editor.showGrid) },

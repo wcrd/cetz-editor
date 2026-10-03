@@ -109,7 +109,8 @@ export type Edit =
   | { kind: "group"; calls: number[] }
   | { kind: "ungroup"; calls: number[] }
   | { kind: "arrange"; calls: number[]; to: Layer }
-  | { kind: "reorder"; calls: number[]; target: number; after: boolean };
+  | { kind: "reorder"; calls: number[]; target: number; after: boolean }
+  | { kind: "gather-anchors" };
 
 /** Where `arrange` moves shapes: past one shape drawn over or under them, or all the way. */
 export type Layer = "forward" | "backward" | "front" | "back";

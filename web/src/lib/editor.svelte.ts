@@ -406,6 +406,14 @@ export class Editor {
     if (this.selected.length) this.edit({ kind: "arrange", calls: this.selected, to });
   }
 
+  /** Moves every `anchor(..)` up to the top of its block, as far as it can go. */
+  gatherAnchors() {
+    if (!this.edit({ kind: "gather-anchors" })) return;
+    this.selection = [];
+    this.pointSelection = [];
+    this.flash("Gathered the anchors at the top");
+  }
+
   isGroup(id: number): boolean {
     return baseName(this.callById.get(id)?.callee ?? "") === "group";
   }
