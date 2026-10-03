@@ -362,6 +362,7 @@
   </header>
 
   <div class="tabs" role="tablist" aria-label="Open files">
+    <div class="tabs-label" aria-hidden="true">Tabs</div>
     {#each tabs.editors as t (t)}
       <div class="tab" class:active={t === editor} class:dirty={t.dirty && !tabs.isPristine(t)}>
         <button
@@ -634,7 +635,19 @@
     border-right: 1px solid var(--border);
     color: var(--muted);
   }
-  .tab:first-child {
+  /* Labelled like the panel headers ("Code"), lined up with their text. */
+  .tabs-label {
+    display: flex;
+    align-items: center;
+    flex: none;
+    padding: 0 12px 0 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .tabs-label + .tab {
     border-left: 1px solid var(--border);
   }
   .tab.active {
