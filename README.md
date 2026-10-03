@@ -62,6 +62,7 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
 | ⌘D / Delete | Duplicate / delete |
 | ⌘G / ⇧⌘G | Group the selection / ungroup the selected groups |
+| ⌘] / ⌘[ (Shift: all the way) | Bring forward / send backward |
 | ⌘Z / ⇧⌘Z | Undo / redo, for canvas and code edits alike |
 | ⌘O / ⌘S / ⇧⌘S | Open / save / save as. Saving writes back to the opened file in Chromium; other browsers download it |
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
@@ -93,10 +94,11 @@ it's used by that name. The join tool (**J**) builds a path from points:
 shapes' anchors (an unnamed shape gets a name in the same undo step).
 
 **Right-click menu.** Right-click anywhere on the canvas for what applies
-there: on shapes, Duplicate, Group (two or more), Ungroup and Delete (a shape
-outside the selection becomes the selection); on a named point, Rename, Select
-shapes using it and Delete; on empty canvas, Select all, Zoom to fit and the
-points and grid toggles; while joining, Finish, Close and Cancel.
+there: on shapes, Duplicate, Group (two or more), Ungroup, Bring forward or
+to front, Send backward or to back, and Delete (a shape outside the selection
+becomes the selection); on a named point, Rename, Select shapes using it and
+Delete; on empty canvas, Select all, Zoom to fit and the points and grid
+toggles; while joining, Finish, Close and Cancel.
 
 **Editing a line's points.** Right-click a line for **Add point here** (on
 the nearest segment, on the grid when snapping), **Continue from start/end**
@@ -104,6 +106,16 @@ and **Close/Open path**; right-click one of its points to remove it or carry
 on from it. With a line selected, starting the join tool on either end also
 carries on from there: the new points go into the same `line(..)`, and
 clicking the other end closes it.
+
+**Stacking.** CeTZ draws in code order, so what's in front is what comes later
+in its block. ⌘] moves the selection's code past the next statement that
+draws something, ⌘[ back past the previous one, and with Shift as far as it
+can go. In the outline, which lists shapes in code order (top is drawn
+first), drag a row to move it among the shapes in its block. A comment on the
+lines above a shape, or after it on its line, moves with it. Nothing moves
+past an `import`, a `set-style` or transform (that would change what it
+applies to), or a shape it uses by name or that uses it (`"box.east"` must
+come after `box`); the edit stops there, or refuses with a message.
 
 **Groups.** ⌘G (or Group in the inspector) wraps the selected shapes in
 `group(name: "group", { ... })` where the first of them was, and anything

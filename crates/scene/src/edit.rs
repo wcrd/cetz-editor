@@ -80,6 +80,25 @@ pub enum Edit {
     /// drawing: a group's own anchors in use, a transform that would leak, a
     /// name clash. `created` holds the calls that were their statements.
     Ungroup { calls: Vec<usize> },
+    /// Move the calls (statements of one block) toward the front, later in
+    /// the block so they're drawn over what they pass, or toward the back:
+    /// past one statement that draws, or as far as they can go. They stop
+    /// at an import, a style or transform, and anything they use or that
+    /// uses them. `created` holds the calls.
+    Arrange { calls: Vec<usize>, to: Layer },
+    /// Move the calls to just before (or `after`) the statement of `target`
+    /// in their block, refusing like `Arrange` would. `created` holds the
+    /// calls, or is empty when nothing changed.
+    Reorder { calls: Vec<usize>, target: usize, after: bool },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Layer {
+    Forward,
+    Backward,
+    Front,
+    Back,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -334,6 +353,24 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             for group in outermost(&scene, calls)? {
                 ungroup(source, &scene, group, &mut names, &mut patches, &mut created)?;
             }
+        }
+        Edit::Arrange { calls, to } => {
+            let calls = outermost(&scene, calls)?;
+            let root = typst_syntax::parse(source);
+            let root = LinkedNode::new(&root);
+            let (stmts, selected) = block_stmts(source, &scene, &root, &calls)?;
+            let order = arrange(&stmts, &selected, *to)?;
+            restack(source, &stmts, &order, &selected, &mut patches, &mut created);
+        }
+        Edit::Reorder { calls, target, after } => {
+            let calls = outermost(&scene, calls)?;
+            let root = typst_syntax::parse(source);
+            let root = LinkedNode::new(&root);
+            let (stmts, selected) = block_stmts(source, &scene, &root, &calls)?;
+            let target = find_call(&scene, *target)?;
+            let target = stmts.iter().position(|s| s.node.range() == target.range).ok_or("can only reorder shapes within the same block")?;
+            let order = reorder(&stmts, &selected, target, *after)?;
+            restack(source, &stmts, &order, &selected, &mut patches, &mut created);
         }
     }
 
@@ -936,6 +973,212 @@ fn ungroup(
     Ok(())
 }
 
+/// Calls that draw nothing, so passing them doesn't change what's in front.
+const INVISIBLE: &[&str] = &["anchor", "copy-anchors", "register-mark", "get-ctx", "hide"];
+
+/// A statement of a block, as `Arrange` and `Reorder` move it.
+struct Stmt<'a> {
+    node: LinkedNode<'a>,
+    /// What moves: the statement, with the comments on and above its line
+    /// when every statement in the block has a line of its own.
+    text: Range<usize>,
+    label: String,
+    /// Element names and variables it defines.
+    names: Vec<String>,
+    vars: Vec<String>,
+    /// An import or a rule: nothing moves past it.
+    fixed: bool,
+    /// A style or transform: it applies to what comes after it.
+    state: bool,
+    draws: bool,
+    is_let: bool,
+}
+
+/// The statements of the block the calls are in (they must share one) and
+/// which of them are the calls.
+fn block_stmts<'a>(source: &str, scene: &Scene, root: &LinkedNode<'a>, calls: &[&Call]) -> Result<(Vec<Stmt<'a>>, Vec<usize>), String> {
+    let mut code: Option<LinkedNode> = None;
+    for c in calls {
+        let node = find_node(root, &c.range, SyntaxKind::FuncCall).ok_or("can't find the shape")?;
+        let parent = node
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::Code)
+            .ok_or_else(|| format!("can't reorder {}(..): it's part of another expression", base_name(&c.callee)))?;
+        match &code {
+            Some(k) if k.range() != parent.range() => return Err("can only reorder shapes within the same block".into()),
+            Some(_) => {}
+            None => code = Some(parent.clone()),
+        }
+    }
+    let code = code.ok_or("nothing to reorder")?;
+    let nodes: Vec<LinkedNode> = code.children().filter(|c| !is_trivia(c.kind())).collect();
+    let own_lines = nodes.iter().all(|n| own_line(source, &n.range()));
+    let stmts: Vec<Stmt> = nodes.into_iter().map(|node| stmt(source, scene, node, own_lines, code.offset())).collect();
+    let selected = calls.iter().filter_map(|c| stmts.iter().position(|s| s.node.range() == c.range)).collect();
+    Ok((stmts, selected))
+}
+
+/// Whether the statement at `range` has its line to itself, but for a `;` and
+/// a trailing `// comment`.
+fn own_line(source: &str, range: &Range<usize>) -> bool {
+    let line_start = source[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = source[range.end..].find('\n').map_or(source.len(), |i| range.end + i);
+    let after = source[range.end..line_end].trim_start().trim_start_matches(';').trim_start();
+    source[line_start..range.start].trim().is_empty() && (after.is_empty() || after.starts_with("//"))
+}
+
+fn stmt<'a>(source: &str, scene: &Scene, node: LinkedNode<'a>, own_lines: bool, block_start: usize) -> Stmt<'a> {
+    let range = node.range();
+    let mut text = range.clone();
+    if own_lines {
+        // `// comment` lines right above it, and one after it on its line.
+        loop {
+            let line_start = source[..text.start].rfind('\n').map_or(0, |i| i + 1);
+            let Some(prev_start) = line_start.checked_sub(1).map(|end| source[..end].rfind('\n').map_or(0, |i| i + 1)) else { break };
+            let prev = &source[prev_start..line_start - 1];
+            if prev_start <= block_start || !prev.trim_start().starts_with("//") {
+                break;
+            }
+            text.start = prev_start + prev.len() - prev.trim_start().len();
+        }
+        let line_end = source[range.end..].find('\n').map_or(source.len(), |i| range.end + i);
+        if source[range.end..line_end].contains("//") {
+            text.end = line_end;
+        }
+    }
+    let kind = node.kind();
+    let is_let = kind == SyntaxKind::LetBinding;
+    let calls = top_calls(scene, &range);
+    let call = calls.iter().find(|c| c.range == range);
+    let label = match (kind, call) {
+        (SyntaxKind::FuncCall, Some(c)) => match &c.name {
+            Some(name) => format!("{}(name: {name:?})", base_name(&c.callee)),
+            None => format!("{}(..)", base_name(&c.callee)),
+        },
+        (SyntaxKind::ForLoop | SyntaxKind::WhileLoop, _) => "the loop".into(),
+        (SyntaxKind::Conditional, _) => "the if".into(),
+        _ => source[range.clone()].split(['(', '=', '{', '\n']).next().unwrap_or_default().trim().to_string(),
+    };
+    Stmt {
+        text,
+        label,
+        names: if is_let { vec![] } else { calls.iter().filter_map(|c| element_name(c)).collect() },
+        vars: if is_let { let_names(&node) } else { vec![] },
+        fixed: matches!(kind, SyntaxKind::ModuleImport | SyntaxKind::ModuleInclude | SyntaxKind::SetRule | SyntaxKind::ShowRule),
+        state: !is_let && calls.iter().any(|c| changes_state(c)),
+        draws: !is_let && !call.is_some_and(|c| INVISIBLE.contains(&base_name(&c.callee)) || changes_state(c)),
+        is_let,
+        node,
+    }
+}
+
+/// Why `a` can't change places with `b`, if it can't.
+fn conflict(a: &Stmt, b: &Stmt) -> Option<String> {
+    let past = format!("can't move {} past {}", a.label, b.label);
+    if a.fixed || b.fixed {
+        return Some(past);
+    }
+    if let Some(s) = [a, b].into_iter().find(|s| s.state).filter(|_| !a.is_let && !b.is_let) {
+        return Some(format!("{past}: it would change what {} applies to", s.label));
+    }
+    for (user, other) in [(a, b), (b, a)] {
+        if let Some(used) = uses_any(&user.node, &other.names, &other.vars) {
+            return Some(format!("{past}: {} uses {used}", user.label));
+        }
+    }
+    None
+}
+
+/// The block's new order for `Edit::Arrange`, as statement indices.
+fn arrange(stmts: &[Stmt], selected: &[usize], to: Layer) -> Result<Vec<usize>, String> {
+    let mut order: Vec<usize> = (0..stmts.len()).collect();
+    let forward = matches!(to, Layer::Forward | Layer::Front);
+    let one_step = matches!(to, Layer::Forward | Layer::Backward);
+    let mut moving = selected.to_vec();
+    moving.sort();
+    // The one nearest where they're going goes first, so the rest don't hop
+    // over it.
+    if forward {
+        moving.reverse();
+    }
+    let (mut moved, mut blocked) = (false, None);
+    for s in moving {
+        let at = order.iter().position(|&o| o == s).unwrap();
+        let (mut dest, mut k) = (at, at);
+        loop {
+            let next = if forward { k + 1 } else { k.wrapping_sub(1) };
+            let Some(&other) = order.get(next).filter(|o| !selected.contains(o)) else { break };
+            if let Some(why) = conflict(&stmts[s], &stmts[other]) {
+                blocked.get_or_insert(why);
+                break;
+            }
+            k = next;
+            // Only passing something drawn changes what's in front.
+            if stmts[other].draws {
+                dest = k;
+                if one_step {
+                    break;
+                }
+            }
+        }
+        if dest != at {
+            order.remove(at);
+            order.insert(dest, s);
+            moved = true;
+        }
+    }
+    if !moved {
+        return Err(blocked.unwrap_or_else(|| format!("already at the {}", if forward { "front" } else { "back" })));
+    }
+    Ok(order)
+}
+
+/// The block's new order for `Edit::Reorder`, as statement indices.
+fn reorder(stmts: &[Stmt], selected: &[usize], target: usize, after: bool) -> Result<Vec<usize>, String> {
+    let n = stmts.len();
+    if selected.contains(&target) {
+        return Ok((0..n).collect());
+    }
+    let mut order: Vec<usize> = (0..n).filter(|i| !selected.contains(i)).collect();
+    let at = order.iter().position(|&o| o == target).unwrap() + usize::from(after);
+    let mut moving = selected.to_vec();
+    moving.sort();
+    order.splice(at..at, moving);
+    let pos = |s: usize| order.iter().position(|&o| o == s).unwrap();
+    for &s in selected {
+        for u in (0..n).filter(|u| !selected.contains(u) && (s < *u) != (pos(s) < pos(*u))) {
+            if let Some(why) = conflict(&stmts[s], &stmts[u]) {
+                return Err(why);
+            }
+        }
+    }
+    Ok(order)
+}
+
+/// Rewrites the block in `order`, leaving the space between statements where
+/// it was. `created` gets the selected statements.
+fn restack(source: &str, stmts: &[Stmt], order: &[usize], selected: &[usize], patches: &mut Vec<Patch>, created: &mut Vec<(usize, usize)>) {
+    let changed: Vec<usize> = (0..order.len()).filter(|&k| order[k] != k).collect();
+    let (Some(&first), Some(&last)) = (changed.first(), changed.last()) else { return };
+    let mut text = String::new();
+    for (slot, &s) in order.iter().enumerate().take(last + 1).skip(first) {
+        if slot > first {
+            text.push_str(&source[stmts[slot - 1].text.end..stmts[slot].text.start]);
+        }
+        if selected.contains(&s) {
+            created.push((patches.len(), text.len() + stmts[s].node.offset() - stmts[s].text.start));
+        }
+        text.push_str(&source[stmts[s].text.clone()]);
+    }
+    patches.push(patch(stmts[first].text.start..stmts[last].text.end, text));
+    // Selected statements that stay put stay selected, through empty patches.
+    for &s in selected.iter().filter(|&&s| s < first || s > last) {
+        let at = stmts[s].node.offset();
+        created.push((patches.len(), 0));
+        patches.push(patch(at..at, String::new()));
+    }
+}
+
 fn is_trivia(kind: SyntaxKind) -> bool {
     matches!(kind, SyntaxKind::Space | SyntaxKind::Semicolon | SyntaxKind::LineComment | SyntaxKind::BlockComment)
 }
@@ -952,9 +1195,14 @@ fn element_name(call: &Call) -> Option<String> {
 /// Names of the elements drawn by the statement at `range` (not those nested
 /// in its groups, which are reached through the group's name).
 fn defined_names(scene: &Scene, range: &Range<usize>) -> Vec<String> {
+    top_calls(scene, range).iter().filter_map(|c| element_name(c)).collect()
+}
+
+/// The calls in `range` that aren't nested in another call there.
+fn top_calls<'s>(scene: &'s Scene, range: &Range<usize>) -> Vec<&'s Call> {
     let calls: Vec<&Call> =
         scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| range.start <= c.range.start && c.range.end <= range.end).collect();
-    calls.iter().filter(|c| !c.parent.is_some_and(|p| calls.iter().any(|o| o.id == p))).filter_map(|c| element_name(c)).collect()
+    calls.iter().filter(|c| !c.parent.is_some_and(|p| calls.iter().any(|o| o.id == p))).copied().collect()
 }
 
 /// The variables a `let` binds.
@@ -1185,7 +1433,8 @@ mod tests {
                     }
                 }
                 // These may refuse; when they apply, the file stays valid.
-                for edit in [Edit::Group { calls: vec![call.id] }, Edit::Ungroup { calls: vec![call.id] }] {
+                let arrange = [Layer::Forward, Layer::Backward, Layer::Front, Layer::Back].map(|to| Edit::Arrange { calls: vec![call.id], to });
+                for edit in [Edit::Group { calls: vec![call.id] }, Edit::Ungroup { calls: vec![call.id] }].into_iter().chain(arrange) {
                     if let Ok(out) = apply(&src, &edit) {
                         let summary = crate::summarize(&out.source);
                         assert!(summary.errors.is_empty(), "{edit:?} on {}: {:?}\n{}", call.callee, summary.errors, out.source);
@@ -1391,6 +1640,71 @@ mod tests {
         assert!(out.source.contains("    circle((0, 0))\n    rect((1, 1), (2, 2), name: \"r\")\n  })\n  line((0, 0), \"group.r.east\")"), "{}", out.source);
         let skip = apply(src, &Edit::Group { calls: vec![shared_id(src, "rect("), shared_id(src, "circle(")] }).unwrap();
         assert_eq!(skip.source, out.source);
+    }
+
+    const STACK: &str = "#canvas({\n  import draw: *\n  // the box\n  rect((0, 0), (4, 2), name: \"box\")\n  anchor(\"A\", (1, 1))\n  circle((1, 1)) // dot\n  content(\"box.center\", [Hi])\n})\n";
+
+    fn arranged(src: &str, callee: &str, to: Layer) -> Result<String, String> {
+        apply(src, &Edit::Arrange { calls: vec![shared_id(src, callee)], to }).map(|out| out.source)
+    }
+
+    #[test]
+    fn arrange_moves_past_one_drawn_statement_with_its_comments() {
+        let out = arranged(STACK, "circle(", Layer::Backward).unwrap();
+        assert_eq!(
+            out,
+            "#canvas({\n  import draw: *\n  circle((1, 1)) // dot\n  // the box\n  rect((0, 0), (4, 2), name: \"box\")\n  anchor(\"A\", (1, 1))\n  content(\"box.center\", [Hi])\n})\n"
+        );
+        // Forward passes the anchor, which draws nothing, on its way past
+        // the circle; then the content, which uses the box, stops it.
+        let out = arranged(STACK, "rect(", Layer::Forward).unwrap();
+        assert!(out.contains("draw: *\n  anchor(\"A\", (1, 1))\n  circle((1, 1)) // dot\n  // the box\n  rect("), "{out}");
+        assert_eq!(arranged(STACK, "rect(", Layer::Front).unwrap(), out);
+        let err = arranged(&out, "rect(", Layer::Forward).unwrap_err();
+        assert!(err.contains("content(..) uses box"), "{err}");
+        let out = arranged(STACK, "anchor(", Layer::Front).unwrap();
+        assert!(out.contains("content(\"box.center\", [Hi])\n  anchor(\"A\", (1, 1))\n})"), "{out}");
+    }
+
+    #[test]
+    fn arrange_to_the_back_stops_at_the_import_and_reports_the_edges() {
+        let out = arranged(STACK, "circle(", Layer::Back).unwrap();
+        assert!(out.starts_with("#canvas({\n  import draw: *\n  circle((1, 1)) // dot\n  // the box"), "{out}");
+        assert!(arranged(&out, "circle(", Layer::Back).unwrap_err().contains("past import"));
+        assert!(arranged(STACK, "content(", Layer::Forward).unwrap_err().contains("already at the front"));
+    }
+
+    #[test]
+    fn arrange_keeps_the_selection_and_moves_it_together() {
+        let calls = vec![shared_id(STACK, "anchor("), shared_id(STACK, "circle(")];
+        let out = apply(STACK, &Edit::Arrange { calls, to: Layer::Backward }).unwrap();
+        assert!(out.source.contains("draw: *\n  anchor(\"A\", (1, 1))\n  circle((1, 1)) // dot\n  // the box\n  rect("), "{}", out.source);
+        let mut picked: Vec<&str> = out.created.iter().map(|&id| &out.source[id..id + 6]).collect();
+        picked.sort();
+        assert_eq!(picked, ["anchor", "circle"]);
+    }
+
+    #[test]
+    fn arrange_refuses_to_cross_styles_and_works_inline() {
+        let src = "#canvas({ import draw: *; rect((0, 0), (1, 1)); set-style(fill: red); circle((0, 0)); line((0, 0), (1, 1)) })";
+        assert!(arranged(src, "circle(", Layer::Backward).unwrap_err().contains("what set-style(..) applies to"));
+        assert_eq!(
+            arranged(src, "circle(", Layer::Forward).unwrap(),
+            "#canvas({ import draw: *; rect((0, 0), (1, 1)); set-style(fill: red); line((0, 0), (1, 1)); circle((0, 0)) })"
+        );
+    }
+
+    #[test]
+    fn reorder_drops_before_or_after_a_target() {
+        let (circle, rect) = (shared_id(STACK, "circle("), shared_id(STACK, "rect("));
+        let out = apply(STACK, &Edit::Reorder { calls: vec![circle], target: rect, after: false }).unwrap();
+        assert_eq!(out.source, arranged(STACK, "circle(", Layer::Backward).unwrap());
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 6], "circle");
+        // Onto itself: nothing to do.
+        let out = apply(STACK, &Edit::Reorder { calls: vec![circle], target: circle, after: true }).unwrap();
+        assert_eq!(out.source, STACK);
+        let err = apply(STACK, &Edit::Reorder { calls: vec![rect], target: shared_id(STACK, "content("), after: true }).unwrap_err();
+        assert!(err.contains("uses box"), "{err}");
     }
 
     #[test]

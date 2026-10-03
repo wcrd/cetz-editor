@@ -107,7 +107,12 @@ export type Edit =
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "group"; calls: number[] }
-  | { kind: "ungroup"; calls: number[] };
+  | { kind: "ungroup"; calls: number[] }
+  | { kind: "arrange"; calls: number[]; to: Layer }
+  | { kind: "reorder"; calls: number[]; target: number; after: boolean };
+
+/** Where `arrange` moves shapes: past one shape drawn over or under them, or all the way. */
+export type Layer = "forward" | "backward" | "front" | "back";
 
 /** A change in byte offsets of the source it applies to. */
 export interface Patch {

@@ -236,6 +236,14 @@
       else editor.groupSelection();
       return;
     }
+    // ⌘] / ⌘[ forward / backward; with Shift, to the front / back. By key
+    // position: Shift turns ] into }.
+    if (mod && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+      e.preventDefault();
+      const forward = e.code === "BracketRight";
+      editor.arrangeSelection(e.shiftKey ? (forward ? "front" : "back") : forward ? "forward" : "backward");
+      return;
+    }
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       editor.selection = editor.calls.filter((c) => editor.isSelectable(c)).map((c) => c.id);

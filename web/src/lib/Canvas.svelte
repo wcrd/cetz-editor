@@ -615,6 +615,12 @@
         ...(selected.length > 1 ? [{ label: "Group", keys: `${modKey}G`, run: () => editor.groupSelection() }] : []),
         ...(selected.some((s) => editor.isGroup(s)) ? [{ label: "Ungroup", keys: `${shiftModKey}G`, run: () => editor.ungroupSelection() }] : []),
       ],
+      [
+        { label: "Bring to front", keys: `${shiftModKey}]`, run: () => editor.arrangeSelection("front") },
+        { label: "Bring forward", keys: `${modKey}]`, run: () => editor.arrangeSelection("forward") },
+        { label: "Send backward", keys: `${modKey}[`, run: () => editor.arrangeSelection("backward") },
+        { label: "Send to back", keys: `${shiftModKey}[`, run: () => editor.arrangeSelection("back") },
+      ],
       [{ label: "Delete", keys: "⌫", run: () => editor.deleteSelection() }],
     ];
   }

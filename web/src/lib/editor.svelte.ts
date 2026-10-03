@@ -18,6 +18,7 @@ import {
   utf8Length,
   type Call,
   type Edit,
+  type Layer,
   type Patch,
   type Range,
 } from "./scene";
@@ -398,6 +399,11 @@ export class Editor {
   ungroupSelection() {
     const groups = this.selected.filter((id) => this.isGroup(id));
     if (groups.length) this.edit({ kind: "ungroup", calls: groups });
+  }
+
+  /** Moves the selection in front of or behind other shapes, by moving its code. */
+  arrangeSelection(to: Layer) {
+    if (this.selected.length) this.edit({ kind: "arrange", calls: this.selected, to });
   }
 
   isGroup(id: number): boolean {

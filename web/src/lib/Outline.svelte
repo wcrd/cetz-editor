@@ -243,6 +243,67 @@
     editor.scope = call.parent ?? undefined;
     editor.selection = [call.id];
   }
+
+  // --- Reordering by drag --------------------------------------------------
+
+  let list = $state<HTMLUListElement>();
+  /** The row being dragged, and where it would land: before or after a sibling. */
+  let dragging = $state<Call>();
+  let drop = $state<{ target: number; after: boolean }>();
+
+  /** The row, or the ancestor of it, that sits in the same block as the dragged one. */
+  function siblingFor(call: Call): Call | undefined {
+    const moving = dragging;
+    if (!moving) return undefined;
+    for (let c: Call | undefined = call; c; c = c.parent === null ? undefined : editor.callById.get(c.parent)) {
+      if (c.parent === moving.parent && c.loop_id === moving.loop_id) return c.id === moving.id ? undefined : c;
+    }
+  }
+
+  /** The last row of a call's subtree, where a drop after it goes. */
+  function lastRow(call: Call): number {
+    const family = editor.family(call.id);
+    let last = call.id;
+    for (const r of rows) if (family.has(r.call.id)) last = r.call.id;
+    return last;
+  }
+
+  function rowEl(id: number): HTMLElement | null | undefined {
+    return list?.querySelector<HTMLElement>(`[data-row="${id}"]`);
+  }
+
+  function dragOver(e: DragEvent, call: Call) {
+    const target = siblingFor(call);
+    if (!target) {
+      drop = undefined;
+      return;
+    }
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    // Halfway down the sibling's whole subtree decides before or after.
+    const top = rowEl(target.id)?.getBoundingClientRect().top ?? 0;
+    const bottom = rowEl(lastRow(target))?.getBoundingClientRect().bottom ?? top;
+    drop = { target: target.id, after: e.clientY > (top + bottom) / 2 };
+  }
+
+  function dropHere(e: DragEvent) {
+    e.preventDefault();
+    if (dragging && drop) editor.edit({ kind: "reorder", calls: [dragging.id], ...drop });
+    endDrag();
+  }
+
+  function endDrag() {
+    dragging = undefined;
+    drop = undefined;
+  }
+
+  /** Which edge of a row shows the drop line. */
+  function dropEdge(id: number): "before" | "after" | undefined {
+    if (!drop) return undefined;
+    if (!drop.after) return drop.target === id ? "before" : undefined;
+    const target = editor.callById.get(drop.target);
+    return target && lastRow(target) === id ? "after" : undefined;
+  }
 </script>
 
 {#snippet pointName(p: Point, label: string)}
@@ -337,15 +398,30 @@
     Shapes
     {#if editor.scope !== undefined}<button class="link" onclick={() => (editor.scope = undefined)}>Exit group</button>{/if}
   </h3>
-  <ul>
+  <ul bind:this={list} ondragleave={(e) => !list?.contains(e.relatedTarget as Node) && (drop = undefined)}>
     {#each rows as { call, depth } (call.id)}
       {@const instances = editor.probesById.get(call.id) ?? []}
       {@const looped = call.in_loop}
       {@const kind = kindOf(call)}
       {@const defined = definedBy(call)}
       {@const open = unfolded.has(call.id)}
-      <li>
-        <div class="row shape" class:hovered={editor.hovered === call.id} style:padding-left="{4 + depth * 14}px">
+      {@const edge = dropEdge(call.id)}
+      <li data-row={call.id} class:drop-before={edge === "before"} class:drop-after={edge === "after"} ondragover={(e) => dragOver(e, call)} ondrop={dropHere}>
+        <div
+          class="row shape"
+          class:hovered={editor.hovered === call.id}
+          class:dragging={dragging?.id === call.id}
+          style:padding-left="{4 + depth * 14}px"
+          draggable="true"
+          title="Drag to change what's drawn in front"
+          role="listitem"
+          ondragstart={(e) => {
+            dragging = call;
+            e.dataTransfer?.setData("text/plain", editor.callText(call));
+            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          }}
+          ondragend={endDrag}
+        >
           {#if looped || defined.length > 0}
             <button class="chevron-button" onclick={() => (unfolded = toggle(unfolded, call.id))} aria-expanded={open} aria-label="Expand">
               <span class="chevron" class:open>›</span>
@@ -692,5 +768,30 @@
   .empty {
     color: var(--muted);
     padding: 8px;
+  }
+
+  /* Drag to reorder: the dragged row fades, a line marks where it lands. */
+  li[data-row] {
+    position: relative;
+  }
+  .row.dragging {
+    opacity: 0.4;
+  }
+  .drop-before::before,
+  .drop-after::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  .drop-before::before {
+    top: -1px;
+  }
+  .drop-after::after {
+    bottom: -1px;
   }
 </style>
