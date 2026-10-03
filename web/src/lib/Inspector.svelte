@@ -4,6 +4,9 @@
   import { tick } from "svelte";
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
+  import PropField from "./PropField.svelte";
+  import { DEFAULTS, parseText } from "./props";
+  import TextField from "./TextField.svelte";
   import { baseName, STATE_CALLS, type Arg, type Call } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
@@ -22,7 +25,7 @@
     const positional = call.args.filter((a) => a.key === null);
     const index = positional.indexOf(arg);
     const base = baseName(call.callee);
-    if (arg.value.type === "content") return "Text";
+    if (arg.value.type === "content" || parseText(arg.text)) return "Text";
     if (base === "content" || base === "circle" || base === "anchor") return index === (base === "anchor" ? 1 : 0) ? "Position" : `Argument ${i + 1}`;
     if (base === "rect") return index === 0 ? "Corner" : "Opposite corner";
     if (base === "line" || base === "bezier") return index === 0 ? "Start" : index === positional.length - 1 ? "End" : `Point ${index + 1}`;
@@ -31,8 +34,10 @@
 
   function summary(call: Call): string {
     if (call.name) return call.name;
-    const content = call.args.find((a) => a.value.type === "content");
-    if (content?.value.type === "content") return editor.index.slice(content.value.inner.start, content.value.inner.end);
+    for (const a of call.args) {
+      const text = a.key === null ? parseText(a.text) : null;
+      if (text) return text.body;
+    }
     return call.args[0]?.text ?? "";
   }
 
@@ -82,13 +87,6 @@
     editor.edit({ kind: "set-arg-text", call: call.id, arg: i, text });
   }
 
-  function setContent(call: Call, i: number, text: string) {
-    const arg = call.args[i];
-    if (arg.value.type !== "content") return;
-    if (editor.index.slice(arg.value.inner.start, arg.value.inner.end) === text) return;
-    editor.edit({ kind: "set-arg-text", call: call.id, arg: i, text: `[${text}]` });
-  }
-
   function setNamed(ids: number[], key: string, text: string | null) {
     if (text !== null && text.trim() === "") text = null;
     // Ids shift as earlier edits change the text; map each through the chain.
@@ -105,16 +103,11 @@
   let newValue = $state("");
   function addNamed(ids: number[]) {
     const key = newKey.trim();
-    if (!/^[a-zA-Z][\w-]*$/.test(key) || newValue.trim() === "") return;
-    setNamed(ids, key, newValue.trim());
+    const value = newValue.trim() || DEFAULTS[key];
+    if (!/^[a-zA-Z][\w-]*$/.test(key) || !value) return;
+    setNamed(ids, key, value);
     newKey = "";
     newValue = "";
-  }
-
-  /** A color picker writes `rgb("#rrggbb")`; read one back if that's what's there. */
-  function colorOf(text: string | undefined): string {
-    const m = text && /^rgb\("(#[0-9a-fA-F]{6})"\)$/.exec(text.trim());
-    return m ? m[1].toLowerCase() : "#000000";
   }
 
   function onKey(e: KeyboardEvent) {
@@ -172,16 +165,8 @@
                 <label>y <input type="number" step={editor.gridStep} value={num(arg.value.y)} onchange={(e) => setCoord(call, i, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
                 <button class="small" title="Make this a shared point other shapes can use" onclick={() => share(call, i)}>Share</button>
               </div>
-            {:else if arg.value.type === "content"}
-              {@const inner = editor.index.slice(arg.value.inner.start, arg.value.inner.end)}
-              <textarea
-                bind:this={primary}
-                rows="2"
-                value={inner}
-                onchange={(e) => setContent(call, i, e.currentTarget.value)}
-                onkeydown={onKey}
-                spellcheck="false"
-              ></textarea>
+            {:else if parseText(arg.text)}
+              <TextField bind:textarea={primary} text={arg.text} style={parseText(arg.text)!} commit={(t) => setArgText(call, i, t)} onkeydown={onKey} />
             {:else}
               <input class="code" value={arg.text} onchange={(e) => setArgText(call, i, e.currentTarget.value)} onkeydown={onKey} spellcheck="false" />
             {/if}
@@ -197,15 +182,7 @@
         <div class="row">
           <span class="label">{key}</span>
           <div class="value">
-            {#if key === "fill" || key === "stroke"}
-              <input
-                type="color"
-                value={colorOf(arg.text)}
-                onchange={(e) => setNamed([call.id], key, `rgb("${e.currentTarget.value}")`)}
-                title="Pick a color"
-              />
-            {/if}
-            <input class="code" value={arg.text} onchange={(e) => setNamed([call.id], key, e.currentTarget.value)} onkeydown={onKey} spellcheck="false" />
+            <PropField {key} text={arg.text} commit={(t) => setNamed([call.id], key, t)} onkeydown={onKey} />
             <button class="icon" title="Remove {key}" onclick={() => setNamed([call.id], key, null)}>×</button>
           </div>
         </div>
@@ -429,12 +406,8 @@
     align-items: center;
     min-width: 0;
   }
-  .value .code {
-    flex: 1;
-    min-width: 0;
-  }
-  input,
-  textarea {
+  .inspector :global(input),
+  .inspector :global(textarea) {
     font: inherit;
     color: inherit;
     background: var(--input-bg);
@@ -443,16 +416,16 @@
     padding: 3px 6px;
     box-sizing: border-box;
   }
-  input:focus,
-  textarea:focus {
+  .inspector :global(input:focus),
+  .inspector :global(textarea:focus) {
     outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
     border-color: var(--accent);
   }
-  .code {
+  .inspector :global(.code) {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 12px;
   }
-  textarea {
+  .inspector :global(textarea) {
     width: 100%;
     resize: vertical;
   }
@@ -473,7 +446,7 @@
     align-items: center;
     gap: 4px;
   }
-  button {
+  .inspector :global(button) {
     font: inherit;
     color: inherit;
     background: var(--button-bg);

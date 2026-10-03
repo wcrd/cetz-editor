@@ -31,6 +31,13 @@ pub fn scene(source: &str) -> String {
     serde_json::to_string(&cetz_scene::parse(source)).unwrap_or_else(|_| "{\"canvases\":[]}".into())
 }
 
+/// The structure of one argument value (see `cetz_scene::expr`) as JSON, or
+/// `null` if it isn't a single expression.
+#[wasm_bindgen]
+pub fn expr(text: &str) -> String {
+    serde_json::to_string(&cetz_scene::expr::parse(text)).unwrap_or_else(|_| "null".into())
+}
+
 /// Applies an edit (JSON, see `cetz_scene::Edit`) and returns the
 /// `EditResult` as JSON.
 #[wasm_bindgen]

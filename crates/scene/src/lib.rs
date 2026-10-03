@@ -1,6 +1,7 @@
 //! Parses CeTZ source into a scene the editor can manipulate.
 
 mod edit;
+pub mod expr;
 mod instrument;
 mod points;
 mod scene;
