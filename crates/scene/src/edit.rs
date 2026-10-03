@@ -254,14 +254,25 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             if (call, arg) == (from, from_arg) {
                 return Err("a point can't be shared with itself".into());
             }
+            let at = find_call(&scene, *call)?.range.start;
             let target = find_arg(&scene, *call, *arg)?;
             let from_call = find_call(&scene, *from)?;
             let source_arg = from_call.args.get(*from_arg).ok_or("no such argument")?;
-            let text = if source_arg.point.is_some() {
+            let late = || Err("can only share a point defined before this shape".to_string());
+            let text = if let Some(point) = source_arg.point {
+                let point = scene.points.iter().find(|p| p.id == point).ok_or("no such point")?;
+                if !defined_before(&scene, &point.range, at) {
+                    return late();
+                }
                 source_arg.text.clone()
             } else {
                 let name = unique_point_name(&scene);
-                extract_point(source, &scene, from_call, *from_arg, &name, &mut patches)?;
+                // The new anchor goes above the line it's taken from, which
+                // must also put it above this shape.
+                let anchor = extract_point(source, &scene, from_call, *from_arg, &name, &mut patches)?;
+                if !defined_before(&scene, &(anchor..anchor), at) {
+                    return late();
+                }
                 format!("{name:?}")
             };
             patches.push(patch(target.value_range.clone(), text));
@@ -331,8 +342,12 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             if call == target {
                 return Err("can't connect a call to itself".into());
             }
+            let at = find_call(&scene, *call)?.range.start;
             let arg = find_arg(&scene, *call, *arg)?;
             let target = find_call(&scene, *target)?;
+            if !defined_before(&scene, &target.range, at) {
+                return Err("can only connect to a shape drawn before this one".into());
+            }
             let name = match &target.name {
                 Some(name) => name.clone(),
                 None => {
@@ -751,8 +766,8 @@ fn valid_new_name(scene: &Scene, name: &str) -> Result<String, String> {
 }
 
 /// Turns a literal coordinate argument into `anchor("name", (x, y))` before
-/// its call, used as `"name"`.
-fn extract_point(source: &str, scene: &Scene, call: &Call, arg: usize, name: &str, patches: &mut Vec<Patch>) -> Result<(), String> {
+/// its call, used as `"name"`. Returns where the anchor goes in `source`.
+fn extract_point(source: &str, scene: &Scene, call: &Call, arg: usize, name: &str, patches: &mut Vec<Patch>) -> Result<usize, String> {
     let arg = call.args.get(arg).ok_or("no such argument")?;
     if !matches!(arg.value, Value::Coord { .. }) || arg.point.is_some() {
         return Err("only a literal coordinate can become a shared point".into());
@@ -767,7 +782,14 @@ fn extract_point(source: &str, scene: &Scene, call: &Call, arg: usize, name: &st
         .map_or(call.range.start, |s| s.offset());
     patches.push(insert_statement(source, before, &format!("anchor({:?}, {})", name, arg.text)).0);
     patches.push(patch(arg.value_range.clone(), format!("{name:?}")));
-    Ok(())
+    Ok(before)
+}
+
+/// Whether code at offset `at` can use what's defined over `range`: CeTZ
+/// resolves names in drawing order, so it must come first, and in the same
+/// canvas unless it's outside every canvas.
+fn defined_before(scene: &Scene, range: &Range<usize>, at: usize) -> bool {
+    range.end <= at && scene.canvases.iter().filter(|c| c.body.contains(&range.start)).all(|c| c.body.contains(&at))
 }
 
 /// The statement a new anchor goes before, so anchors gather at the top of a
@@ -1706,12 +1728,41 @@ mod tests {
 
     #[test]
     fn connect_names_the_target_when_needed() {
-        let out = run(Edit::Connect { call: id("line"), arg: 0, target: id("content"), anchor: "west".into() });
-        assert!(out.source.contains(r#"line("content.west", (1.5,-2)"#), "{}", out.source);
-        assert!(out.source.contains(r#"content((2, 3), [Hi], name: "content")"#));
+        let src = "#canvas({\n  import draw: *\n  circle((0, 0))\n  line((1, 1), (2, 2))\n})";
+        let out = apply(src, &Edit::Connect { call: src.find("line(").unwrap(), arg: 0, target: src.find("circle(").unwrap(), anchor: "east".into() }).unwrap();
+        assert!(out.source.contains(r#"circle((0, 0), name: "circle")"#), "{}", out.source);
+        assert!(out.source.contains(r#"line("circle.east", (2, 2))"#), "{}", out.source);
         let out = run(Edit::Connect { call: id("content"), arg: 0, target: id("group"), anchor: "north".into() });
         assert!(out.source.contains(r#"content("g.north", [Hi])"#));
         assert!(apply(SRC, &Edit::Connect { call: id("line"), arg: 0, target: id("line"), anchor: "end".into() }).is_err());
+    }
+
+    #[test]
+    fn connect_refuses_shapes_drawn_later() {
+        // CeTZ resolves names in drawing order: `g` isn't known yet at the rect.
+        let src = "#canvas({\n  import draw: *\n  scope({\n    rotate(30deg)\n    rect((0, 0), (1, 1))\n  })\n  group(name: \"g\", { circle((3, 1)) })\n})\n#canvas({\n  import draw: *\n  circle((0, 0))\n})";
+        let rect = src.find("rect(").unwrap();
+        let connect = |target: &str| apply(src, &Edit::Connect { call: rect, arg: 1, target: src.find(target).unwrap(), anchor: "south-west".into() });
+        assert!(connect("group(").is_err());
+        assert!(connect("scope(").is_err(), "a scope around the shape isn't drawn before it");
+        assert!(connect("circle((0").is_err(), "another canvas");
+        let out = apply(src, &Edit::Connect { call: src.find("circle((3").unwrap(), arg: 0, target: rect, anchor: "north".into() }).unwrap();
+        assert!(out.source.contains(r#"circle("rect.north")"#), "{}", out.source);
+    }
+
+    #[test]
+    fn share_point_refuses_points_defined_later() {
+        let src = "#canvas({\n  import draw: *\n  line((0, 0), (1, 1))\n  rotate(30deg)\n  line((2, 2), (3, 3))\n})";
+        let [first, second] = [src.find("line(").unwrap(), src.rfind("line(").unwrap()];
+        // Past a transform the new anchor can't move above the first line.
+        assert!(apply(src, &Edit::SharePoint { call: first, arg: 1, from: second, from_arg: 0 }).is_err());
+        let out = apply(src, &Edit::SharePoint { call: second, arg: 0, from: first, from_arg: 1 }).unwrap();
+        assert!(out.source.contains("anchor(\"P1\", (1, 1))\n  line((0, 0), \"P1\")"), "{}", out.source);
+        // Without one, the anchor goes to the top of the block, above both.
+        let src = src.replace("  rotate(30deg)\n", "");
+        let [first, second] = [src.find("line(").unwrap(), src.rfind("line(").unwrap()];
+        let out = apply(&src, &Edit::SharePoint { call: first, arg: 1, from: second, from_arg: 0 }).unwrap();
+        assert!(out.source.contains("anchor(\"P1\", (2, 2))\n  line((0, 0), \"P1\")"), "{}", out.source);
     }
 
     const SHARED: &str = r#"#canvas({

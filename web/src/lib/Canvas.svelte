@@ -5,7 +5,7 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, STATE_CALLS, type Call, type Edit } from "./scene";
+  import { baseName, STATE_CALLS, type Call, type Edit, type Range } from "./scene";
   import { num } from "./format";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
@@ -495,10 +495,34 @@
     }),
   );
 
+  /** The canvas whose body holds `offset`, if any. */
+  function canvasAt(offset: number) {
+    return editor.scene.canvases.find((c) => c.body.start <= offset && offset < c.body.end);
+  }
+
+  /**
+   * Whether code at `at` can use what's defined over `range`: CeTZ resolves
+   * names in drawing order, so it must come first, in the same canvas
+   * unless it's outside every canvas. `order: false` checks only the canvas.
+   */
+  function usableAt(range: Range, at: number, order = true): boolean {
+    const canvas = canvasAt(range.start);
+    return (!order || range.end <= at) && (!canvas || canvas === canvasAt(at));
+  }
+
+  /** Where a new shape goes: the end of the active canvas. */
+  function insertAt(): number | undefined {
+    const canvas = editor.scene.canvases.find((c) => c.id === editor.activeCanvas);
+    return canvas && canvas.body.end - 1;
+  }
+
   /**
    * The nearest snap target within reach. `exclude` skips anchors and
    * vertices of those shapes; `points: false` skips named points, `anchors: false` shape
-   * anchors, and `vertices` adds lines' literal vertices. Named points win
+   * anchors, and `vertices` adds lines' literal vertices. `at` is where the
+   * reference will be written (an offset): only points and shapes defined
+   * before it in its canvas count, though any vertex of that canvas does, as
+   * sharing one names it above both lines. Named points win
    * near-ties, since they're what you usually mean, then vertices; an anchor
    * within a few pixels of either (a path's `mid` near a corner) never wins.
    */
@@ -510,7 +534,8 @@
       anchors = true,
       vertices = false,
       excludePoint,
-    }: { points?: boolean; anchors?: boolean; vertices?: boolean; excludePoint?: number } = {},
+      at,
+    }: { points?: boolean; anchors?: boolean; vertices?: boolean; excludePoint?: number; at?: number } = {},
   ): Snap | undefined {
     if (mods.free) return undefined;
     const radius = 8 / editor.zoom;
@@ -524,18 +549,19 @@
       }
     };
     const excluded = (call: number) => (exclude instanceof Set ? exclude.has(call) : call === exclude);
+    const usable = (range: Range | undefined, order = true) => at === undefined || (range !== undefined && usableAt(range, at, order));
     const shadow = 4 / editor.zoom;
     const corners: Snap[] = [];
     const corner = (t: Snap, weight: number) => {
       if (Math.hypot(t.point[0] - p[0], t.point[1] - p[1]) < radius + shadow) corners.push(t);
       consider(t, weight);
     };
-    if (points) for (const t of pointTargets) if (t.named !== excludePoint) corner(t, 0.75);
-    if (vertices) for (const t of vertexTargets) if (!excluded(t.vertex.call)) corner(t, 0.85);
+    if (points) for (const t of pointTargets) if (t.named !== excludePoint && usable(editor.pointById.get(t.named)?.range)) corner(t, 0.75);
+    if (vertices) for (const t of vertexTargets) if (!excluded(t.vertex.call) && usable(editor.callById.get(t.vertex.call)?.range, false)) corner(t, 0.85);
     if (anchors) {
       const shadowed = (q: Point) => corners.some((c) => Math.hypot(c.point[0] - q[0], c.point[1] - q[1]) < shadow);
       for (const t of snapTargets) {
-        if (excluded(t.target)) continue;
+        if (excluded(t.target) || !usable(editor.callById.get(t.target)?.range)) continue;
         if (shadowed(t.point)) continue;
         // Plain compass anchors (`east`) beat near-identical text ones (`base-east`, `mid-east`).
         consider(t, /^(base|mid)/.test(t.anchor) ? 1.15 : 1);
@@ -844,7 +870,8 @@
     const { frame, transform } = extend ?? creationFrame();
     const last = lastJoined(joining);
     if (join && mods.angle && last) return angled(frame, transform, last, p);
-    const snap = join ? findSnap(p, extend?.call, { vertices: true }) : undefined;
+    const at = extend ? editor.callById.get(extend.call)?.range.start : insertAt();
+    const snap = join ? findSnap(p, extend?.call, { vertices: true, at }) : undefined;
     if (snap) return { page: snap.point, local: pageToLocal(frame, transform, snap.point), snap };
     const local = snapPoint(frame, transform, p);
     return { page: editor.toPage(frame, transformPoint(transform, local)), local };
@@ -947,7 +974,7 @@
 
     if (editor.tool !== "select") {
       const { frame, transform } = creationFrame();
-      const startSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool() });
+      const startSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool(), at: insertAt() });
       const start = startSnap ? pageToLocal(frame, transform, startSnap.point) : snapPoint(frame, transform, p);
       drag = { kind: "create", start, end: start, startSnap, frame, transform };
       toolHover = undefined;
@@ -1032,7 +1059,7 @@
     }
     // Line tools preview where a press would start: just the snap, no ghost.
     if (!drag && isLineTool()) {
-      const snap = findSnap(p, undefined, { vertices: true });
+      const snap = findSnap(p, undefined, { vertices: true, at: insertAt() });
       toolHover = snap && { page: snap.point, snap };
     }
     if (!drag) {
@@ -1072,14 +1099,17 @@
         if (drag.detach && drag.use) {
           // Detach this use: like a plain coordinate handle.
           const { call, arg, probe } = drag.use;
-          const snap = findSnap(p, call, { vertices: true });
-          drag.snap = snap;
+          const snap = findSnap(p, call, { vertices: true, at: editor.callById.get(call)?.range.start });
           const edit = snap && snapEdit(call, arg, snap);
-          if (edit) {
+          // A snap the edit refuses (a vertex it can't share this early) falls back to the grid.
+          if (edit && editor.previewEdit(edit)) {
+            drag.snap = snap;
             drag.edit = edit;
           } else {
             const [x, y] = snapPoint(frameOf(probe), probe.transform, p);
+            drag.snap = undefined;
             drag.edit = { kind: "set-coord", call, arg, x, y };
+            editor.previewEdit(drag.edit);
           }
         } else {
           // Move the shared point itself; snap it onto other points, or anchors of shapes that don't use it.
@@ -1091,21 +1121,23 @@
             drag.group?.length && own
               ? { kind: "move-points", points: [drag.point, ...drag.group], dx: x - own.x, dy: y - own.y }
               : { kind: "set-point", point: drag.point, x, y };
+          editor.previewEdit(drag.edit);
         }
-        editor.previewEdit(drag.edit);
         break;
       }
       case "handle": {
-        const snap = findSnap(p, drag.call, { vertices: true });
-        drag.snap = snap;
+        const snap = findSnap(p, drag.call, { vertices: true, at: editor.callById.get(drag.call)?.range.start });
         const edit = snap && snapEdit(drag.call, drag.arg, snap);
-        if (edit) {
+        // A snap the edit refuses (a vertex it can't share this early) falls back to the grid.
+        if (edit && editor.previewEdit(edit)) {
+          drag.snap = snap;
           drag.edit = edit;
         } else {
           const [x, y] = snapPoint(frameOf(drag.probe), drag.probe.transform, p);
+          drag.snap = undefined;
           drag.edit = { kind: "set-coord", call: drag.call, arg: drag.arg, x, y };
+          editor.previewEdit(drag.edit);
         }
-        editor.previewEdit(drag.edit);
         break;
       }
       case "marquee": {
@@ -1163,7 +1195,7 @@
           drag.end = pageToLocal(drag.frame, drag.transform, p);
           break;
         }
-        drag.endSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool() });
+        drag.endSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool(), at: insertAt() });
         drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPoint(drag.frame, drag.transform, p);
         break;
       }

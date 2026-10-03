@@ -471,17 +471,22 @@ export class Editor {
     this.previewEdit({ kind: "move", calls: this.selected, dx, dy, detach }, dx, dy);
   }
 
-  /** Previews any edit (used for handle drags); `dx`/`dy` shift the overlay. */
-  previewEdit(edit: Edit, dx = 0, dy = 0) {
+  /**
+   * Previews any edit (used for handle drags); `dx`/`dy` shift the overlay.
+   * False if the edit can't apply.
+   */
+  previewEdit(edit: Edit, dx = 0, dy = 0): boolean {
     if (dx === 0 && dy === 0 && edit.kind === "move") {
       this.draft = undefined;
-      return;
+      return true;
     }
     try {
       const result = applyEdit(this.source, edit);
       this.draft = { source: result.source, patches: result.patches, dx, dy };
+      return true;
     } catch {
       // Keep the last valid preview.
+      return false;
     }
   }
 
