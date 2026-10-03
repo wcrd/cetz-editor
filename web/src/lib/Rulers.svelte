@@ -9,7 +9,7 @@
   // extent. Drawn over the viewport in screen pixels.
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
-  import { crisp, visibleStep } from "./pixels";
+  import { crisp, rulerSteps } from "./pixels";
 
   type Box = { x0: number; y0: number; x1: number; y1: number };
   let {
@@ -37,18 +37,8 @@
   const unitX = (sx: number) => ((sx - editor.pan[0]) / editor.zoom - frame.origin.x) / frame.length;
   const unitY = (sy: number) => (frame.origin.y - (sy - editor.pan[1]) / editor.zoom) / frame.length;
 
-  /** Minor ticks on the grid step (thinned like the grid); labels on round numbers that land on one. */
-  const steps = $derived.by(() => {
-    const minor = visibleStep(editor.gridStep, scale);
-    for (let exp = -3; exp <= 9; exp++) {
-      for (const m of [1, 2, 2.5, 5]) {
-        const major = m * 10 ** exp;
-        const ratio = major / minor;
-        if (major * scale >= 56 && ratio >= 1 && Math.abs(ratio - Math.round(ratio)) < 1e-6) return { minor, major };
-      }
-    }
-    return { minor, major: minor };
-  });
+  /** Minor ticks on the visible grid step; labels on a whole multiple of it (see `rulerSteps`). */
+  const steps = $derived(rulerSteps(editor.gridStep, scale));
 
   type Tick = { at: number; label?: string };
   function ticks(from: number, to: number, toScreen: (v: number) => number): Tick[] {
