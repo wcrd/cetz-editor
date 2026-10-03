@@ -4,6 +4,7 @@
   import CodeEditor from "./lib/CodeEditor.svelte";
   import Inspector from "./lib/Inspector.svelte";
   import Outline from "./lib/Outline.svelte";
+  import GridStep from "./lib/GridStep.svelte";
   import type { Editor, Tool } from "./lib/editor.svelte";
   import { loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
   import { PanelSize } from "./lib/panelSize.svelte";
@@ -389,9 +390,7 @@
         <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
         <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
         <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
-        <select bind:value={editor.gridStep} title="Grid step (canvas units)">
-          {#each [0.1, 0.25, 0.5, 1] as step}<option value={step}>{step}</option>{/each}
-        </select>
+        <GridStep {editor} />
       </div>
 
       <div class="group zoom">
@@ -621,8 +620,7 @@
     gap: 2px;
     align-items: center;
   }
-  .toolbar button,
-  .toolbar select {
+  .toolbar button {
     font: inherit;
     color: inherit;
     background: transparent;
@@ -632,10 +630,6 @@
     min-width: 28px;
     padding: 0 6px;
     cursor: pointer;
-  }
-  .toolbar select {
-    border-color: var(--border);
-    background: var(--input-bg);
   }
   .toolbar button:hover {
     background: color-mix(in srgb, var(--text) 7%, transparent);
