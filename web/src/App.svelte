@@ -276,6 +276,7 @@
           onclick={() => (editor.tool = t.id)}
         >
           <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
+          <kbd aria-hidden="true">{t.key}</kbd>
         </button>
       {/each}
     </div>
@@ -475,6 +476,24 @@
   .toolbar button.active {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
+  }
+  .toolbar button.tool {
+    position: relative;
+    width: 34px;
+  }
+  .tool kbd {
+    position: absolute;
+    right: 3px;
+    bottom: 1px;
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  .tool.active kbd {
+    color: inherit;
   }
   .toolbar svg {
     width: 16px;
