@@ -5,6 +5,7 @@
   import Inspector from "./lib/Inspector.svelte";
   import Outline from "./lib/Outline.svelte";
   import GridStep from "./lib/GridStep.svelte";
+  import Help from "./lib/Help.svelte";
   import type { Editor, Tool } from "./lib/editor.svelte";
   import type { ExportFormat } from "./lib/compiler";
   import { exportFile, loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
@@ -193,6 +194,7 @@
     { label: "PNG, 300 ppi", format: "png", ppi: 300 },
   ];
   let exportMenu = $state(false);
+  let helpOpen = $state(false);
   let exportGroup = $state<HTMLElement>();
 
   function onpointerdown(e: PointerEvent) {
@@ -207,6 +209,8 @@
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const typing = isEditingText(e.target);
+    // The help dialog handles its own Escape.
+    if (helpOpen) return;
 
     if (exportMenu && e.key === "Escape") {
       e.preventDefault();
@@ -312,6 +316,10 @@
       else editor.edit({ kind: "move-points", points: editor.selectedPoints, dx: dx * step, dy: dy * step });
       return;
     }
+    if (e.key === "?") {
+      helpOpen = true;
+      return;
+    }
     // Before the tools: plain R is the rectangle.
     if (e.key === "R" && e.shiftKey) {
       toggleRulers();
@@ -355,6 +363,8 @@
     }
   });
 </script>
+
+<Help bind:open={helpOpen} />
 
 <svelte:window {onkeydown} {onpointerdown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
@@ -498,6 +508,9 @@
           onclick={() => toggleSide()}
         >
           <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM14 5v14M16 9h1.5M16 12h1.5" /></svg>
+        </button>
+        <button title="Quick guide (?)" aria-label="Quick guide" onclick={() => (helpOpen = true)}>
+          <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0.01 0zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01" /></svg>
         </button>
       </div>
     </div>
