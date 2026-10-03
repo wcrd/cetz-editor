@@ -363,6 +363,7 @@
     if (!drag) {
       const el = e.target as Element;
       const hit = el.closest("[data-id]")?.getAttribute("data-id");
+      editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       const point = el.closest("[data-point]")?.getAttribute("data-point") ?? el.closest("[data-shared]")?.getAttribute("data-shared");
       editor.hoveredPoint = point ? Number(point) : undefined;
@@ -665,7 +666,7 @@
 
         {#each shapes as s, i (i)}
           {#if hoveredFamily.has(s.probe.id) && !selectedFamily.has(s.probe.id)}
-            <path class="hovered" d={s.d} />
+            <path class="hovered" class:from-panel={editor.hoverSource === "panel"} d={s.d} />
           {/if}
         {/each}
 
@@ -829,6 +830,12 @@
     stroke: var(--accent);
     stroke-width: 1;
     pointer-events: none;
+  }
+  /* Pointed at from the outline: as loud as a pinned loop repetition. */
+  .hovered.from-panel {
+    fill: color-mix(in srgb, var(--snap) 12%, transparent);
+    stroke: var(--snap);
+    stroke-width: 2.5;
   }
   .selected {
     fill: none;

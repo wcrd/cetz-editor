@@ -193,6 +193,17 @@
     return call.args.some((a) => a.key === "mark") || paths.length > 1 ? "arrow" : "line";
   }
 
+  // Hovers from here get the canvas's stronger (orange) highlight.
+  function hoverShape(id: number) {
+    editor.hoverSource = "panel";
+    editor.hovered = id;
+  }
+
+  function hoverPoint(id: number) {
+    editor.hoverSource = "panel";
+    editor.hoveredPoint = id;
+  }
+
   function select(call: Call) {
     editor.scope = call.parent ?? undefined;
     editor.selection = [call.id];
@@ -210,7 +221,7 @@
           <li
             class="row point"
             class:hovered={editor.hoveredPoint === p.id}
-            onpointerenter={() => (editor.hoveredPoint = p.id)}
+            onpointerenter={() => hoverPoint(p.id)}
             onpointerleave={() => (editor.hoveredPoint = undefined)}
           >
             <span class="name point-name"><span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.point} /></svg></span>{v.name}</span>
@@ -233,7 +244,7 @@
                   <li
                     class="row point child"
                     class:hovered={editor.hoveredPoint === p.id}
-                    onpointerenter={() => (editor.hoveredPoint = p.id)}
+                    onpointerenter={() => hoverPoint(p.id)}
                     onpointerleave={() => (editor.hoveredPoint = undefined)}
                   >
                     <span class="name point-name" title={p.anchors.length ? `anchor ${p.anchors.join(", ")}` : p.path}>{entryName(v, p)}</span>
@@ -283,7 +294,7 @@
           <button
             class="shape-button"
             onclick={() => select(call)}
-            onpointerenter={() => (editor.hovered = call.id)}
+            onpointerenter={() => hoverShape(call.id)}
             onpointerleave={() => (editor.hovered = undefined)}
           >
             <span class="icon" title={kind}>
@@ -306,7 +317,7 @@
                 class="row point child"
                 class:hovered={editor.hoveredPoint === p.id}
                 style:padding-left="{22 + depth * 14}px"
-                onpointerenter={() => (editor.hoveredPoint = p.id)}
+                onpointerenter={() => hoverPoint(p.id)}
                 onpointerleave={() => (editor.hoveredPoint = undefined)}
               >
                 <span class="name point-name">{p.anchors[0] ?? p.path}</span>

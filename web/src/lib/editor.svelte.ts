@@ -114,6 +114,8 @@ export class Editor {
   /** Show every shared point's marker, not just the selection's. */
   showPoints = $state(false);
   hoveredPoint = $state<number>();
+  /** Where the current hover came from: the canvas shows panel hovers more strongly. */
+  hoverSource = $state<"canvas" | "panel">("canvas");
   /** One repetition of a call in a loop: the call id and which probe of it. */
   hoveredInstance = $state<Instance>();
   focusedInstance = $state<Instance>();
