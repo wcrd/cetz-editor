@@ -79,6 +79,8 @@ export interface Canvas {
   id: number;
   body: Range;
   calls: Call[];
+  /** The grid step from a `// cetz-editor: grid 0.2` comment above it, as written. */
+  grid: string | null;
 }
 
 export interface Scene {
@@ -110,7 +112,8 @@ export type Edit =
   | { kind: "ungroup"; calls: number[] }
   | { kind: "arrange"; calls: number[]; to: Layer }
   | { kind: "reorder"; calls: number[]; target: number; after: boolean }
-  | { kind: "gather-anchors" };
+  | { kind: "gather-anchors" }
+  | { kind: "set-grid"; canvas: number; step: string };
 
 /** Where `arrange` moves shapes: past one shape drawn over or under them, or all the way. */
 export type Layer = "forward" | "backward" | "front" | "back";

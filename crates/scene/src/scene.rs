@@ -63,6 +63,9 @@ pub struct Canvas {
     /// Byte range of the body block, braces included.
     pub body: Range<usize>,
     pub calls: Vec<Call>,
+    /// The editor's grid step for it, as written in a
+    /// `// cetz-editor: grid 0.2` comment on a line just above.
+    pub grid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +144,26 @@ impl Call {
     }
 }
 
+/// The editor's grid comment for the canvas call at `canvas`: among the
+/// `//` comment lines right above its line, one reading
+/// `// cetz-editor: grid <step>`. Returns the step's range.
+pub fn grid_comment(source: &str, canvas: usize) -> Option<Range<usize>> {
+    let mut line_start = source[..canvas].rfind('\n').map_or(0, |i| i + 1);
+    while line_start > 0 {
+        let start = source[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
+        let line = &source[start..line_start - 1];
+        let comment = line.trim_start().strip_prefix("//")?;
+        let step = comment.trim_start().strip_prefix("cetz-editor:").map(str::trim_start).and_then(|rest| rest.strip_prefix("grid"));
+        if let Some(step) = step.filter(|s| s.starts_with(char::is_whitespace)) {
+            let value = step.trim();
+            let at = start + line.len() - step.trim_start().len();
+            return (!value.is_empty()).then(|| at..at + value.len());
+        }
+        line_start = start;
+    }
+    None
+}
+
 pub fn parse(source: &str) -> Scene {
     let root = typst_syntax::parse(source);
     let linked = LinkedNode::new(&root);
@@ -150,7 +173,8 @@ pub fn parse(source: &str) -> Scene {
     walk::for_each_canvas(&linked, &mut |canvas, body| {
         let mut calls = Vec::new();
         walk::for_each_call(body, Context::default(), &mut |call, ctx| calls.push(parse_call(source, &points, call, ctx)));
-        canvases.push(Canvas { id: canvas.offset(), body: body.range(), calls });
+        let grid = grid_comment(source, canvas.offset()).map(|range| source[range].to_string());
+        canvases.push(Canvas { id: canvas.offset(), body: body.range(), calls, grid });
     });
     let loop_ids: std::collections::BTreeSet<usize> = canvases.iter().flat_map(|c| &c.calls).filter_map(|c| c.loop_id).collect();
     collect_loops(source, &linked, &loop_ids, &mut loops);

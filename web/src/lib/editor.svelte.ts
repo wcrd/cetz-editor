@@ -8,6 +8,7 @@
 import type { TypstCompiler, CompilerStatus, Diagnostic } from "./compiler";
 import type { FileHandle } from "./files";
 import { OffsetIndex } from "./offsets";
+import { formatStep, parseStep } from "./pixels";
 import { isVec, transformPoint, type Probe, type Vec3 } from "./probe";
 import {
   allCalls,
@@ -76,7 +77,10 @@ interface Request {
 export class Prefs {
   tool = $state<Tool>("select");
   snap = $state(true);
+  /** The grid step for canvases whose file doesn't give one. */
   gridStep = $state(0.2);
+  /** Keep each canvas's grid step in its file, as a comment above it. */
+  gridInFile = $state(true);
   showGrid = $state(true);
   /** Show every shared point's marker, not just the selection's. */
   showPoints = $state(false);
@@ -131,8 +135,11 @@ export class Editor {
   set tool(v) { this.prefs.tool = v; }
   get snap() { return this.prefs.snap; }
   set snap(v) { this.prefs.snap = v; }
-  get gridStep() { return this.prefs.gridStep; }
-  set gridStep(v) { this.prefs.gridStep = v; }
+  /** The active canvas's grid step: from its file's comment, else the default. */
+  gridStep = $derived.by(() => {
+    const grid = this.prefs.gridInFile ? this.scene.canvases.find((c) => c.id === this.activeCanvas)?.grid : null;
+    return (grid && parseStep(grid)) || this.prefs.gridStep;
+  });
   get showGrid() { return this.prefs.showGrid; }
   set showGrid(v) { this.prefs.showGrid = v; }
   get showPoints() { return this.prefs.showPoints; }
@@ -404,6 +411,20 @@ export class Editor {
   /** Moves the selection in front of or behind other shapes, by moving its code. */
   arrangeSelection(to: Layer) {
     if (this.selected.length) this.edit({ kind: "arrange", calls: this.selected, to });
+  }
+
+  /**
+   * Sets the grid step: in the active canvas's comment when steps are kept
+   * in the file, else as the default. Returns whether it went to the file.
+   */
+  setGridStep(step: number): boolean {
+    const canvas = this.activeCanvas;
+    if (this.prefs.gridInFile && canvas !== undefined) {
+      this.edit({ kind: "set-grid", canvas, step: formatStep(step) });
+      return true;
+    }
+    this.prefs.gridStep = step;
+    return false;
   }
 
   /** Moves every `anchor(..)` up to the top of its block, as far as it can go. */

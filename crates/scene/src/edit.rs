@@ -95,6 +95,9 @@ pub enum Edit {
     /// order. One stops early below a transform (its coordinates are in that
     /// frame) or anything it uses. Fails if none move.
     GatherAnchors,
+    /// Write the editor's grid step for a canvas into the
+    /// `// cetz-editor: grid <step>` comment above it, adding one if needed.
+    SetGrid { canvas: usize, step: String },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -365,6 +368,17 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (stmts, selected) = block_stmts(source, &scene, &root, &calls)?;
             let order = arrange(&stmts, &selected, *to)?;
             restack(source, &stmts, &order, &selected, &mut patches, &mut created);
+        }
+        Edit::SetGrid { canvas, step } => {
+            let canvas = scene.canvases.iter().find(|c| c.id == *canvas).ok_or("no such canvas")?;
+            match scene::grid_comment(source, canvas.id) {
+                Some(value) => patches.push(patch(value, step.clone())),
+                None => {
+                    let line_start = source[..canvas.id].rfind('\n').map_or(0, |i| i + 1);
+                    let indent = indent_at(source, canvas.id);
+                    patches.push(patch(line_start..line_start, format!("{indent}// cetz-editor: grid {step}\n")));
+                }
+            }
         }
         Edit::GatherAnchors => {
             let text = gather_anchors(source)?;
@@ -1690,6 +1704,23 @@ mod tests {
         // A loop of anchors stays below the dictionary it reads.
         let out = apply(SHARED, &Edit::GatherAnchors);
         assert!(out.is_err() || out.unwrap().source.contains("let pts"));
+    }
+
+    #[test]
+    fn set_grid_writes_the_comment_above_the_canvas() {
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\n#canvas({\n  draw.circle((0, 0))\n})\n";
+        let id = shared_id(src, "canvas({");
+        assert_eq!(crate::parse(src).canvases[0].grid, None);
+        let out = apply(src, &Edit::SetGrid { canvas: id, step: "0.2".into() }).unwrap();
+        assert!(out.source.contains("\n\n// cetz-editor: grid 0.2\n#canvas({"), "{}", out.source);
+        let scene = crate::parse(&out.source);
+        assert_eq!(scene.canvases[0].grid.as_deref(), Some("0.2"));
+        let out = apply(&out.source, &Edit::SetGrid { canvas: scene.canvases[0].id, step: "1/3".into() }).unwrap();
+        assert!(out.source.contains("// cetz-editor: grid 1/3\n#canvas({"), "{}", out.source);
+        // Found among other comments, but not across a blank line.
+        let src = "// cetz-editor: grid 0.5\n// The plan\n#canvas({})\n\n// cetz-editor: grid 2\n\n#canvas({})\n";
+        let grids: Vec<_> = crate::parse(src).canvases.into_iter().map(|c| c.grid).collect();
+        assert_eq!(grids, [Some("0.5".to_string()), None]);
     }
 
     #[test]

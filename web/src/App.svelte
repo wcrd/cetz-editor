@@ -107,6 +107,23 @@
     }
   }
 
+  // Grid steps kept in the file, unless turned off in this browser.
+  const GRID_IN_FILE_KEY = "cetz-editor:grid-in-file";
+  try {
+    tabs.prefs.gridInFile = localStorage.getItem(GRID_IN_FILE_KEY) !== "false";
+  } catch {
+    // Default.
+  }
+  function toggleGridInFile() {
+    tabs.prefs.gridInFile = !tabs.prefs.gridInFile;
+    editor.flash(tabs.prefs.gridInFile ? "Grid step: kept in the file, above each canvas" : "Grid step: kept in this browser");
+    try {
+      localStorage.setItem(GRID_IN_FILE_KEY, String(tabs.prefs.gridInFile));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+
   // Rulers, on unless turned off in this browser.
   const RULERS_KEY = "cetz-editor:rulers";
   try {
@@ -405,6 +422,17 @@
         <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
         <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
         <GridStep {editor} />
+        <button
+          class:active={tabs.prefs.gridInFile}
+          title={tabs.prefs.gridInFile
+            ? "Grid step is kept in the file, as a // cetz-editor: grid comment above each canvas. Click to keep it in this browser instead"
+            : "Grid step is kept in this browser. Click to keep it in the file, above each canvas"}
+          aria-label="Keep grid step in the file"
+          aria-pressed={tabs.prefs.gridInFile}
+          onclick={toggleGridInFile}
+        >
+          <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6M12 10v8" /></svg>
+        </button>
       </div>
 
       <div class="group zoom">

@@ -1,7 +1,8 @@
 <script lang="ts">
   // The toolbar's grid step: type any positive size (`0.3`) or fraction
-  // (`1/3`), or pick a preset. Shared by every tab and remembered in this
-  // browser.
+  // (`1/3`), or pick a preset. Written into the file above the canvas when
+  // steps are kept there; otherwise shared by every tab and remembered in
+  // this browser.
   import { onMount } from "svelte";
   import type { Editor } from "./editor.svelte";
   import { formatStep, GRID_STEP_MAX, GRID_STEP_MIN, parseStep } from "./pixels";
@@ -15,7 +16,7 @@
   onMount(() => {
     try {
       const saved = parseStep(localStorage.getItem(KEY) ?? "");
-      if (saved !== undefined) editor.gridStep = saved;
+      if (saved !== undefined) editor.prefs.gridStep = saved;
     } catch {
       // Storage unavailable: keep the default.
     }
@@ -30,8 +31,9 @@
       input.value = formatStep(editor.gridStep);
       return;
     }
-    editor.gridStep = value;
     input.value = formatStep(value);
+    // A step written into the file isn't this browser's default.
+    if (editor.setGridStep(value)) return;
     try {
       localStorage.setItem(KEY, input.value);
     } catch {

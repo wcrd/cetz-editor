@@ -138,7 +138,19 @@ names would clash.
 
 **Grid step.** Type any size into the toolbar's grid field (`0.3`), a
 fraction (`1/3`), or pick a preset. Snapping, the grid and the rulers all
-follow it, and it's remembered in this browser.
+follow it. It's kept in the file, as a comment on the line above each canvas
+that Typst ignores:
+
+```typst
+// cetz-editor: grid 0.2
+#canvas({ ... })
+```
+
+so a drawing opens with its own grid, and changing the step is an edit you
+can undo. A canvas without the comment uses the default (0.2). The file
+button next to the field turns this off: the comments are then ignored, and
+the step is a view setting remembered in this browser, which also sets the
+default.
 
 **Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
 15° steps (lengths still snap to the grid along horizontal and vertical ones).
