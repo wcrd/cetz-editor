@@ -687,7 +687,7 @@
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
     if (editor.tool !== "join") joining = undefined;
-    if (editor.tool !== "point" && editor.tool !== "join") toolHover = undefined;
+    if (editor.tool !== "point" && editor.tool !== "join" && !isLineTool()) toolHover = undefined;
   });
 
   /**
@@ -802,6 +802,7 @@
       const startSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool() });
       const start = startSnap ? pageToLocal(frame, transform, startSnap.point) : snapPoint(frame, transform, p);
       drag = { kind: "create", start, end: start, startSnap, frame, transform };
+      toolHover = undefined;
       return;
     }
 
@@ -867,6 +868,11 @@
     if (!drag && (editor.tool === "point" || editor.tool === "join")) {
       toolHover = toolTarget(p, editor.tool === "join");
       return;
+    }
+    // Line tools preview where a press would start: just the snap, no ghost.
+    if (!drag && isLineTool()) {
+      const snap = findSnap(p, undefined, { vertices: true });
+      toolHover = snap && { page: snap.point, snap };
     }
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
@@ -1118,6 +1124,20 @@
         : toolHover?.snap,
   );
 
+  /**
+   * While drawing a line, the anchors of shapes near the pointer (or under
+   * it), so you can see what an end could snap to before you get there.
+   */
+  const anchorHints = $derived.by(() => {
+    if (!isLineTool() || !pointer || mods.free || (drag && drag.kind !== "create")) return [];
+    const p: Point = [(pointer[0] - editor.pan[0]) / editor.zoom, (pointer[1] - editor.pan[1]) / editor.zoom];
+    const reach = 40 / editor.zoom;
+    const near = new Set<number>();
+    if (editor.hovered !== undefined) near.add(editor.hovered);
+    for (const t of snapTargets) if (Math.hypot(t.point[0] - p[0], t.point[1] - p[1]) < reach) near.add(t.target);
+    return snapTargets.filter((t) => near.has(t.target)).map((t) => t.point);
+  });
+
   // --- Grid ----------------------------------------------------------------
 
   /** The page-space area the grid covers: the page, or everything in view. */
@@ -1210,6 +1230,7 @@
     editor.hovered = undefined;
     nearGrab = undefined;
     pointer = undefined;
+    if (!drag) toolHover = undefined;
   }}
   role="application"
   aria-label="Drawing canvas"
@@ -1334,6 +1355,9 @@
           />
         {/if}
 
+        {#each anchorHints as q, i (i)}
+          <circle class="anchor-hint" cx={q[0]} cy={q[1]} r={2.5 / editor.zoom} />
+        {/each}
         {#if activeSnap}
           <circle
             class="snap"
@@ -1623,6 +1647,11 @@
     fill: none;
     stroke: var(--snap);
     stroke-width: 2;
+    pointer-events: none;
+  }
+  .anchor-hint {
+    fill: var(--snap);
+    opacity: 0.6;
     pointer-events: none;
   }
   .join-step {
