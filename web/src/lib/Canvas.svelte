@@ -50,6 +50,7 @@
     | { kind: "rotate"; spin: Spin; from: number; angle: number; edit?: Edit }
     | { kind: "radius"; reach: Reach; r: number; edit?: Edit }
     | { kind: "reshape"; reshape: Reshape; edit?: Edit }
+    | { kind: "sweep"; end: ArcEnd; sweep: number; angle?: number; edit?: Edit }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -498,6 +499,66 @@
   });
 
   let nearReach = $state(false);
+
+  // --- Arc ends -------------------------------------------------------------
+
+  /**
+   * A knob on one end of the selected arc: dragging it turns that end
+   * around the centre and keeps the other where it is, writing whichever of
+   * `start`, `stop` and `delta` the arc uses. `start`/`stop` are degrees.
+   */
+  type ArcEnd = { call: number; probe: Probe; end: "start" | "stop"; point: Point; center: Point; start: number; stop: number; keys: string[] };
+
+  const arcEnds = $derived.by((): ArcEnd[] => {
+    if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "sweep")) return [];
+    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const probe = call && probeOf.get(call.id);
+    if (!call || !probe || call.in_loop || baseName(call.callee) !== "arc") return [];
+    const value = (key: string) => {
+      const arg = call.args.find((a) => a.key === key);
+      return arg ? degrees(arg.text) : undefined;
+    };
+    const keys = ["start", "stop", "delta"].filter((k) => call.args.some((a) => a.key === k));
+    if (keys.length !== 2 || keys.some((k) => value(k) === undefined)) return [];
+    const [a, b, d] = [value("start"), value("stop"), value("delta")];
+    const start = a ?? b! - d!;
+    const stop = b ?? a! + d!;
+    const page = (name: string) => {
+      const v = probe.anchors[name];
+      return isVec(v) ? editor.toPage(frameOf(probe), v) : undefined;
+    };
+    const center = page("origin");
+    if (!center) return [];
+    // Off its centre, an arc is placed by its start, where its position handle sits.
+    const anchor = call.args.find((a) => a.key === "anchor")?.text.trim();
+    const ends: ArcEnd["end"][] = anchor === '"origin"' ? ["start", "stop"] : ["stop"];
+    return ends.flatMap((end) => {
+      const point = page(end === "start" ? "arc-start" : "arc-end");
+      return point ? [{ call: call.id, probe, end, point, center, start, stop, keys }] : [];
+    });
+  });
+
+  function arcEndAt(p: Point): ArcEnd | undefined {
+    return arcEnds.find((k) => Math.hypot(p[0] - k.point[0], p[1] - k.point[1]) * editor.zoom < 8);
+  }
+
+  let nearArcEnd = $state(false);
+
+  /** Moves an arc's end to the pointer's angle; `sweep` keeps the turn continuous past ±180°. */
+  function sweepTo(k: ArcEnd, p: Point, sweep: number): { sweep: number; angle?: number; edit?: Edit } {
+    const [c, q] = [k.center, p].map((v) => pageToLocal(frameOf(k.probe), k.probe.transform, v));
+    let a = (Math.atan2(q[1] - c[1], q[0] - c[0]) * 180) / Math.PI;
+    if (mods.angle) a = Math.round(a / 15) * 15;
+    else if (!mods.free) a = Math.round(a);
+    let d = k.end === "stop" ? a - k.start : k.stop - a;
+    d += 360 * Math.round((sweep - d) / 360);
+    d = Math.max(-360, Math.min(360, d));
+    if (Math.abs(d) < 1e-6) return { sweep };
+    const [start, stop] = k.end === "stop" ? [k.start, k.start + d] : [k.stop - d, k.stop];
+    const values: Record<string, number> = { start, stop, delta: stop - start };
+    const edits: Edit[] = k.keys.map((key) => ({ kind: "set-named", call: k.call, key, text: `${num(values[key])}deg` }));
+    return { sweep: d, angle: k.end === "stop" ? stop : start, edit: { kind: "batch", edits } };
+  }
 
   function reachAt(p: Point): Reach | undefined {
     return reaches.find((r) => Math.hypot(p[0] - r.point[0], p[1] - r.point[1]) * editor.zoom < 8);
@@ -1091,6 +1152,11 @@
       drag = { kind: "reshape", reshape };
       return;
     }
+    const arcEnd = arcEndAt(p);
+    if (arcEnd) {
+      drag = { kind: "sweep", end: arcEnd, sweep: arcEnd.stop - arcEnd.start };
+      return;
+    }
     const reach = reachAt(p);
     if (reach) {
       drag = { kind: "radius", reach, r: reach.r };
@@ -1175,11 +1241,12 @@
     }
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
-      nearReshape = editor.tool === "select" && !spaceHeld && reshapeAt(p) !== undefined;
+      nearArcEnd = editor.tool === "select" && !spaceHeld && arcEndAt(p) !== undefined;
+      nearReshape = editor.tool === "select" && !spaceHeld && !nearArcEnd && reshapeAt(p) !== undefined;
       nearReach = editor.tool === "select" && !spaceHeld && !nearReshape && reachAt(p) !== undefined;
       nearSpin = editor.tool === "select" && !spaceHeld && !nearReach && overSpin(p);
-      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach && !nearReshape ? grabAt(p) : undefined;
-      const hit = nearGrab || nearSpin || nearReach || nearReshape ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach && !nearReshape && !nearArcEnd ? grabAt(p) : undefined;
+      const hit = nearGrab || nearSpin || nearReach || nearReshape || nearArcEnd ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
@@ -1289,6 +1356,15 @@
         else editor.endDrag();
         break;
       }
+      case "sweep": {
+        const next = sweepTo(drag.end, p, drag.sweep);
+        drag.sweep = next.sweep;
+        drag.angle = next.angle;
+        drag.edit = next.edit;
+        if (drag.edit) editor.previewEdit(drag.edit);
+        else editor.endDrag();
+        break;
+      }
       case "reshape": {
         const { probe } = drag.reshape;
         drag.edit = drag.reshape.edit(snapPoint(frameOf(probe), probe.transform, p));
@@ -1351,6 +1427,7 @@
       case "rotate":
       case "radius":
       case "reshape":
+      case "sweep":
         editor.endDrag(d.edit);
         break;
       case "create":
@@ -1700,7 +1777,7 @@
   const cursor = $derived(
     drag?.kind === "rotate"
       ? "grabbing"
-      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach || nearReshape
+      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach || nearReshape || nearArcEnd
       ? "grab"
       : editor.tool !== "select"
         ? "crosshair"
@@ -1805,6 +1882,10 @@
 
         {#each reshapes as r, i (i)}
           <circle class="handle" class:edge={r.edge} cx={r.point[0]} cy={r.point[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+        {/each}
+
+        {#each arcEnds as k (k.end)}
+          <circle class="handle spin" cx={k.point[0]} cy={k.point[1]} r={4 / editor.zoom} />
         {/each}
 
         {#each reaches as reach, i (i)}
@@ -1936,6 +2017,8 @@
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "sweep"}
+      <div class="hint">{drag.end.end} {num(drag.angle ?? drag.end[drag.end.end])}° · ⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no rounding</div>
     {:else if drag?.kind === "radius"}
       <div class="hint">radius {num(drag.r)}{drag.reach.stretchy ? ` · ${isMac ? "⌥" : "Alt"} ellipse` : ""} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
