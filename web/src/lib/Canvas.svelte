@@ -60,21 +60,16 @@
     editor.zoom = z;
   }
 
-  let fitted = false;
+  // Fit each loaded document once; switching back to its tab keeps its view.
   $effect(() => {
-    if (pageSize && width && height && !fitted) {
-      fitted = true;
+    if (pageSize && width && height && editor.fittedLoad !== editor.loads) {
+      editor.fittedLoad = editor.loads;
       fit();
     }
   });
   $effect(() => {
     editor.viewport = { fit, zoomBy: (f: number) => zoomAt(f, [width / 2, height / 2]) };
     return () => (editor.viewport = undefined);
-  });
-  // Refit when a document is loaded.
-  $effect(() => {
-    void editor.loads;
-    fitted = false;
   });
 
   // Auto-sized pages grow (and shift their content) as shapes are added at the

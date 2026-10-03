@@ -4,33 +4,41 @@
   import CodeEditor from "./lib/CodeEditor.svelte";
   import Inspector from "./lib/Inspector.svelte";
   import Outline from "./lib/Outline.svelte";
-  import { Editor, type Tool } from "./lib/editor.svelte";
-  import { loadSession, newDocument, openDropped, openFile, save, saveSession } from "./lib/files";
+  import type { Editor, Tool } from "./lib/editor.svelte";
+  import { loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
+  import { Tabs } from "./lib/tabs.svelte";
 
-  // Restore the last session in this browser; otherwise start on the sample.
+  // Restore the last session's tabs in this browser; otherwise start on the sample.
+  const tabs = new Tabs();
   const session = loadSession();
-  const editor = new Editor(session?.source ?? fixture);
-  if (session) {
-    editor.fileName = session.fileName;
-    editor.savedSource = session.savedSource;
-    editor.lineEnding = session.lineEnding ?? "\n";
-  } else {
-    editor.fileName = "zone_diagram.typ";
-  }
-  $effect(() => () => editor.dispose());
+  if (session) restoreSession(tabs, session);
+  else tabs.open(fixture, "zone_diagram.typ");
+  $effect(() => () => tabs.dispose());
+
+  /** The document in the active tab. */
+  const editor = $derived(tabs.active);
 
   $effect(() => {
-    void editor.source;
-    void editor.fileName;
-    void editor.savedSource;
-    const timer = setTimeout(() => saveSession(editor), 400);
+    void tabs.active;
+    for (const e of tabs.editors) {
+      void e.source;
+      void e.fileName;
+      void e.savedSource;
+    }
+    const timer = setTimeout(() => saveSession(tabs), 400);
     return () => clearTimeout(timer);
   });
 
   function onbeforeunload(e: BeforeUnloadEvent) {
-    saveSession(editor);
-    if (editor.dirty) e.preventDefault();
+    saveSession(tabs);
+    if (tabs.editors.some((t) => t.dirty)) e.preventDefault();
   }
+
+  // A hidden code pane can't measure; re-measure the one a tab switch reveals.
+  $effect(() => {
+    const code = editor.code;
+    if (code) requestAnimationFrame(() => code.refresh());
+  });
 
   // Whether the code panel is open; remembered in this browser.
   const CODE_OPEN_KEY = "cetz-editor:code-open";
@@ -42,7 +50,7 @@
       return true;
     }
   }
-  editor.openCode = () => toggleCode(true);
+  tabs.openCode = () => toggleCode(true);
 
   function toggleCode(open = !codeOpen) {
     codeOpen = open;
@@ -58,7 +66,7 @@
   // Infinite canvas view; remembered in this browser like the code panel.
   const INFINITE_KEY = "cetz-editor:infinite";
   try {
-    editor.infinite = localStorage.getItem(INFINITE_KEY) === "true";
+    tabs.prefs.infinite = localStorage.getItem(INFINITE_KEY) === "true";
   } catch {
     // Default view.
   }
@@ -80,13 +88,16 @@
   }
   function ondrop(e: DragEvent) {
     dropping = false;
-    const file = e.dataTransfer?.files[0];
-    if (!file) return;
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (files.length === 0) return;
     e.preventDefault();
-    void openDropped(editor, file);
+    void openDropped(tabs, files);
   }
   // Handy for poking at state from the console during development.
-  if (import.meta.env.DEV) (window as unknown as { editor: Editor }).editor = editor;
+  if (import.meta.env.DEV) {
+    Object.assign(window, { tabs });
+    Object.defineProperty(window, "editor", { get: () => tabs.active, configurable: true });
+  }
 
   // Compile on every change (and every load, even of identical text):
   // immediately while dragging, debounced while typing.
@@ -131,7 +142,7 @@
     }
     if (mod && e.key.toLowerCase() === "o") {
       e.preventDefault();
-      void openFile(editor);
+      void openFile(tabs);
       return;
     }
     if (mod && e.key.toLowerCase() === "z" && !typing) {
@@ -205,16 +216,16 @@
   }
 
   // Browsers only reveal a picked file's name, never its folder or path.
-  const fileTooltip = $derived(
-    [
+  function fileTooltip(editor: Editor): string {
+    return [
       editor.fileName,
       editor.fileLinked
         ? "Linked to the file you opened: Save (⌘S) overwrites it."
         : "Not linked to a file on disk: Save asks where to save (or downloads).",
       `Line endings: ${editor.lineEnding === "\r\n" ? "CRLF" : "LF"}`,
       editor.dirty ? "Unsaved changes" : "No unsaved changes",
-    ].join("\n"),
-  );
+    ].join("\n");
+  }
 
   const compileLabel = $derived.by(() => {
     const s = editor.status;
@@ -250,19 +261,15 @@
     </div>
 
     <div class="group">
-      <button title="New" aria-label="New file" onclick={() => newDocument(editor)}>
+      <button title="New tab" aria-label="New file" onclick={() => newDocument(tabs)}>
         <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6" /></svg>
       </button>
-      <button title="Open (⌘O)" aria-label="Open file" onclick={() => openFile(editor)}>
+      <button title="Open (⌘O)" aria-label="Open file" onclick={() => openFile(tabs)}>
         <svg viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v12H3zM3 9h18" /></svg>
       </button>
       <button title="Save (⌘S)" aria-label="Save file" onclick={() => save(editor)}>
         <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7" /></svg>
       </button>
-    </div>
-
-    <div class="title" title={fileTooltip}>
-      <span class="file">{editor.fileName}</span>{#if editor.dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
     </div>
 
     <div class="group tools" role="toolbar" aria-label="Tools">
@@ -317,6 +324,30 @@
     <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
   </header>
 
+  <div class="tabs" role="tablist" aria-label="Open files">
+    {#each tabs.editors as t (t)}
+      <div class="tab" class:active={t === editor} class:dirty={t.dirty && !tabs.isPristine(t)}>
+        <button
+          class="name"
+          role="tab"
+          aria-selected={t === editor}
+          title={fileTooltip(t)}
+          onclick={() => (tabs.active = t)}
+          onauxclick={(e) => e.button === 1 && tabs.close(t)}
+        >
+          {t.fileName}
+        </button>
+        <button class="close" title="Close" aria-label="Close {t.fileName}" onclick={() => tabs.close(t)}>
+          <svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" /></svg>
+          <span class="dot" title="Unsaved changes"></span>
+        </button>
+      </div>
+    {/each}
+    <button class="add" title="New tab" aria-label="New tab" onclick={() => newDocument(tabs)}>
+      <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" /></svg>
+    </button>
+  </div>
+
   <main class:code-open={codeOpen}>
     <aside class="code-panel" aria-label="Code">
       {#if !codeOpen}
@@ -325,7 +356,7 @@
           <span>Code</span>
         </button>
       {/if}
-      <!-- Stays mounted while collapsed: CodeMirror owns the undo history. -->
+      <!-- Stays mounted while collapsed (and per tab): CodeMirror owns the undo history. -->
       <div class="code-body" class:collapsed={!codeOpen}>
         <div class="panel-header">
           <span>Code</span>
@@ -333,11 +364,13 @@
             <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
         </div>
-        <div class="code"><CodeEditor {editor} /></div>
+        {#each tabs.editors as t (t)}
+          <div class="code" class:hidden={t !== editor}><CodeEditor editor={t} /></div>
+        {/each}
       </div>
     </aside>
     <section class="stage">
-      <Canvas {editor} />
+      {#key editor}<Canvas {editor} />{/key}
       {#if editor.diagnostics.length > 0}
         <ul class="diagnostics">
           {#each editor.diagnostics as d}
@@ -352,11 +385,13 @@
       {#if dropping}<div class="drop">Drop a .typ file to open it</div>{/if}
     </section>
     <aside class="side" aria-label="Inspector">
-      {#if editor.selected.length > 0}
-        <Inspector {editor} />
-      {:else}
-        <Outline {editor} />
-      {/if}
+      {#key editor}
+        {#if editor.selected.length > 0}
+          <Inspector {editor} />
+        {:else}
+          <Outline {editor} />
+        {/if}
+      {/key}
     </aside>
   </main>
 </div>
@@ -431,23 +466,6 @@
     background: var(--panel);
     font-size: 13px;
     min-height: 34px;
-  }
-  .title {
-    min-width: 0;
-    max-width: 220px;
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-  }
-  .file {
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .dirty {
-    color: var(--accent);
-    font-size: 10px;
   }
   .group {
     display: flex;
@@ -527,6 +545,112 @@
     color: #d33;
   }
 
+  .tabs {
+    display: flex;
+    align-items: stretch;
+    height: 32px;
+    flex: none;
+    padding-left: 6px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 12.5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    max-width: 200px;
+    min-width: 0;
+    flex: none;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .tab:first-child {
+    border-left: 1px solid var(--border);
+  }
+  .tab.active {
+    background: var(--bg);
+    color: var(--text);
+    /* Merge into the content below. */
+    margin-bottom: -1px;
+  }
+  .tab.active::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: var(--accent);
+  }
+  .tabs button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .tab .name {
+    min-width: 0;
+    height: 100%;
+    padding: 0 4px 0 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab .close,
+  .tabs .add {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin-right: 6px;
+    border-radius: 4px;
+    color: var(--muted);
+  }
+  .tabs .add {
+    width: 28px;
+    height: 28px;
+    margin: auto 4px;
+  }
+  .tab .close:hover,
+  .tabs .add:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 9%, transparent);
+  }
+  .tabs svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    display: block;
+    margin: auto;
+  }
+  /* The close button stays hidden until hover, except on the active tab;
+     unsaved tabs show a dot in its place. */
+  .tab:not(.active):not(:hover) .close svg {
+    visibility: hidden;
+  }
+  .tab .dot {
+    display: none;
+    width: 8px;
+    height: 8px;
+    margin: auto;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .tab.dirty:not(:hover) .close svg {
+    display: none;
+  }
+  .tab.dirty:not(:hover) .dot {
+    display: block;
+  }
+
   main {
     flex: 1;
     min-height: 0;
@@ -583,6 +707,9 @@
     flex: 1;
     min-height: 0;
     background: var(--bg);
+  }
+  .code.hidden {
+    display: none;
   }
   .panel-header button,
   .rail {
@@ -704,7 +831,6 @@
       border-top: 1px solid var(--border);
     }
     .toggles,
-    .title,
     .status {
       display: none;
     }

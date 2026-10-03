@@ -5,7 +5,8 @@
 // source changes, everything holding ids (probes, selection) is remapped
 // through the change's patches so it stays valid until the next compile.
 
-import { TypstCompiler, type CompilerStatus, type Diagnostic } from "./compiler";
+import type { TypstCompiler, CompilerStatus, Diagnostic } from "./compiler";
+import type { FileHandle } from "./files";
 import { OffsetIndex } from "./offsets";
 import { isVec, transformPoint, type Probe, type Vec3 } from "./probe";
 import {
@@ -69,6 +70,18 @@ interface Request {
   draft?: Draft;
 }
 
+/** View settings shared by every open document, like the toolbar they live in. */
+export class Prefs {
+  tool = $state<Tool>("select");
+  snap = $state(true);
+  gridStep = $state(0.25);
+  showGrid = $state(true);
+  /** Show every shared point's marker, not just the selection's. */
+  showPoints = $state(false);
+  /** View the page as an endless sheet: no page edge, grid everywhere. */
+  infinite = $state(false);
+}
+
 interface Draft {
   source: string;
   patches: Patch[];
@@ -107,20 +120,24 @@ export class Editor {
   hovered = $state<number>();
   /** A group the user has entered (double-click) to select its children. */
   scope = $state<number>();
-  tool = $state<Tool>("select");
-  snap = $state(true);
-  gridStep = $state(0.25);
-  showGrid = $state(true);
-  /** Show every shared point's marker, not just the selection's. */
-  showPoints = $state(false);
+  get tool() { return this.prefs.tool; }
+  set tool(v) { this.prefs.tool = v; }
+  get snap() { return this.prefs.snap; }
+  set snap(v) { this.prefs.snap = v; }
+  get gridStep() { return this.prefs.gridStep; }
+  set gridStep(v) { this.prefs.gridStep = v; }
+  get showGrid() { return this.prefs.showGrid; }
+  set showGrid(v) { this.prefs.showGrid = v; }
+  get showPoints() { return this.prefs.showPoints; }
+  set showPoints(v) { this.prefs.showPoints = v; }
+  get infinite() { return this.prefs.infinite; }
+  set infinite(v) { this.prefs.infinite = v; }
   hoveredPoint = $state<number>();
   /** Where the current hover came from: the canvas shows panel hovers more strongly. */
   hoverSource = $state<"canvas" | "panel">("canvas");
   /** One repetition of a call in a loop: the call id and which probe of it. */
   hoveredInstance = $state<Instance>();
   focusedInstance = $state<Instance>();
-  /** View the page as an endless sheet: no page edge, grid everywhere. */
-  infinite = $state(false);
 
   /** Screen pixels per page point, and where the page's corner sits. */
   zoom = $state(1);
@@ -144,10 +161,14 @@ export class Editor {
   fileName = $state("untitled.typ");
   /** Whether saving writes straight back to a file on disk (vs. asking where). */
   fileLinked = $state(false);
+  /** The file on disk saving writes to, when the browser gave us one. */
+  handle?: FileHandle;
   /** The file's line ending. The source always uses `\n`; saving restores this. */
   lineEnding = $state<"\n" | "\r\n">("\n");
   /** Bumped whenever a document is loaded, so views can reset (e.g. refit). */
   loads = $state(0);
+  /** The load the canvas last fitted to the window, so it fits each one once. */
+  fittedLoad?: number;
   savedSource = $state("");
   dirty = $derived(this.source !== this.savedSource);
 
@@ -201,15 +222,15 @@ export class Editor {
   #requests = new Map<number, Request>();
   #noticeTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(source: string) {
+  constructor(
+    source: string,
+    compiler: TypstCompiler,
+    readonly prefs: Prefs,
+  ) {
     source = normalizeNewlines(source);
     this.source = source;
     this.savedSource = source;
-    this.#compiler = new TypstCompiler((status, id) => this.#onCompiled(status, id));
-  }
-
-  dispose() {
-    this.#compiler.dispose();
+    this.#compiler = compiler;
   }
 
   // --- Compiling -----------------------------------------------------------
@@ -218,7 +239,7 @@ export class Editor {
     const draft = this.draft;
     const source = draft?.source ?? this.source;
     if (this.status.kind === "done") this.status = { kind: "compiling" };
-    const id = this.#compiler.compile(source);
+    const id = this.#compiler.compile(source, (status, id) => this.#onCompiled(status, id));
     this.#requests.set(id, { source: this.source, draft });
   }
 
