@@ -3,7 +3,7 @@
   // from the probe geometry. Works in page points (the SVG's viewBox units);
   // `zoom` maps points to screen pixels.
   import { tick, untrack } from "svelte";
-  import type { Editor, Frame } from "./editor.svelte";
+  import type { Editor, Frame, Tool } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, STATE_CALLS, type Call, type Edit, type Range } from "./scene";
   import { num } from "./format";
@@ -849,16 +849,19 @@
   }
 
   /**
-   * A line whose vertices can be edited: a plain `line(..)` outside loops.
-   * `verts` are its positional arguments' indices.
+   * A path whose points can be edited: a plain `line(..)`, or a curve
+   * through points (`catmull`, `hobby`), outside loops. `verts` are its
+   * positional arguments' indices; `tool` is what continues it.
    */
   function editablePath(id: number) {
     const call = editor.callById.get(id);
     const probe = probeOf.get(id);
-    if (!call || !probe || call.in_loop || baseName(call.callee) !== "line") return undefined;
+    const base = call && baseName(call.callee);
+    if (!call || !probe || call.in_loop || !base || !["line", "catmull", "hobby"].includes(base)) return undefined;
     const verts = call.args.flatMap((a, i) => (a.key === null ? [i] : []));
     const closed = call.args.some((a) => a.key === "close" && a.text.trim() === "true");
-    return { call, probe, verts, closed };
+    const tool: Tool = base === "line" ? "join" : "curve";
+    return { call, probe, verts, closed, tool };
   }
 
   /** Starts continuing an open line from its first or last vertex with the join tool. */
@@ -871,16 +874,16 @@
     if (!from || !other) return;
     editor.selection = [id];
     editor.pointSelection = [];
-    editor.tool = "join";
+    editor.tool = path.tool;
     const extend = { call: id, start, from, other, frame: frameOf(path.probe), transform: path.probe.transform };
     joining = { refs: [], pages: [], links: [], extend };
   }
 
-  /** The open selected line the join tool would continue, before its first click. */
+  /** The open selected path the join (or curve) tool would continue, before its first click. */
   const continuable = $derived.by(() => {
-    if (editor.tool !== "join" || joining || editor.selected.length !== 1) return undefined;
+    if (!isJoinTool() || joining || editor.selected.length !== 1) return undefined;
     const path = editablePath(editor.selected[0]);
-    return path && !path.closed && path.verts.length >= 2 ? path : undefined;
+    return path && path.tool === editor.tool && !path.closed && path.verts.length >= 2 ? path : undefined;
   });
 
   /** The end of the continuable line near `p`, if any. */
@@ -895,13 +898,43 @@
     return undefined;
   }
 
-  /** Inserts a vertex on the line's segment nearest `p`, on the grid when snapping. */
+  /**
+   * Where on a curve through points `p` is nearest: the point on the drawn
+   * curve, and the argument to insert it before. Its outline has one cubic
+   * per pair of points, so the nearest cubic says which pair it's between.
+   */
+  function onCurve(path: NonNullable<ReturnType<typeof editablePath>>, p: Point): { at: number; q: Point } | undefined {
+    const outline = path.probe.drawables.find((d) => d.type === "path");
+    const sub = outline?.type === "path" ? outline.segments[0] : undefined;
+    const n = path.verts.length;
+    if (!sub || sub[2].length !== (path.closed ? n : n - 1) || sub[2].some((s) => s[0] !== "c")) return undefined;
+    const page = (v: Vec3) => editor.toPage(frameOf(path.probe), v);
+    let start = sub[0];
+    let best: { k: number; q: Point; dist: number } | undefined;
+    for (const [k, seg] of sub[2].entries()) {
+      const [, c1, c2, end] = seg as ["c", Vec3, Vec3, Vec3];
+      const [a, b, c, d] = [start, c1, c2, end].map(page);
+      for (let i = 0; i <= 32; i++) {
+        const t = i / 32;
+        const w = [(1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t ** 2, t ** 3];
+        const q: Point = [w[0] * a[0] + w[1] * b[0] + w[2] * c[0] + w[3] * d[0], w[0] * a[1] + w[1] * b[1] + w[2] * c[1] + w[3] * d[1]];
+        const dist = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (!best || dist < best.dist) best = { k, q, dist };
+      }
+      start = end;
+    }
+    return best && { at: best.k + 1 < n ? path.verts[best.k + 1] : path.verts[best.k] + 1, q: best.q };
+  }
+
+  /** Inserts a vertex on the path where it's nearest `p` (for a line, on the nearest segment), on the grid when snapping. */
   function addVertexAt(id: number, p: Point) {
     const path = editablePath(id);
     if (!path) return;
     const pages = path.verts.map((arg) => argHandle(path.call, path.probe, arg)?.point);
-    let best: { at: number; q: Point; dist: number } | undefined;
-    const count = path.closed ? pages.length : pages.length - 1;
+    // A curve's own outline places the point; failing that, the straight segments between its points.
+    const curve = path.tool === "curve" ? onCurve(path, p) : undefined;
+    let best: { at: number; q: Point; dist: number } | undefined = curve && { ...curve, dist: 0 };
+    const count = curve ? 0 : path.closed ? pages.length : pages.length - 1;
     for (let k = 0; k < count; k++) {
       const [a, b] = [pages[k], pages[(k + 1) % pages.length]];
       if (!a || !b) continue;
@@ -982,7 +1015,7 @@
     ];
   }
 
-  /** A line's own items: add a point where you clicked, continue it, close or open it. */
+  /** A path's own items: add a point where you clicked, continue it, close or open it. */
   function pathItems(id: number, p: Point): MenuItem[] {
     const path = editablePath(id);
     if (!path) return [];
@@ -1000,14 +1033,14 @@
     return items;
   }
 
-  /** One of a line's vertices: continue from it if it's an end, or remove it. */
+  /** One of a path's vertices: continue from it if it's an end, or remove it. */
   function vertexItems(call: number, arg: number): MenuItem[] {
     const path = editablePath(call);
     if (!path) return [];
     const items: MenuItem[] = [];
     const last = path.verts[path.verts.length - 1];
     if (!path.closed && (arg === path.verts[0] || arg === last)) {
-      items.push({ label: "Continue line from here", run: () => continueLine(call, arg === path.verts[0]) });
+      items.push({ label: "Continue from here", run: () => continueLine(call, arg === path.verts[0]) });
     }
     const keep = path.closed ? 3 : 2;
     if (path.verts.length > keep) items.push({ label: "Remove point", run: () => editor.edit({ kind: "remove-arg", call, arg, keep }) });

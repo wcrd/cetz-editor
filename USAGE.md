@@ -74,12 +74,14 @@ becomes the selection); on a named point, Rename, Select shapes using it and
 Delete; on empty canvas, Select all, Zoom to fit, Gather anchors at top and
 the points and grid toggles; while joining, Finish, Close and Cancel.
 
-**Editing a line's points.** Right-click a line for **Add point here** (on
-the nearest segment, on the grid when snapping), **Continue from start/end**
-and **Close/Open path**; right-click one of its points to remove it or carry
-on from it. With a line selected, starting the join tool on either end also
-carries on from there: the new points go into the same `line(..)`, and
-clicking the other end closes it.
+**Editing a line's or curve's points.** Right-click a line, or a curve
+through points (`catmull`, `hobby`), for **Add point here** (on the nearest
+segment, or for a curve where the drawn curve passes; on the grid when
+snapping), **Continue from start/end** and **Close/Open path**; right-click
+one of its points to remove it or carry on from it. With a line selected,
+starting the join tool (a curve: the curve tool, **K**) on either end also
+carries on from there: the new points go into the same call, and clicking the
+other end closes it.
 
 **Stacking.** CeTZ draws in code order, so what's in front is what comes later
 in its block. ⌘] moves the selection's code past the next statement that
