@@ -372,7 +372,14 @@
       const origin = first.args.find((a) => a.key === "origin")?.value;
       if (angle === undefined || (origin && origin.type !== "coord")) return undefined;
       const pivot = localToPage(ownerProbe, origin?.type === "coord" ? [origin.x, origin.y] : [0, 0]);
-      return { pivot, angle, sign: handedness(ownerProbe.transform), edit: (a) => ({ kind: "set-arg-text", call: first.id, arg: at, text: `${num(a)}deg` }) };
+      // Back at 0°, a scope that only turned one shape goes away.
+      const unwrap = editor.rotatedShape(owner.id) !== undefined;
+      return {
+        pivot,
+        angle,
+        sign: handedness(ownerProbe.transform),
+        edit: (a) => (a === 0 && unwrap ? { kind: "unrotate", call: owner.id } : { kind: "set-arg-text", call: first.id, arg: at, text: `${num(a)}deg` }),
+      };
     }
 
     const b = probeBounds(probe);

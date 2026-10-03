@@ -75,6 +75,9 @@ pub enum Edit {
     /// group, a scope lets the names inside it be used outside, so nothing
     /// that refers to the call changes. `created` holds the scope.
     Rotate { call: usize, angle: f64, x: f64, y: f64 },
+    /// Undo `Rotate`: replace `scope({ rotate(..); shape })` (`call`) with its
+    /// shape, as the rotation handle does at 0°. `created` holds the shape.
+    Unrotate { call: usize },
     /// Wrap the calls in a named `group(name: "group", { ... })` where the
     /// first of them is. They must sit in the same block; later ones move up
     /// to join it. References from outside to their names become
@@ -391,6 +394,29 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             };
             created.push((patches.len(), 0));
             patches.push(patch(call.range.clone(), text));
+        }
+        Edit::Unrotate { call } => {
+            let scope = find_call(&scene, *call)?;
+            let shape = scene
+                .canvases
+                .iter()
+                .flat_map(|c| &c.calls)
+                .find(|c| c.parent == Some(scope.id) && base_name(&c.callee) != "rotate")
+                .filter(|shape| rotated_scope(&scene, shape).is_some_and(|(s, _)| s.id == scope.id))
+                .ok_or("only a scope holding just a rotate and one shape can be unrotated")?;
+            // Anything else in its body (a comment) would be lost.
+            let root = typst_syntax::parse(source);
+            let root = LinkedNode::new(&root);
+            let block = find_node(&root, &scope.range, SyntaxKind::FuncCall)
+                .and_then(|node| walk::args(&node))
+                .and_then(|args| args.children().find(|c| c.kind() == SyntaxKind::CodeBlock))
+                .and_then(|block| walk::block_code(&block).map(|code| code.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Semicolon)).count()));
+            if block != Some(2) {
+                return Err("can't unrotate: the scope holds more than its rotate and shape".into());
+            }
+            let text = source[shape.range.clone()].replace(&format!("\n{}", indent_at(source, shape.range.start)), &format!("\n{}", indent_at(source, scope.range.start)));
+            created.push((patches.len(), 0));
+            patches.push(patch(scope.range.clone(), text));
         }
         Edit::Ungroup { calls } => {
             let mut names = Vec::new();
@@ -1581,6 +1607,17 @@ mod tests {
         let styled = src.replace("circle((3, 1))", "set-style(fill: red)\n      circle((3, 1))");
         let out = apply(&styled, &Edit::Ungroup { calls: vec![styled.find("group(").unwrap()] }).unwrap();
         assert!(out.source.contains("  scope({\n    rotate(30deg, origin: (4, 1))\n    set-style(fill: red)\n    circle((3, 1))"), "{}", out.source);
+    }
+
+    #[test]
+    fn unrotate_undoes_rotate() {
+        let wrapped = run(Edit::Rotate { call: id("content"), angle: 30.0, x: 2.0, y: 3.0 }).source;
+        let out = apply(&wrapped, &Edit::Unrotate { call: wrapped.find("scope(").unwrap() }).unwrap();
+        assert_eq!(out.source, SRC);
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 8], "content(");
+
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  scope({\n    rotate(30deg)\n    // a comment\n    rect((0, 0), (1, 1))\n  })\n})";
+        assert!(apply(src, &Edit::Unrotate { call: src.find("scope(").unwrap() }).is_err());
     }
 
     #[test]

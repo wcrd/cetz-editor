@@ -65,7 +65,7 @@
       <p>
         Drag the knob above a selected shape; hold <kbd>⇧</kbd> for 15° steps. Polygons, stars and text set their <code>angle</code>; anything else is wrapped in
         a <code>scope</code> that starts with a <code>rotate</code>, which keeps its name usable outside, and later turns edit
-        that rotation.
+        that rotation. Back at 0°, the scope goes away.
       </p>
     </section>
     <section>

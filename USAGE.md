@@ -14,7 +14,7 @@ Press **?** in the app for a quick version of this guide.
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
 | Drag a shape | Move it (snaps its first point to the grid) |
 | Drag the square on a circle, polygon, star or arc | Set its radius (snapped to the grid step) |
-| Drag the knob above a selected shape | Rotate it (⇧: 15° steps, which include level and upright). Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate`. Selecting the scope selects the shape: its handles, inspector and Ungroup work as before |
+| Drag the knob above a selected shape | Rotate it (⇧: 15° steps, which include level and upright). Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate`; turning it back to 0° removes the scope again. Selecting the scope selects the shape: its handles, inspector and Ungroup work as before |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
 | Double-click a group | Enter it to select its children (Esc to leave) |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
