@@ -1,0 +1,45 @@
+\begin{tikzpicture}[
+  surface/.style={draw, fill=gray!10},
+  sideSurface/.style={draw, fill=gray!20},
+  backSurface/.style={draw, fill=gray!15},
+  equip/.style={draw, rounded corners, fill=orange!15, minimum width=2.4cm, minimum height=1cm},
+  adj/.style={->, thick},
+  hidden/.style={dashed, gray},
+  label/.style={midway, fill=white, inner sep=2pt, font=\small}
+]
+
+% Front rectangle
+\coordinate (A) at (0,0);
+\coordinate (B) at (5,0);
+\coordinate (C) at (5,3);
+\coordinate (D) at (0,3);
+\coordinate (E) at (1.4,1.0);
+\coordinate (F) at (6.4,1.0);
+\coordinate (G) at (6.4,4.0);
+\coordinate (H) at (1.4,4.0);
+\filldraw[backSurface] (E) -- (F) -- (G) -- (H) -- cycle;
+\path[surface] (D) -- (C) -- (G) -- (H) -- cycle;
+\path[surface] (A) -- (B) -- (F) -- (E) -- cycle;
+\draw[black, fill=white, opacity=0.12] (A) -- (B) -- (C) -- (D) -- cycle;
+\draw[thick] (A) -- (B) -- (C) -- (D) -- cycle;
+\draw[thick] (E) -- (F) -- (G) -- (H) -- cycle;
+\draw[thick] (A) -- (E);
+\draw[thick] (B) -- (F);
+\draw[thick] (C) -- (G);
+\draw[thick] (D) -- (H);
+\node[font=\bfseries] at (1.84,4.38) {Zone};
+\node[font=\tiny] at (3.11,0.51) {Floor Surface};
+\node[font=\tiny] at (3.23,3.54) {Ceiling Surface};
+\node[font=\tiny] at (6.99,3.25) {Wall Surface};
+\node[font=\tiny] at (8.4,1.76) {type: .Pinned};
+\node[equip] (equip) at (11.88,2.26) {Equipment};
+\coordinate (wallAnchor) at (5.7,2.25);
+\path[sideSurface, fill=pink!97!gray!91!cyan] (B) -- (F) -- (G) -- (C) -- cycle;
+\node[equip, inner sep=0pt, scale=0.5] (equip2) at (8.4,2.25) {Adjacency};
+\draw[thick] (5,1) -- (6.4,1);
+\draw[adj, arrows=-Latex] (equip2.west) -- (wallAnchor)
+  node[label, above] {}
+  node[label, below] {};
+  \draw[thick, arrows=-Latex] (equip2.east) -- (equip.west);
+
+\end{tikzpicture}
