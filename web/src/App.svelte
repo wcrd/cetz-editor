@@ -483,8 +483,16 @@
       border-top: 1px solid var(--border);
     }
     .toggles,
-    .title {
+    .title,
+    .status {
       display: none;
+    }
+    .toolbar {
+      overflow-x: auto;
+      gap: 8px;
+    }
+    .group {
+      flex: none;
     }
   }
 </style>
