@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Properties of the selection, or the document outline when nothing is
+  // Properties of the selection; the outline shows when nothing is
   // selected. Every field commits on change (Enter / blur) as one edit.
   import { tick } from "svelte";
   import type { Editor } from "./editor.svelte";
@@ -31,23 +31,6 @@
     if (base === "line" || base === "bezier") return index === 0 ? "Start" : index === positional.length - 1 ? "End" : `Point ${index + 1}`;
     return `Point ${index + 1}`;
   }
-
-  function summary(call: Call): string {
-    if (call.name) return call.name;
-    for (const a of call.args) {
-      const text = a.key === null ? parseText(a.text) : null;
-      if (text) return text.body;
-    }
-    return call.args[0]?.text ?? "";
-  }
-
-  const outline = $derived(
-    editor.calls.map((c) => {
-      let depth = 0;
-      for (let p = c.parent; p !== null; p = editor.callById.get(p)?.parent ?? null) depth++;
-      return { call: c, depth };
-    }),
-  );
 
   // --- Field commits -------------------------------------------------------
 
@@ -217,47 +200,6 @@
         <button onclick={() => addNamed(ids)}>Set</button>
       </div>
     </section>
-  {:else}
-    {#if editor.scene.points.length > 0}
-      <header><span class="callee">Points</span></header>
-      <ul class="points">
-        {#each editor.scene.points as p (p.id)}
-          <li
-            class:hovered={editor.hoveredPoint === p.id}
-            onpointerenter={() => (editor.hoveredPoint = p.id)}
-            onpointerleave={() => (editor.hoveredPoint = undefined)}
-          >
-            <span class="pname" title={p.path}>{pointName(p.id)}</span>
-            <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
-            <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
-            <span class="users">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    <header><span class="callee">Shapes</span>{#if editor.scope !== undefined}<button class="link" onclick={() => (editor.scope = undefined)}>Exit group</button>{/if}</header>
-    <ul class="outline">
-      {#each outline as { call, depth } (call.id)}
-        <li>
-          <button
-            class:hovered={editor.hovered === call.id}
-            style:padding-left="{8 + depth * 14}px"
-            onclick={() => {
-              editor.scope = call.parent ?? undefined;
-              editor.selection = [call.id];
-            }}
-            onpointerenter={() => (editor.hovered = call.id)}
-            onpointerleave={() => (editor.hovered = undefined)}
-          >
-            <span class="callee small">{call.callee}</span>
-            <span class="summary">{summary(call)}</span>
-            {#if call.in_loop}<span class="badge">loop</span>{/if}
-          </button>
-        </li>
-      {:else}
-        <li class="empty">No CeTZ canvas in this file.</li>
-      {/each}
-    </ul>
   {/if}
   <datalist id="cetz-keys">
     {#each COMMON_KEYS as key}<option value={key}></option>{/each}
@@ -280,10 +222,6 @@
   }
   .callee {
     font: 600 13px ui-monospace, "SF Mono", Menlo, monospace;
-  }
-  .callee.small {
-    font-size: 12px;
-    font-weight: 500;
   }
   .name {
     flex: 1;
@@ -365,41 +303,6 @@
     font-size: 11.5px;
     margin-left: auto;
   }
-  .points {
-    list-style: none;
-    margin: 0 0 12px;
-    padding: 0;
-  }
-  .points li {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 72px 72px 20px;
-    gap: 6px;
-    align-items: center;
-    padding: 2px 4px;
-    border-radius: 4px;
-  }
-  .points li.hovered {
-    background: color-mix(in srgb, var(--point) 10%, transparent);
-  }
-  .points label {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    color: var(--muted);
-  }
-  .points input {
-    width: 100%;
-    min-width: 0;
-  }
-  .pname {
-    font: 600 12px ui-monospace, "SF Mono", Menlo, monospace;
-    color: var(--point);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .points .users {
-    text-align: right;
-  }
   .value {
     display: flex;
     gap: 4px;
@@ -458,51 +361,5 @@
   button.icon {
     padding: 0 6px;
     line-height: 20px;
-  }
-  button.link {
-    border: none;
-    background: none;
-    color: var(--accent);
-    padding: 0;
-    margin-left: auto;
-  }
-  .outline {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .outline button {
-    width: 100%;
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    border: none;
-    background: none;
-    text-align: left;
-    padding: 3px 8px;
-    border-radius: 4px;
-  }
-  .outline button:hover,
-  .outline button.hovered {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-  }
-  .summary {
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-  }
-  .badge {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 0 4px;
-  }
-  .empty {
-    color: var(--muted);
-    padding: 8px;
   }
 </style>
