@@ -19,6 +19,7 @@ Press **?** in the app for a quick version of this guide.
 | Double-click a group | Enter it to select its children (Esc to leave) |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
 | ⌘D / Delete | Duplicate / delete |
+| ⌘C / ⌘X / ⌘V | Copy, cut, paste shapes as CeTZ source (paste it into any text editor, or paste CeTZ code from one onto the canvas). Pasting appends to the active canvas: back into the same drawing each paste steps by (0.5, -0.5) like ⌘D, after a cut or in another tab it lands in place. A name the drawing already uses becomes `name-2`, and the pasted code's references follow |
 | ⌘G / ⇧⌘G | Group the selection / ungroup the selected groups |
 | ⌘] / ⌘[ (Shift: all the way) | Bring forward / send backward |
 | ⌘Z / ⇧⌘Z | Undo / redo, for canvas and code edits alike |

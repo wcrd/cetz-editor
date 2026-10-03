@@ -64,6 +64,12 @@ pub enum Edit {
     Delete { calls: Vec<usize> },
     /// Append a statement to the end of a canvas body (default: the first).
     Insert { canvas: Option<usize>, text: String },
+    /// Append copied statements (source text, as the editor copies them) to
+    /// the end of a canvas, their literal coordinates moved by `(dx, dy)`. A
+    /// name the canvas already uses gets a fresh one (`box` → `box-2`), and
+    /// the pasted code's references to it follow. `created` holds the
+    /// pasted calls.
+    Paste { canvas: Option<usize>, text: String, dx: f64, dy: f64 },
     /// Point a coordinate argument at another call's anchor
     /// (`"name.anchor"`), naming that call first if it has no name.
     Connect { call: usize, arg: usize, target: usize, anchor: String },
@@ -340,6 +346,22 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (at, prefix, suffix) = insertion_point(source, canvas);
             created.push((patches.len(), prefix.len()));
             patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
+        }
+        Edit::Paste { canvas, text, dx, dy } => {
+            let canvas = match canvas {
+                Some(id) => scene.canvases.iter().find(|c| c.id == *id),
+                None => scene.canvases.first(),
+            }
+            .ok_or("no canvas to paste into")?;
+            let (text, starts) = paste_text(&scene, text, *dx, *dy)?;
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            let indent = prefix.trim_start_matches('\n');
+            // Every pasted line after the first starts at the canvas's indent.
+            let indented = text.replace('\n', &format!("\n{indent}"));
+            for start in starts {
+                created.push((patches.len(), prefix.len() + start + text[..start].matches('\n').count() * indent.len()));
+            }
+            patches.push(patch(at..at, format!("{prefix}{indented}{suffix}")));
         }
         Edit::Connect { call, arg, target, anchor } => {
             if call == target {
@@ -956,6 +978,46 @@ fn duplicate_text(source: &str, scene: &Scene, call: &Call, dx: f64, dy: f64) ->
         .map(|p| Patch { start: p.start - call.range.start, end: p.end - call.range.start, text: p.text })
         .collect();
     Ok(finish(text, local, vec![])?.source)
+}
+
+/// Copied statements ready to paste into `scene` (see `Edit::Paste`), and
+/// where each top-level call starts in them.
+fn paste_text(scene: &Scene, text: &str, dx: f64, dy: f64) -> Result<(String, Vec<usize>), String> {
+    // Parse the text as a canvas body of its own.
+    const OPEN: &str = "#canvas({\n";
+    let wrapped = format!("{OPEN}{}\n}})", text.trim());
+    let pasted = scene::parse(&wrapped);
+    let calls: Vec<&Call> = pasted.canvases.iter().flat_map(|c| &c.calls).collect();
+    if !calls.iter().any(|c| c.parent.is_none()) {
+        return Err("nothing to paste: the clipboard has no drawing calls".into());
+    }
+    // Points defined in the pasted code move once, through their definitions.
+    let mut patches = Vec::new();
+    move_calls(&pasted, &calls, dx, dy, false, &mut patches);
+
+    // Names already in the scene get fresh ones, and so do references to them.
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    for call in &calls {
+        let Some(name) = call.name.as_deref().filter(|n| name_taken(scene, n)) else { continue };
+        let fresh = (2..).map(|i| format!("{name}-{i}")).find(|n| !name_taken(scene, n) && !renamed.iter().any(|(_, r)| r == n)).unwrap();
+        set_named(call, "name", Some(&format!("{fresh:?}")), &mut patches)?;
+        renamed.push((name.to_string(), fresh));
+    }
+    if !renamed.is_empty() {
+        let root = typst_syntax::parse(&wrapped);
+        let mut strs = Vec::new();
+        strings(&LinkedNode::new(&root), &mut strs);
+        let names: Vec<Range<usize>> = calls.iter().filter_map(|c| c.args.iter().find(|a| a.key.as_deref() == Some("name"))).map(|a| a.value_range.clone()).collect();
+        for (range, value) in strs.into_iter().filter(|(r, _)| !names.contains(r)) {
+            if let Some((old, fresh)) = renamed.iter().find(|(old, _)| refers(&value, old)) {
+                patches.push(patch(range, format!("{:?}", format!("{fresh}{}", &value[old.len()..]))));
+            }
+        }
+    }
+    let out = finish(&wrapped, patches, vec![])?.source;
+    let body = out[OPEN.len()..out.len() - "\n})".len()].to_string();
+    let starts = scene::parse(&out).canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent.is_none()).map(|c| c.range.start - OPEN.len()).collect();
+    Ok((body, starts))
 }
 
 /// Wraps the calls in a named group (see `Edit::Group`).
@@ -1700,6 +1762,18 @@ mod tests {
         let out = apply(src, &Edit::Insert { canvas: None, text: "rect((0,0), (1,1))".into() }).unwrap();
         assert_eq!(out.source, "#canvas({ line((0,0), (1,1)) \n  rect((0,0), (1,1))\n})");
         assert_eq!(crate::parse(&out.source).canvases[0].calls.len(), 2);
+    }
+
+    #[test]
+    fn paste_appends_moved_copies_with_fresh_names() {
+        let text = "rect((0, 0), (1, 1), name: \"box\")\nline(\"box.east\", (3, 0))\nscope({\n  rotate(30deg, origin: (1, 1))\n  circle((1, 1), name: \"c\")\n  anchor(\"x\", (2, 2))\n})\nline(\"x\", (4, 4))";
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  rect((0, 0), (1, 1), name: \"box\")\n})\n";
+        let out = apply(src, &Edit::Paste { canvas: None, text: text.into(), dx: 0.5, dy: -0.5 }).unwrap();
+        let want = "  rect((0.5, -0.5), (1.5, 0.5), name: \"box-2\")\n  line(\"box-2.east\", (3.5, -0.5))\n  scope({\n    rotate(30deg, origin: (1.5, 0.5))\n    circle((1.5, 0.5), name: \"c\")\n    anchor(\"x\", (2.5, 1.5))\n  })\n  line(\"x\", (4.5, 3.5))\n})";
+        assert!(out.source.ends_with(&format!("{want}\n")), "{}", out.source);
+        let created: Vec<&str> = out.created.iter().map(|&at| &out.source[at..at + 5]).collect();
+        assert_eq!(created, ["rect(", "line(", "scope", "line("]);
+        assert!(apply(src, &Edit::Paste { canvas: None, text: "let x = 1".into(), dx: 0.0, dy: 0.0 }).is_err());
     }
 
     #[test]

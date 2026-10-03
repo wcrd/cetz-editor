@@ -208,6 +208,23 @@
     return !!el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || !!el.closest?.(".cm-editor"));
   }
 
+  // ⌘C / ⌘X / ⌘V on the canvas copy shapes as CeTZ source; in the code
+  // pane or a field they're left to the browser.
+  function oncopy(e: ClipboardEvent, cut = false) {
+    if (isEditingText(e.target) || helpOpen) return;
+    const text = editor.copySelection(cut);
+    if (text === undefined || !e.clipboardData) return;
+    e.clipboardData.setData("text/plain", text);
+    e.preventDefault();
+  }
+  function onpaste(e: ClipboardEvent) {
+    if (isEditingText(e.target) || helpOpen) return;
+    const text = e.clipboardData?.getData("text/plain");
+    if (!text?.trim()) return;
+    e.preventDefault();
+    editor.paste(text);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const typing = isEditingText(e.target);
@@ -368,7 +385,7 @@
 
 <Help bind:open={helpOpen} />
 
-<svelte:window {onkeydown} {onpointerdown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
+<svelte:window {onkeydown} {onpointerdown} oncopy={(e) => oncopy(e)} oncut={(e) => oncopy(e, true)} {onpaste} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
 <div
   class="app"

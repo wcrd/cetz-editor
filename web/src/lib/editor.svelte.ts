@@ -97,6 +97,13 @@ interface Draft {
   dy: number;
 }
 
+/**
+ * What this app last put on the clipboard, shared by every tab: pasting it
+ * back into the editor it came from steps each paste along like ⌘D, unless
+ * it was cut (then the first paste lands in place).
+ */
+let lastCopy: { text: string; from: Editor; pastes: number } | undefined;
+
 export class Editor {
   source = $state("");
   /** A previewed, uncommitted edit (a drag in progress). */
@@ -403,6 +410,41 @@ export class Editor {
       const what = points.length === 1 ? `Deleted ${this.pointLabel(points[0])}` : `Deleted ${points.length} points`;
       this.flash(kept > 0 ? `${what} · ${kept} use${kept === 1 ? "" : "s"} kept as coordinates` : what);
     }
+  }
+
+  // --- Clipboard ------------------------------------------------------------
+
+  /** The selected shapes' source in code order, each statement dedented to its own line: what ⌘C copies. */
+  selectionText(): string | undefined {
+    const calls = this.selected
+      .map((id) => this.callById.get(id))
+      .filter((c) => c !== undefined)
+      .sort((a, b) => a.id - b.id);
+    if (calls.length === 0) return undefined;
+    return calls
+      .map((c) => {
+        const before = this.index.slice(0, c.range.start);
+        const indent = /[ \t]*$/.exec(before.slice(before.lastIndexOf("\n") + 1))?.[0] ?? "";
+        const text = this.index.slice(c.range.start, c.range.end);
+        return indent ? text.replaceAll(`\n${indent}`, "\n") : text;
+      })
+      .join("\n");
+  }
+
+  /** Copies the selection's source; with `cut`, deletes it too. Returns the text, if anything was selected. */
+  copySelection(cut = false): string | undefined {
+    const text = this.selectionText();
+    if (text === undefined) return undefined;
+    lastCopy = { text, from: this, pastes: cut ? -1 : 0 };
+    if (cut) this.deleteSelection();
+    return text;
+  }
+
+  /** Pastes CeTZ source at the end of the active canvas and selects it. */
+  paste(text: string) {
+    const again = lastCopy && lastCopy.text === text && lastCopy.from === this;
+    const n = again ? ++lastCopy!.pastes : 0;
+    this.edit({ kind: "paste", canvas: this.activeCanvas ?? null, text, dx: 0.5 * n, dy: -0.5 * n });
   }
 
   /** Wraps the selected shapes in a new group, which becomes the selection. */
