@@ -2,10 +2,21 @@
   // The source pane. CodeMirror owns undo history for every change —
   // typing and canvas edits alike — so Cmd+Z works the same everywhere.
   import { onMount } from "svelte";
-  import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, Decoration } from "@codemirror/view";
+  import {
+    EditorView,
+    keymap,
+    lineNumbers,
+    highlightActiveLine,
+    drawSelection,
+    Decoration,
+    ViewPlugin,
+    type DecorationSet,
+    type ViewUpdate,
+  } from "@codemirror/view";
   import { Annotation, ChangeSet, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
   import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
   import { bracketMatching, indentOnInput } from "@codemirror/language";
+  import { highlight } from "./core";
   import { OffsetIndex } from "./offsets";
   import type { Editor } from "./editor.svelte";
   import type { Patch, Range } from "./scene";
@@ -39,6 +50,33 @@
   const selectedMark = Decoration.mark({ class: "cm-call-selected" });
   const hoveredMark = Decoration.mark({ class: "cm-call-hovered" });
 
+  // Syntax colors from Typst's own highlighter, re-run on every edit.
+  const syntaxMarks = new Map<string, Decoration>();
+  function syntaxDecorations(text: string): DecorationSet {
+    const index = new OffsetIndex(text);
+    const spans: [number, number, string][] = JSON.parse(highlight(text));
+    const ranges = spans
+      .filter(([start, end]) => start < end)
+      .map(([start, end, cls]) => {
+        let mark = syntaxMarks.get(cls);
+        if (!mark) syntaxMarks.set(cls, (mark = Decoration.mark({ class: cls })));
+        return mark.range(index.toUtf16(start), index.toUtf16(end));
+      });
+    return Decoration.set(ranges, true);
+  }
+  const syntax = ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = syntaxDecorations(view.state.doc.toString());
+      }
+      update(update: ViewUpdate) {
+        if (update.docChanged) this.decorations = syntaxDecorations(update.state.doc.toString());
+      }
+    },
+    { decorations: (v) => v.decorations },
+  );
+
   function createState(text: string): EditorState {
     return EditorState.create({ doc: text, extensions: extensions() });
   }
@@ -51,6 +89,7 @@
       highlightActiveLine(),
       bracketMatching(),
       indentOnInput(),
+      syntax,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       marks,
       EditorView.lineWrapping,
@@ -187,6 +226,50 @@
   }
   .code :global(.cm-call-hovered) {
     background: color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+  /* Typst's highlight classes (typ-*), in a GitHub-like palette. */
+  .code :global(.typ-comment) {
+    color: var(--muted);
+    font-style: italic;
+  }
+  .code :global(.typ-key),
+  .code :global(.typ-marker),
+  .code :global(.typ-term),
+  .code :global(.typ-math-delim),
+  .code :global(.typ-math-op) {
+    color: light-dark(#cf222e, #ff7b72);
+  }
+  .code :global(.typ-func) {
+    color: light-dark(#6639ba, #d2a8ff);
+  }
+  .code :global(.typ-pol) {
+    color: light-dark(#953800, #ffa657);
+  }
+  .code :global(.typ-num),
+  .code :global(.typ-escape) {
+    color: light-dark(#0550ae, #79c0ff);
+  }
+  .code :global(.typ-str),
+  .code :global(.typ-raw) {
+    color: light-dark(#0a3069, #a5d6ff);
+  }
+  .code :global(.typ-label),
+  .code :global(.typ-ref) {
+    color: light-dark(#116329, #7ee787);
+  }
+  .code :global(.typ-op),
+  .code :global(.typ-punct) {
+    color: color-mix(in srgb, var(--text) 70%, transparent);
+  }
+  .code :global(.typ-heading),
+  .code :global(.typ-strong) {
+    font-weight: 600;
+  }
+  .code :global(.typ-emph) {
+    font-style: italic;
+  }
+  .code :global(.typ-link) {
+    text-decoration: underline;
   }
   .code :global(.cm-focused) {
     outline: none;

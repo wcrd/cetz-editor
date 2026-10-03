@@ -31,6 +31,14 @@ pub fn scene(source: &str) -> String {
     serde_json::to_string(&cetz_scene::parse(source)).unwrap_or_else(|_| "{\"canvases\":[]}".into())
 }
 
+/// Highlighted byte ranges as JSON `[[start, end, cssClass], ...]`, outer
+/// nodes first.
+#[wasm_bindgen]
+pub fn highlight(source: &str) -> String {
+    let spans: Vec<_> = cetz_scene::highlight(source).into_iter().map(|(r, class)| (r.start, r.end, class)).collect();
+    serde_json::to_string(&spans).unwrap_or_else(|_| "[]".into())
+}
+
 /// The structure of one argument value (see `cetz_scene::expr`) as JSON, or
 /// `null` if it isn't a single expression.
 #[wasm_bindgen]
