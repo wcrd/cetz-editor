@@ -6,6 +6,8 @@
   import Outline from "./lib/Outline.svelte";
   import type { Editor, Tool } from "./lib/editor.svelte";
   import { loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
+  import { PanelSize } from "./lib/panelSize.svelte";
+  import Resizer from "./lib/Resizer.svelte";
   import { Tabs } from "./lib/tabs.svelte";
 
   // Restore the last session's tabs in this browser; otherwise start on the sample.
@@ -64,63 +66,29 @@
     }
   }
 
-  // The code panel's width, dragged by its edge; undefined is the default
-  // (30% of the window). Remembered in this browser.
-  const CODE_WIDTH_KEY = "cetz-editor:code-width";
-  let codeWidth = $state(readCodeWidth());
-  let resizing = $state<{ x: number; width: number }>();
-  let codePanel: HTMLElement;
-  function readCodeWidth(): number | undefined {
+  // Whether the inspector panel is open; remembered like the code panel.
+  const SIDE_OPEN_KEY = "cetz-editor:side-open";
+  let sideOpen = $state(readSideOpen());
+  function readSideOpen(): boolean {
     try {
-      const width = Number(localStorage.getItem(CODE_WIDTH_KEY));
-      return width > 0 ? width : undefined;
+      return localStorage.getItem(SIDE_OPEN_KEY) !== "false";
     } catch {
-      return undefined;
+      return true;
     }
   }
-  function saveCodeWidth() {
+  function toggleSide(open = !sideOpen) {
+    sideOpen = open;
     try {
-      if (codeWidth === undefined) localStorage.removeItem(CODE_WIDTH_KEY);
-      else localStorage.setItem(CODE_WIDTH_KEY, String(Math.round(codeWidth)));
+      localStorage.setItem(SIDE_OPEN_KEY, String(open));
     } catch {
       // Not remembered; that's fine.
     }
   }
-  /** The panel's width as rendered, which the CSS may have clamped. */
-  const renderedCodeWidth = () => codePanel.getBoundingClientRect().width;
+  const sideLabel = $derived(editor.selected.length > 0 ? "Inspector" : "Outline");
 
-  function onResizeStart(e: PointerEvent) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    resizing = { x: e.clientX, width: renderedCodeWidth() };
-  }
-  function onResizeMove(e: PointerEvent) {
-    if (resizing) codeWidth = resizing.width + e.clientX - resizing.x;
-  }
-  function onResizeEnd() {
-    if (!resizing) return;
-    resizing = undefined;
-    // Keep what the CSS allowed, not how far past its limit the pointer went.
-    codeWidth = renderedCodeWidth();
-    saveCodeWidth();
-  }
-  function onResizeKey(e: KeyboardEvent) {
-    const step = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
-    if (step === undefined) return;
-    // Keep the arrows from also nudging the selected shapes.
-    e.preventDefault();
-    e.stopPropagation();
-    codeWidth = renderedCodeWidth() + (e.shiftKey ? step * 4 : step);
-    requestAnimationFrame(() => {
-      codeWidth = renderedCodeWidth();
-      saveCodeWidth();
-    });
-  }
-  function resetCodeWidth() {
-    codeWidth = undefined;
-    saveCodeWidth();
-  }
+  // Panel widths, dragged by their edges; remembered in this browser.
+  const codeSize = new PanelSize("cetz-editor:code-width", 1);
+  const sideSize = new PanelSize("cetz-editor:side-width", -1);
 
   // Infinite canvas view; remembered in this browser like the code panel.
   const INFINITE_KEY = "cetz-editor:infinite";
@@ -210,6 +178,12 @@
     if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void save(editor, e.shiftKey);
+      return;
+    }
+    // Checked by key position: Option changes what ⌥⌘\ types.
+    if (mod && e.altKey && e.code === "Backslash") {
+      e.preventDefault();
+      toggleSide();
       return;
     }
     if (mod && e.key === "\\") {
@@ -333,8 +307,10 @@
 
 <div
   class="app"
-  class:resizing
-  style:--code-width={codeWidth === undefined ? null : `clamp(var(--code-min), ${codeWidth}px, 100vw - 600px)`}
+  class:resizing={codeSize.dragging || sideSize.dragging}
+  class:side-closed={!sideOpen}
+  style:--code-width={codeSize.css}
+  style:--side-width={sideSize.css}
 >
   <header class="toolbar" class:code-open={codeOpen}>
     <div class="section code-section">
@@ -423,6 +399,18 @@
         <button class="pct" title="Fit (⌘0)" onclick={() => editor.viewport?.fit()}>{Math.round(editor.zoom * 100)}%</button>
         <button title="Zoom in (⌘+)" aria-label="Zoom in" onclick={() => editor.viewport?.zoomBy(1.25)}>+</button>
       </div>
+
+      <div class="group">
+        <button
+          class:active={sideOpen}
+          title="{sideOpen ? 'Hide' : 'Show'} {sideLabel.toLowerCase()} (⌥⌘\)"
+          aria-label="Toggle inspector panel"
+          aria-pressed={sideOpen}
+          onclick={() => toggleSide()}
+        >
+          <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM14 5v14M16 9h1.5M16 12h1.5" /></svg>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -452,7 +440,7 @@
   </div>
 
   <main class:code-open={codeOpen}>
-    <aside class="code-panel" aria-label="Code" bind:this={codePanel}>
+    <aside class="code-panel" aria-label="Code">
       {#if !codeOpen}
         <button class="rail" title="Show code (⌘\)" onclick={() => toggleCode(true)}>
           <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
@@ -471,23 +459,7 @@
           <div class="code" class:hidden={t !== editor}><CodeEditor editor={t} /></div>
         {/each}
       </div>
-      {#if codeOpen}
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-        <div
-          class="resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize code panel"
-          title="Drag to resize · double-click to reset"
-          tabindex="0"
-          onpointerdown={onResizeStart}
-          onpointermove={onResizeMove}
-          onpointerup={onResizeEnd}
-          onpointercancel={onResizeEnd}
-          ondblclick={resetCodeWidth}
-          onkeydown={onResizeKey}
-        ></div>
-      {/if}
+      {#if codeOpen}<Resizer size={codeSize} label="Resize code panel" />{/if}
     </aside>
     <section class="stage">
       {#key editor}<Canvas {editor} />{/key}
@@ -504,14 +476,30 @@
       {#if editor.notice}<div class="notice" role="status">{editor.notice}</div>{/if}
       {#if dropping}<div class="drop">Drop a .typ file to open it</div>{/if}
     </section>
-    <aside class="side" aria-label="Inspector">
-      {#key editor}
-        {#if editor.selected.length > 0}
-          <Inspector {editor} />
-        {:else}
-          <Outline {editor} />
-        {/if}
-      {/key}
+    <aside class="side" aria-label={sideLabel}>
+      {#if sideOpen}
+        <Resizer size={sideSize} label="Resize {sideLabel.toLowerCase()}" />
+        <div class="panel-header">
+          <span>{sideLabel}</span>
+          <button title="Hide {sideLabel.toLowerCase()} (⌥⌘\)" aria-label="Hide inspector panel" onclick={() => toggleSide(false)}>
+            <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+        </div>
+        <div class="side-body">
+          {#key editor}
+            {#if editor.selected.length > 0}
+              <Inspector {editor} />
+            {:else}
+              <Outline {editor} />
+            {/if}
+          {/key}
+        </div>
+      {:else}
+        <button class="rail" title="Show {sideLabel.toLowerCase()} (⌥⌘\)" onclick={() => toggleSide(true)}>
+          <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+          <span>{sideLabel}</span>
+        </button>
+      {/if}
     </aside>
   </main>
 </div>
@@ -573,11 +561,19 @@
   }
 
   .app {
-    /* Room for the toolbar's code section: its buttons plus "Loading compiler…". */
-    --code-min: 320px;
+    /* Columns: the panels keep their widths and the canvas takes the rest,
+       down to a minimum; past that the panels give way toward theirs. The
+       code panel's minimum fits its toolbar section: the buttons plus
+       "Loading compiler…". */
+    --code-col: minmax(320px, var(--code-width, 30%));
+    --stage-col: minmax(260px, 1fr);
+    --side-col: minmax(260px, var(--side-width, 340px));
     display: flex;
     flex-direction: column;
     height: 100vh;
+  }
+  .app.side-closed {
+    --side-col: 28px;
   }
   /* The header shares the body's code column, so the file controls sit over
      the code and the drawing tools start at the canvas's left edge. */
@@ -590,7 +586,7 @@
     min-height: 34px;
   }
   .toolbar.code-open {
-    grid-template-columns: var(--code-width, minmax(var(--code-min), 30%)) minmax(0, 1fr);
+    grid-template-columns: var(--code-col) var(--stage-col) var(--side-col);
   }
   /* Too narrow to line up with the code column and still fit the canvas
      controls; let the file controls take only what they need. */
@@ -613,6 +609,7 @@
     border-right: 1px solid var(--border);
   }
   .canvas-section {
+    grid-column: 2 / -1;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -822,11 +819,11 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) 340px;
+    grid-template-columns: 28px var(--stage-col) var(--side-col);
     grid-template-areas: "code stage side";
   }
   main.code-open {
-    grid-template-columns: var(--code-width, minmax(var(--code-min), 30%)) minmax(0, 1fr) 340px;
+    grid-template-columns: var(--code-col) var(--stage-col) var(--side-col);
   }
   .stage {
     grid-area: stage;
@@ -834,6 +831,9 @@
     min-width: 0;
   }
   .side {
+    position: relative;
+    display: flex;
+    flex-direction: column;
     grid-area: side;
     border-left: 1px solid var(--border);
     background: var(--panel);
@@ -849,36 +849,6 @@
     background: var(--panel);
     display: flex;
     flex-direction: column;
-  }
-  /* Straddles the panel's right border so it's easy to grab. */
-  .resizer {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: -4px;
-    width: 7px;
-    z-index: 5;
-    cursor: col-resize;
-    touch-action: none;
-  }
-  .resizer::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 3px;
-    width: 1px;
-    transition: background 0.1s;
-  }
-  .resizer:hover::after,
-  .resizer:focus-visible::after,
-  .resizing .resizer::after {
-    left: 2px;
-    width: 3px;
-    background: var(--accent);
-  }
-  .resizer:focus-visible {
-    outline: none;
   }
   .app.resizing {
     cursor: col-resize;
@@ -912,6 +882,10 @@
   }
   .code.hidden {
     display: none;
+  }
+  .side-body {
+    flex: 1;
+    min-height: 0;
   }
   .panel-header button,
   .rail {
@@ -1022,8 +996,16 @@
       grid-template-areas: "stage" "side" "code";
     }
     main:not(.code-open) .code-panel,
-    .resizer {
+    .side-closed .side {
       display: none;
+    }
+    .side-closed main {
+      grid-template-rows: minmax(0, 1fr);
+      grid-template-areas: "stage";
+    }
+    .side-closed main.code-open {
+      grid-template-rows: minmax(0, 1fr) 35%;
+      grid-template-areas: "stage" "code";
     }
     .side {
       border-left: none;
