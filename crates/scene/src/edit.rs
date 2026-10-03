@@ -5,6 +5,8 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
+use typst_syntax::{LinkedNode, SyntaxKind};
+
 use crate::scene::{self, Call, Scene, Value};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,6 +25,13 @@ pub enum Edit {
     },
     /// Move a shared point's definition; every use follows.
     SetPoint { point: usize, x: f64, y: f64 },
+    /// Create a named point at `(x, y)`. It joins a points dictionary that an
+    /// anchor loop names (`pts = (..., I: (x, y))`) when the canvas has one,
+    /// else becomes `anchor("P1", (x, y))` before the first draw call.
+    /// `created` holds the new point's id.
+    AddPoint { canvas: Option<usize>, x: f64, y: f64, name: Option<String> },
+    /// Rename a point's definition and every reference to it by that name.
+    RenamePoint { point: usize, name: String },
     /// Turn a literal coordinate argument into a shared point: insert
     /// `anchor("name", (x, y))` before the call and use `"name"` instead.
     ExtractPoint { call: usize, arg: usize, name: Option<String> },
@@ -79,6 +88,77 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let p = scene.point(*point).ok_or_else(|| format!("no shared point at offset {point}"))?;
             patches.push(patch(p.x_range.clone(), num(*x)));
             patches.push(patch(p.y_range.clone(), num(*y)));
+        }
+        Edit::AddPoint { canvas, x, y, name } => {
+            let canvas = match canvas {
+                Some(id) => scene.canvases.iter().find(|c| c.id == *id),
+                None => scene.canvases.first(),
+            }
+            .ok_or("no canvas to add a point to")?;
+            let value = format!("({}, {})", num(*x), num(*y));
+            if let Some((dict, keys)) = anchored_dict(source, &scene, canvas) {
+                let name = match name {
+                    Some(n) => valid_new_name(&scene, n)?,
+                    None => next_key(&scene, &keys),
+                };
+                let prefix = format!(", {name}: ");
+                created.push((patches.len(), prefix.len()));
+                patches.push(patch(dict..dict, format!("{prefix}{value}")));
+            } else {
+                let name = match name {
+                    Some(n) => valid_new_name(&scene, n)?,
+                    None => unique_point_name(&scene),
+                };
+                let definition = format!("anchor({name:?}, ");
+                match canvas.calls.iter().find(|c| c.parent.is_none()) {
+                    Some(first) => {
+                        let line_start = source[..first.range.start].rfind('\n').map_or(0, |i| i + 1);
+                        let indent = &source[line_start..first.range.start];
+                        if indent.trim().is_empty() {
+                            created.push((patches.len(), indent.len() + definition.len()));
+                            patches.push(patch(line_start..line_start, format!("{indent}{definition}{value})\n")));
+                        } else {
+                            created.push((patches.len(), definition.len()));
+                            patches.push(patch(first.range.start..first.range.start, format!("{definition}{value}); ")));
+                        }
+                    }
+                    None => {
+                        let (at, prefix, suffix) = insertion_point(source, canvas);
+                        created.push((patches.len(), prefix.len() + definition.len()));
+                        patches.push(patch(at..at, format!("{prefix}{definition}{value}){suffix}")));
+                    }
+                }
+            }
+        }
+        Edit::RenamePoint { point, name } => {
+            let p = scene.point(*point).ok_or_else(|| format!("no shared point at offset {point}"))?;
+            let range = p.name_range.clone().ok_or("this point has no name of its own to rename")?;
+            let old = if p.name_quoted { p.anchors.first().cloned().unwrap_or_default() } else { source[range.clone()].to_string() };
+            if *name == old {
+                return finish(source, patches, created);
+            }
+            let name = valid_new_name(&scene, name)?;
+            patches.push(patch(range.clone(), if p.name_quoted { format!("{name:?}") } else { name.clone() }));
+            // Uses of the old name: `"old"` (an anchor it defines), `old`, or `var.old`.
+            let renamed_anchor = p.name_quoted || p.anchors.iter().any(|a| *a == old);
+            for arg in scene.canvases.iter().flat_map(|c| &c.calls).flat_map(|c| &c.args).filter(|a| a.point == Some(*point)) {
+                // The definition itself: its value, and (for `anchor("C", ..)`) its name.
+                if arg.value_range == p.range || arg.value_range == range {
+                    continue;
+                }
+                let text = arg.text.as_str();
+                let replacement = match &arg.value {
+                    Value::Str { value } if renamed_anchor && *value == old => Some(format!("{name:?}")),
+                    Value::Expr if text == old => Some(name.clone()),
+                    Value::Expr if text.rsplit_once('.').is_some_and(|(_, field)| field == old) => {
+                        text.rsplit_once('.').map(|(base, _)| format!("{base}.{name}"))
+                    }
+                    _ => None,
+                };
+                if let Some(r) = replacement {
+                    patches.push(patch(arg.value_range.clone(), r));
+                }
+            }
         }
         Edit::ExtractPoint { call, arg, name } => {
             let call = find_call(&scene, *call)?;
@@ -275,13 +355,61 @@ fn move_calls(scene: &Scene, calls: &[&Call], dx: f64, dy: f64, detach: bool, pa
     }
 }
 
+/// The end of the last entry of a points dictionary in this canvas that an
+/// anchor loop turns into anchors, and the dictionary's keys.
+fn anchored_dict(source: &str, scene: &Scene, canvas: &scene::Canvas) -> Option<(usize, Vec<String>)> {
+    let var = scene.variables.iter().rev().find(|v| {
+        v.kind == scene::VariableKind::Points
+            && (v.canvas == Some(canvas.id) || v.canvas.is_none())
+            && scene.points.iter().any(|p| p.path.starts_with(&format!("{}.", v.name)) && !p.anchors.is_empty())
+    })?;
+    let root = typst_syntax::parse(source);
+    let dict = find_node(&LinkedNode::new(&root), &var.value_range, SyntaxKind::Dict)?;
+    let entries: Vec<_> = dict.children().filter(|c| c.kind() == SyntaxKind::Named).collect();
+    let keys = entries.iter().filter_map(|e| e.children().next()).map(|k| k.get().leaf_text().to_string()).collect();
+    Some((entries.last()?.range().end, keys))
+}
+
+fn find_node<'a>(node: &LinkedNode<'a>, range: &Range<usize>, kind: SyntaxKind) -> Option<LinkedNode<'a>> {
+    if node.range() == *range && node.kind() == kind {
+        return Some(node.clone());
+    }
+    node.children().filter(|c| c.range().start <= range.start && range.end <= c.range().end).find_map(|c| find_node(&c, range, kind))
+}
+
+/// The next free key in the dictionary's style: `I` after `A`..`H`, else `P1`...
+fn next_key(scene: &Scene, keys: &[String]) -> String {
+    let letters = !keys.is_empty() && keys.iter().all(|k| k.len() == 1 && k.chars().all(|c| c.is_ascii_uppercase()));
+    if letters {
+        if let Some(free) = ('A'..='Z').map(String::from).find(|k| !keys.contains(k) && !name_taken(scene, k)) {
+            return free;
+        }
+    }
+    unique_point_name(scene)
+}
+
+fn name_taken(scene: &Scene, name: &str) -> bool {
+    scene.points.iter().any(|p| p.anchors.iter().any(|a| a == name) || p.path == name)
+        || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(name))
+        || scene.variables.iter().any(|v| v.name == name)
+}
+
+/// Checks a name for a new or renamed point: an identifier nothing else uses.
+fn valid_new_name(scene: &Scene, name: &str) -> Result<String, String> {
+    let mut chars = name.chars();
+    let ok = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    if !ok {
+        return Err(format!("\"{name}\" isn't a valid name: use letters, digits, - and _"));
+    }
+    if name_taken(scene, name) {
+        return Err(format!("\"{name}\" is already used"));
+    }
+    Ok(name.to_string())
+}
+
 /// `P1`, `P2`, ... whichever isn't already an anchor or element name.
 fn unique_point_name(scene: &Scene) -> String {
-    let taken = |n: &str| {
-        scene.points.iter().any(|p| p.anchors.iter().any(|a| a == n))
-            || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n))
-    };
-    (1..).map(|i| format!("P{i}")).find(|n| !taken(n)).unwrap()
+    (1..).map(|i| format!("P{i}")).find(|n| !name_taken(scene, n)).unwrap()
 }
 
 fn set_named(call: &Call, key: &str, text: Option<&str>, patches: &mut Vec<Patch>) -> Result<(), String> {
@@ -589,6 +717,46 @@ mod tests {
         assert_eq!(scene.point(rect.args[1].point.unwrap()).unwrap().path, "P1");
         // Already shared or not a literal: refused.
         assert!(apply(SHARED, &Edit::ExtractPoint { call: shared_id(SHARED, r#"line("A""#), arg: 0, name: None }).is_err());
+    }
+
+    #[test]
+    fn add_point_joins_an_anchored_dictionary() {
+        let out = apply(SHARED, &Edit::AddPoint { canvas: None, x: 7.0, y: 2.0, name: None }).unwrap();
+        assert!(out.source.contains("let pts = (A: (0, 0), B: (2, 0), C: (7, 2))"), "{}", out.source);
+        let scene = crate::parse(&out.source);
+        let p = scene.point(out.created[0]).unwrap();
+        assert_eq!((p.path.as_str(), p.anchors.clone()), ("pts.C", vec!["C".to_string()]));
+    }
+
+    #[test]
+    fn add_point_inserts_an_anchor_otherwise() {
+        let src = "#canvas({\n  import draw: *\n  rect((0, 0), (1, 1))\n})";
+        let out = apply(src, &Edit::AddPoint { canvas: None, x: 1.5, y: 0.0, name: None }).unwrap();
+        assert_eq!(out.source, "#canvas({\n  import draw: *\n  anchor(\"P1\", (1.5, 0))\n  rect((0, 0), (1, 1))\n})");
+        assert_eq!(crate::parse(&out.source).point(out.created[0]).unwrap().path, "P1");
+        let out = apply(src, &Edit::AddPoint { canvas: None, x: 0.0, y: 0.0, name: Some("Top".into()) }).unwrap();
+        assert!(out.source.contains("anchor(\"Top\", (0, 0))"));
+        assert!(apply(src, &Edit::AddPoint { canvas: None, x: 0.0, y: 0.0, name: Some("1x".into()) }).is_err());
+    }
+
+    #[test]
+    fn rename_point_updates_references() {
+        let scene = crate::parse(SHARED);
+        let b = scene.points.iter().find(|p| p.path == "pts.B").unwrap().id;
+        let out = apply(SHARED, &Edit::RenamePoint { point: b, name: "Right".into() }).unwrap();
+        assert!(out.source.contains("let pts = (A: (0, 0), Right: (2, 0))"), "{}", out.source);
+        assert!(out.source.contains(r#"line("A", "Right")"#));
+        assert!(out.source.contains(r#"line("Right", (3, 1))"#));
+
+        let src = "#let O = (0, 0)\n#canvas({\n  anchor(\"C\", (5, 5))\n  line(O, \"C\")\n})";
+        let scene = crate::parse(src);
+        let o = scene.points.iter().find(|p| p.path == "O").unwrap().id;
+        let c = scene.points.iter().find(|p| p.path == "C").unwrap().id;
+        let out = apply(src, &Edit::RenamePoint { point: o, name: "origin".into() }).unwrap();
+        assert!(out.source.contains("#let origin = (0, 0)") && out.source.contains(r#"line(origin, "C")"#), "{}", out.source);
+        let out = apply(src, &Edit::RenamePoint { point: c, name: "top".into() }).unwrap();
+        assert!(out.source.contains(r#"anchor("top", (5, 5))"#) && out.source.contains(r#"line(O, "top")"#), "{}", out.source);
+        assert!(apply(src, &Edit::RenamePoint { point: c, name: "O".into() }).is_err());
     }
 
     #[test]

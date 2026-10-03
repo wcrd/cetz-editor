@@ -25,6 +25,11 @@ pub struct Point {
     pub y_range: Range<usize>,
     /// CeTZ anchor names bound to this point.
     pub anchors: Vec<String>,
+    /// Where its own name is written (dictionary key, `let` name, or the
+    /// anchor's string), for renaming.
+    pub name_range: Option<Range<usize>>,
+    /// Whether that name is a string literal (an anchor) rather than an identifier.
+    pub name_quoted: bool,
 }
 
 /// How an argument refers to a point, before resolving it.
@@ -50,7 +55,24 @@ pub(crate) fn collect(root: &LinkedNode) -> Vec<Point> {
 
 fn point(path: String, node: &LinkedNode) -> Option<Point> {
     let (x, y, x_range, y_range) = coord(node)?;
-    Some(Point { id: node.offset(), path, x, y, range: node.range(), x_range, y_range, anchors: Vec::new() })
+    Some(Point {
+        id: node.offset(),
+        path,
+        x,
+        y,
+        range: node.range(),
+        x_range,
+        y_range,
+        anchors: Vec::new(),
+        name_range: None,
+        name_quoted: false,
+    })
+}
+
+fn named(mut p: Point, name: &LinkedNode, quoted: bool) -> Point {
+    p.name_range = Some(name.range());
+    p.name_quoted = quoted;
+    p
 }
 
 /// `let A = (0, 0)`, `let pts = (A: (0, 0), ...)`, `let ps = ((0, 0), ...)`.
@@ -62,14 +84,15 @@ fn collect_lets(node: &LinkedNode, points: &mut Vec<Point>) {
         {
             let name = pattern.get().leaf_text().to_string();
             if let Some(p) = point(name.clone(), &value) {
-                points.push(p);
+                points.push(named(p, &pattern, false));
             } else if value.kind() == SyntaxKind::Dict {
                 for entry in value.children().filter(|c| c.kind() == SyntaxKind::Named) {
-                    let key = entry.children().next().map(|k| k.get().leaf_text().to_string());
-                    if let (Some(key), Some(v)) = (key, entry.children().last())
-                        && let Some(p) = point(format!("{name}.{key}"), &v)
-                    {
-                        points.push(p);
+                    let key_node = entry.children().next();
+                    if let (Some(key_node), Some(v)) = (key_node, entry.children().last()) {
+                        let key = key_node.get().leaf_text().to_string();
+                        if let Some(p) = point(format!("{name}.{key}"), &v) {
+                            points.push(named(p, &key_node, false));
+                        }
                     }
                 }
             } else if value.kind() == SyntaxKind::Array {
@@ -99,9 +122,10 @@ fn anchor_call(call: &LinkedNode, points: &mut Vec<Point>) {
     }
     let Some(args) = walk::args(call) else { return };
     let items: Vec<_> = args.children().filter(|c| is_item(c)).collect();
-    let (Some(name), Some(value)) = (items.first(), items.get(1)) else { return };
-    let Some(name) = name.get().cast::<ast::Str>().map(|s| s.get().to_string()) else { return };
-    if let Some(mut p) = point(name.clone(), value) {
+    let (Some(name_node), Some(value)) = (items.first(), items.get(1)) else { return };
+    let Some(name) = name_node.get().cast::<ast::Str>().map(|s| s.get().to_string()) else { return };
+    if let Some(p) = point(name.clone(), value) {
+        let mut p = named(p, name_node, true);
         p.anchors.push(name);
         points.push(p);
     } else if let Some(Link::Path(path)) = link(value) {
