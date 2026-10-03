@@ -55,6 +55,28 @@
     editor.edit({ kind: "set-coord", call: call.id, arg: i, x, y });
   }
 
+  function setPoint(id: number, axis: "x" | "y", value: string) {
+    const p = editor.pointById.get(id);
+    const n = Number(value);
+    if (!p || !Number.isFinite(n)) return;
+    editor.edit({ kind: "set-point", point: id, x: axis === "x" ? n : p.x, y: axis === "y" ? n : p.y });
+  }
+
+  /** Replaces a use of a shared point with its current value, so it no longer follows. */
+  function detach(call: Call, i: number) {
+    const p = call.args[i].point === null ? undefined : editor.pointById.get(call.args[i].point!);
+    if (p) editor.edit({ kind: "set-coord", call: call.id, arg: i, x: p.x, y: p.y });
+  }
+
+  function share(call: Call, i: number) {
+    editor.edit({ kind: "extract-point", call: call.id, arg: i, name: null });
+  }
+
+  function pointName(id: number): string {
+    const p = editor.pointById.get(id);
+    return p ? (p.anchors[0] ?? p.path) : "";
+  }
+
   function setArgText(call: Call, i: number, text: string) {
     if (text.trim() === "" || text === call.args[i].text) return;
     editor.edit({ kind: "set-arg-text", call: call.id, arg: i, text });
@@ -126,10 +148,29 @@
         {#if arg.key === null}
           <div class="row">
             <span class="label">{label(call, arg, i)}</span>
-            {#if arg.value.type === "coord"}
-              <div class="xy">
+            {#if arg.point !== null && editor.pointById.get(arg.point)}
+              {@const p = editor.pointById.get(arg.point)!}
+              <div
+                class="shared"
+                role="group"
+                onpointerenter={() => (editor.hoveredPoint = p.id)}
+                onpointerleave={() => (editor.hoveredPoint = undefined)}
+              >
+                <div class="xy">
+                  <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
+                  <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
+                </div>
+                <div class="link">
+                  <span class="chip" title="Shared point: edits move every shape that uses it">→ {pointName(p.id)}{#if p.path !== pointName(p.id)}<span class="path"> ({p.path})</span>{/if}</span>
+                  <span class="users">{editor.pointUsers.get(p.id)?.length ?? 0} uses</span>
+                  <button class="small" title="Use a copy of this point's position instead of the shared point" onclick={() => detach(call, i)}>Detach</button>
+                </div>
+              </div>
+            {:else if arg.value.type === "coord"}
+              <div class="xy with-action">
                 <label>x <input type="number" step={editor.gridStep} value={num(arg.value.x)} onchange={(e) => setCoord(call, i, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
                 <label>y <input type="number" step={editor.gridStep} value={num(arg.value.y)} onchange={(e) => setCoord(call, i, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
+                <button class="small" title="Make this a shared point other shapes can use" onclick={() => share(call, i)}>Share</button>
               </div>
             {:else if arg.value.type === "content"}
               {@const inner = editor.index.slice(arg.value.inner.start, arg.value.inner.end)}
@@ -200,6 +241,23 @@
       </div>
     </section>
   {:else}
+    {#if editor.scene.points.length > 0}
+      <header><span class="callee">Points</span></header>
+      <ul class="points">
+        {#each editor.scene.points as p (p.id)}
+          <li
+            class:hovered={editor.hoveredPoint === p.id}
+            onpointerenter={() => (editor.hoveredPoint = p.id)}
+            onpointerleave={() => (editor.hoveredPoint = undefined)}
+          >
+            <span class="pname" title={p.path}>{pointName(p.id)}</span>
+            <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
+            <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
+            <span class="users">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
     <header><span class="callee">Shapes</span>{#if editor.scope !== undefined}<button class="link" onclick={() => (editor.scope = undefined)}>Exit group</button>{/if}</header>
     <ul class="outline">
       {#each outline as { call, depth } (call.id)}
@@ -293,6 +351,77 @@
   .xy input {
     width: 100%;
     min-width: 0;
+  }
+  .xy.with-action {
+    grid-template-columns: 1fr 1fr auto;
+  }
+  .shared {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .link {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .chip {
+    color: var(--point);
+    font: 600 11.5px ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chip .path {
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .users {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  button.small {
+    padding: 1px 6px;
+    font-size: 11.5px;
+    margin-left: auto;
+  }
+  .points {
+    list-style: none;
+    margin: 0 0 12px;
+    padding: 0;
+  }
+  .points li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 72px 72px 20px;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+  .points li.hovered {
+    background: color-mix(in srgb, var(--point) 10%, transparent);
+  }
+  .points label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--muted);
+  }
+  .points input {
+    width: 100%;
+    min-width: 0;
+  }
+  .pname {
+    font: 600 12px ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--point);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .points .users {
+    text-align: right;
   }
   .value {
     display: flex;

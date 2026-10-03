@@ -61,9 +61,21 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | ⌘O / ⌘S / ⇧⌘S | Open / save / save as. Saving writes back to the opened file in Chromium; other browsers download it |
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
 | ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
+| P | Show every shared point's marker |
 | G | Toggle the grid |
 | I | Infinite canvas: hide the page edge, extend the grid everywhere, and keep the drawing still as an auto-sized page grows |
 | ⌘\ | Show or hide the code panel (left). The inspector stays on the right |
+
+**Shared points.** Points defined once and used by name are linked to their
+definition: `let A = (0, 0)`, entries of `let pts = (A: ..., B: ...)`, and
+CeTZ anchors (`anchor("A", (0, 0))`, or a `for (k, p) in pts { anchor(k, p) }`
+loop). Dragging a shared corner, or a shape that uses one, edits the definition,
+so every shape using it follows. Hold ⌥ while dragging to detach just that use
+into its own coordinate (dropping it on another anchor reconnects it). The
+inspector shows each corner's point (`→ A (pts.A)`) with a Detach button, and
+a Share button turns a literal coordinate into a shared `anchor(...)`. With
+nothing selected, it lists every point. Hover a point to highlight the shapes
+using it, and click its marker to select them.
 
 The inspector edits coordinates, text, the name and any named argument
 (`stroke`, `fill`, `mark`, ...) as Typst expressions. With nothing selected,

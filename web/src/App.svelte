@@ -197,6 +197,7 @@
       return;
     }
     if (e.key === "g") editor.showGrid = !editor.showGrid;
+    if (e.key === "p") editor.showPoints = !editor.showPoints;
     if (e.key === "i") toggleInfinite();
   }
 
@@ -272,7 +273,6 @@
           onclick={() => (editor.tool = t.id)}
         >
           <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
-          <kbd aria-hidden="true">{t.key}</kbd>
         </button>
       {/each}
     </div>
@@ -296,6 +296,7 @@
       >
         <svg viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" /></svg>
       </button>
+      <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
       <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
       <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
       <select bind:value={editor.gridStep} title="Grid step (canvas units)">
@@ -362,6 +363,7 @@
     --muted: #6b6b76;
     --accent: #2f6fed;
     --snap: #e8590c;
+    --point: #9b3fd6;
     --grid: rgba(47, 111, 237, 0.12);
     --input-bg: #ffffff;
     --button-bg: #ffffff;
@@ -377,6 +379,7 @@
       --muted: #9a9aa6;
       --accent: #6d9bff;
       --snap: #ff8a3d;
+      --point: #c58bff;
       --grid: rgba(109, 155, 255, 0.16);
       --input-bg: #18181c;
       --button-bg: #2a2a30;
@@ -392,6 +395,7 @@
     --muted: #9a9aa6;
     --accent: #6d9bff;
     --snap: #ff8a3d;
+    --point: #c58bff;
     --grid: rgba(109, 155, 255, 0.16);
     --input-bg: #18181c;
     --button-bg: #2a2a30;
@@ -464,24 +468,6 @@
   .toolbar button.active {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
-  }
-  .toolbar button.tool {
-    position: relative;
-    width: 34px;
-  }
-  .tool kbd {
-    position: absolute;
-    right: 3px;
-    bottom: 1px;
-    font-family: inherit;
-    font-size: 9px;
-    font-weight: 500;
-    line-height: 1;
-    color: var(--muted);
-    pointer-events: none;
-  }
-  .tool.active kbd {
-    color: inherit;
   }
   .toolbar svg {
     width: 16px;

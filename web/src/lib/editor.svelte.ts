@@ -76,6 +76,17 @@ export class Editor {
   index = $derived(new OffsetIndex(this.source));
   calls = $derived(allCalls(this.scene));
   callById = $derived(new Map(this.calls.map((c) => [c.id, c])));
+  pointById = $derived(new Map(this.scene.points.map((p) => [p.id, p])));
+  /** Which calls use each shared point. */
+  pointUsers = $derived.by(() => {
+    const users = new Map<number, number[]>();
+    for (const call of this.calls) {
+      for (const arg of call.args) {
+        if (arg.point !== null) users.set(arg.point, [...(users.get(arg.point) ?? []), call.id]);
+      }
+    }
+    return users;
+  });
   canvasOfCall = $derived(new Map(this.scene.canvases.flatMap((cv) => cv.calls.map((c) => [c.id, cv.id] as const))));
 
   selection = $state<number[]>([]);
@@ -87,6 +98,9 @@ export class Editor {
   snap = $state(true);
   gridStep = $state(0.25);
   showGrid = $state(true);
+  /** Show every shared point's marker, not just the selection's. */
+  showPoints = $state(false);
+  hoveredPoint = $state<number>();
   /** View the page as an endless sheet: no page edge, grid everywhere. */
   infinite = $state(false);
 
@@ -189,6 +203,7 @@ export class Editor {
     this.selection = this.selection.map(map);
     if (this.scope !== undefined) this.scope = map(this.scope);
     this.hovered = undefined;
+    this.hoveredPoint = undefined;
     this.source = next;
   }
 
@@ -259,8 +274,8 @@ export class Editor {
   // --- Dragging ------------------------------------------------------------
 
   /** Previews moving the selection by a canvas-unit delta. */
-  dragMove(dx: number, dy: number) {
-    this.previewEdit({ kind: "move", calls: this.selected, dx, dy }, dx, dy);
+  dragMove(dx: number, dy: number, detach = false) {
+    this.previewEdit({ kind: "move", calls: this.selected, dx, dy, detach }, dx, dy);
   }
 
   /** Previews any edit (used for handle drags); `dx`/`dy` shift the overlay. */

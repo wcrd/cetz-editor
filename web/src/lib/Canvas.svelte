@@ -5,7 +5,7 @@
   import { untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe } from "./probe";
-  import type { Call, Edit } from "./scene";
+  import { baseName, type Call, type Edit } from "./scene";
   import { num } from "./format";
 
   let { editor }: { editor: Editor } = $props();
@@ -19,8 +19,22 @@
   type Snap = { target: number; anchor: string; point: Point };
   type Drag =
     | { kind: "pan"; start: Point; pan: Point }
-    | { kind: "move"; start: Point; moved: boolean; delta: Point }
+    | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean }
     | { kind: "handle"; call: number; arg: number; probe: Probe; snap?: Snap; edit?: Edit }
+    | {
+        kind: "point";
+        point: number;
+        start: Point;
+        moved: boolean;
+        /** Frame and transform the point's literal is written in. */
+        frame: Frame;
+        transform?: number[][];
+        /** Set when dragging one use of the point (a shape's handle): Alt detaches it. */
+        use?: { call: number; arg: number; probe: Probe };
+        detach: boolean;
+        snap?: Snap;
+        edit?: Edit;
+      }
     | { kind: "marquee"; start: Point; end: Point; base: number[] }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
@@ -149,7 +163,12 @@
   );
 
   const selectedFamily = $derived(new Set(editor.selected.flatMap((id) => [...editor.family(id)])));
-  const hoveredFamily = $derived(editor.hovered === undefined ? new Set<number>() : editor.family(editor.hovered));
+  const hoveredFamily = $derived.by(() => {
+    const ids = editor.hovered === undefined ? [] : [editor.hovered];
+    // Hovering a shared point highlights every shape that uses it.
+    if (editor.hoveredPoint !== undefined) ids.push(...(editor.pointUsers.get(editor.hoveredPoint) ?? []));
+    return new Set(ids.flatMap((id) => [...editor.family(id)]));
+  });
 
   /** Page-space offset that shows a moving selection where it will land. */
   const moveShift = $derived.by((): Point => {
@@ -180,7 +199,54 @@
 
   // --- Handles and anchors -------------------------------------------------
 
-  type Handle = { call: number; arg: number; point: Point; linked: boolean };
+  type Handle = { call: number; arg: number; point: Point; linked: boolean; shared?: number };
+
+  // --- Shared points -------------------------------------------------------
+
+  type Placed = { page: Point; frame: Frame; transform?: number[][] };
+
+  /**
+   * Where a shared point is on the page, and the frame its literal is written
+   * in: from the anchor it defines if there is one, else from a shape using it.
+   */
+  function placePoint(id: number): Placed | undefined {
+    const p = editor.pointById.get(id);
+    if (!p) return undefined;
+    const anchor = editor.probes.find(
+      (probe) => probe.name !== null && p.anchors.includes(probe.name) && baseName(editor.callById.get(probe.id)?.callee ?? "") === "anchor",
+    );
+    const value = anchor?.anchors["default"];
+    if (anchor && isVec(value)) {
+      return { page: editor.toPage(frameOf(anchor), value), frame: frameOf(anchor), transform: anchor.transform };
+    }
+    for (const user of editor.pointUsers.get(id) ?? []) {
+      const probe = probeOf.get(user);
+      if (probe) return { page: localToPage(probe, [p.x, p.y]), frame: frameOf(probe), transform: probe.transform };
+    }
+    const frame = editor.frameFor(editor.scene.canvases[0]?.id);
+    return { page: editor.toPage(frame, [p.x, p.y]), frame };
+  }
+
+  const placed = $derived(new Map(editor.scene.points.map((p) => [p.id, placePoint(p.id)] as const)));
+
+  function pointLabel(id: number): string {
+    const p = editor.pointById.get(id);
+    return p ? (p.anchors[0] ?? p.path) : "";
+  }
+
+  /** Point markers: all with "Points" on, else the hovered one; handles cover the selection's. */
+  const markers = $derived.by(() => {
+    const withHandles = new Set(handles.map((h) => h.shared));
+    const ids = editor.showPoints ? editor.scene.points.map((p) => p.id) : editor.hoveredPoint !== undefined ? [editor.hoveredPoint] : [];
+    return ids.filter((id) => !withHandles.has(id) && placed.get(id)).map((id) => ({ id, page: placed.get(id)!.page }));
+  });
+
+  /** True while a drag would move shared points (so Alt would detach). */
+  const sharing = $derived(
+    (drag?.kind === "point" && drag.use !== undefined) ||
+      (drag?.kind === "move" && drag.moved && editor.selected.some((id) => editor.callById.get(id)?.args.some((a) => a.point !== null))),
+  );
+  const detaching = $derived((drag?.kind === "point" || drag?.kind === "move") && drag.detach);
 
   /** Draggable points of a single selected call: its coordinate arguments. */
   const handles = $derived.by((): Handle[] => {
@@ -191,7 +257,10 @@
     const out: Handle[] = [];
     call.args.forEach((arg, i) => {
       if (arg.key !== null) return;
-      if (arg.value.type === "coord") {
+      const shared = arg.point !== null ? placed.get(arg.point) : undefined;
+      if (arg.point !== null && shared) {
+        out.push({ call: call.id, arg: i, point: shared.page, linked: true, shared: arg.point });
+      } else if (arg.value.type === "coord") {
         out.push({ call: call.id, arg: i, point: localToPage(probe, [arg.value.x, arg.value.y]), linked: false });
       } else if (arg.value.type === "str") {
         const point = anchorPoint(arg.value.value);
@@ -221,12 +290,12 @@
     }),
   );
 
-  function findSnap(p: Point, exclude?: number): Snap | undefined {
+  function findSnap(p: Point, exclude?: number | Set<number>): Snap | undefined {
     const radius = 8 / editor.zoom;
     let best: Snap | undefined;
     let bestDist = radius;
     for (const t of snapTargets) {
-      if (t.target === exclude) continue;
+      if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
       const dist = Math.hypot(t.point[0] - p[0], t.point[1] - p[1]);
       if (dist < bestDist) {
         best = t;
@@ -273,7 +342,21 @@
     if (handle) {
       const [call, arg] = handle.split(":").map(Number);
       const probe = probeOf.get(call);
-      if (probe) drag = { kind: "handle", call, arg, probe };
+      const point = editor.callById.get(call)?.args[arg]?.point ?? null;
+      const where = point !== null ? placed.get(point) : undefined;
+      if (probe && point !== null && where) {
+        drag = { kind: "point", point, start: p, moved: false, frame: where.frame, transform: where.transform, use: { call, arg, probe }, detach: e.altKey };
+      } else if (probe) {
+        drag = { kind: "handle", call, arg, probe };
+      }
+      return;
+    }
+
+    const marker = target.closest("[data-point]")?.getAttribute("data-point");
+    if (marker) {
+      const point = Number(marker);
+      const where = placed.get(point);
+      if (where) drag = { kind: "point", point, start: p, moved: false, frame: where.frame, transform: where.transform, detach: false };
       return;
     }
 
@@ -285,7 +368,7 @@
       } else if (!editor.selected.includes(id)) {
         editor.selection = [id];
       }
-      if (editor.selected.includes(id)) drag = { kind: "move", start: p, moved: false, delta: [0, 0] };
+      if (editor.selected.includes(id)) drag = { kind: "move", start: p, moved: false, delta: [0, 0], detach: e.altKey };
       return;
     }
 
@@ -297,8 +380,11 @@
   function onpointermove(e: PointerEvent) {
     const p = pagePoint(e);
     if (!drag) {
-      const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      const el = e.target as Element;
+      const hit = el.closest("[data-id]")?.getAttribute("data-id");
       editor.hovered = hit ? Number(hit) : undefined;
+      const point = el.closest("[data-point]")?.getAttribute("data-point") ?? el.closest("[data-shared]")?.getAttribute("data-shared");
+      editor.hoveredPoint = point ? Number(point) : undefined;
       return;
     }
     switch (drag.kind) {
@@ -316,7 +402,33 @@
           -(p[1] - drag.start[1]) / probe.length,
         ]);
         drag.delta = snapDelta(dx, dy);
-        editor.dragMove(...drag.delta);
+        drag.detach = e.altKey;
+        editor.dragMove(drag.delta[0], drag.delta[1], drag.detach);
+        break;
+      }
+      case "point": {
+        if (!drag.moved && Math.hypot(p[0] - drag.start[0], p[1] - drag.start[1]) * editor.zoom < 3) break;
+        drag.moved = true;
+        drag.detach = e.altKey && drag.use !== undefined;
+        if (drag.detach && drag.use) {
+          // Detach this use: like a plain coordinate handle.
+          const { call, arg, probe } = drag.use;
+          const snap = findSnap(p, call);
+          drag.snap = snap;
+          if (snap) {
+            drag.edit = { kind: "connect", call, arg, target: snap.target, anchor: snap.anchor };
+          } else {
+            const [x, y] = snapPoint(frameOf(probe), probe.transform, p);
+            drag.edit = { kind: "set-coord", call, arg, x, y };
+          }
+        } else {
+          // Move the shared point itself; snap it onto anchors of shapes that don't use it.
+          const snap = findSnap(p, new Set(editor.pointUsers.get(drag.point) ?? []));
+          drag.snap = snap;
+          const [x, y] = snap ? pageToLocal(drag.frame, drag.transform, snap.point) : snapPoint(drag.frame, drag.transform, p);
+          drag.edit = { kind: "set-point", point: drag.point, x, y };
+        }
+        editor.previewEdit(drag.edit);
         break;
       }
       case "handle": {
@@ -371,9 +483,18 @@
     switch (d.kind) {
       case "move":
         if (d.moved && (d.delta[0] !== 0 || d.delta[1] !== 0)) {
-          editor.endDrag({ kind: "move", calls: editor.selected, dx: d.delta[0], dy: d.delta[1] });
+          editor.endDrag({ kind: "move", calls: editor.selected, dx: d.delta[0], dy: d.delta[1], detach: d.detach });
         } else {
           editor.endDrag();
+        }
+        break;
+      case "point":
+        if (d.moved) {
+          editor.endDrag(d.edit);
+        } else if (!d.use) {
+          // Clicking a point marker selects the shapes that use it.
+          const users = (editor.pointUsers.get(d.point) ?? []).map((id) => editor.selectableFor(id));
+          editor.selection = [...new Set(users.filter((id) => id !== undefined))];
         }
         break;
       case "handle":
@@ -466,7 +587,7 @@
   });
 
   const activeSnap = $derived(
-    drag?.kind === "handle" ? drag.snap : drag?.kind === "create" ? (drag.endSnap ?? drag.startSnap) : undefined,
+    drag?.kind === "handle" || drag?.kind === "point" ? drag.snap : drag?.kind === "create" ? (drag.endSnap ?? drag.startSnap) : undefined,
   );
 
   // --- Grid ----------------------------------------------------------------
@@ -583,9 +704,21 @@
           {/if}
         </g>
 
+        {#each markers as m (m.id)}
+          <g class="point" class:hovered={editor.hoveredPoint === m.id} data-point={m.id}>
+            <circle cx={m.page[0]} cy={m.page[1]} r={4 / editor.zoom} />
+            <text x={m.page[0] + 6 / editor.zoom} y={m.page[1] - 6 / editor.zoom} font-size={11 / editor.zoom}>{pointLabel(m.id)}</text>
+          </g>
+        {/each}
+
         {#each handles as h (h.arg)}
           {@const r = 4.5 / editor.zoom}
-          {#if h.linked}
+          {#if h.shared !== undefined}
+            <g class="point shared" class:hovered={editor.hoveredPoint === h.shared} data-shared={h.shared}>
+              <circle class="handle" data-handle="{h.call}:{h.arg}" cx={h.point[0]} cy={h.point[1]} r={r + 0.5 / editor.zoom} />
+              <text x={h.point[0] + 7 / editor.zoom} y={h.point[1] - 7 / editor.zoom} font-size={11 / editor.zoom}>{pointLabel(h.shared)}</text>
+            </g>
+          {:else if h.linked}
             <rect
               class="handle linked"
               data-handle="{h.call}:{h.arg}"
@@ -617,6 +750,9 @@
         {/if}
       </g>
     </svg>
+    {#if sharing}
+      <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>
+    {/if}
   {:else}
     <div class="empty">
       {editor.hasErrors
@@ -724,6 +860,38 @@
   }
   .handle.linked {
     fill: var(--accent);
+  }
+  .point circle {
+    fill: var(--point);
+    stroke: white;
+    stroke-width: 1.5;
+    cursor: grab;
+  }
+  .point text {
+    fill: var(--point);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: white;
+    stroke-width: 3px;
+    pointer-events: none;
+  }
+  .point.hovered circle {
+    stroke: var(--point);
+    stroke-width: 3;
+  }
+  .hint {
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--text);
+    color: var(--bg);
+    font-size: 12px;
+    pointer-events: none;
+    white-space: nowrap;
   }
   .marquee {
     fill: color-mix(in srgb, var(--accent) 8%, transparent);

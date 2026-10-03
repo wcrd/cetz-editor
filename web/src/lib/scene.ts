@@ -17,6 +17,23 @@ export interface Arg {
   value_range: Range;
   text: string;
   value: Value;
+  /** The shared point this argument uses (`A`, `pts.A`, `"A"`), if any. */
+  point: number | null;
+}
+
+/** A literal coordinate defined once and used by reference. */
+export interface Point {
+  /** Byte offset of the coordinate literal. */
+  id: number;
+  /** How code refers to it: `A`, `pts.A`, `pts[0]`, or an anchor name. */
+  path: string;
+  x: number;
+  y: number;
+  range: Range;
+  x_range: Range;
+  y_range: Range;
+  /** CeTZ anchor names bound to it. */
+  anchors: string[];
 }
 
 export interface Call {
@@ -40,10 +57,13 @@ export interface Canvas {
 
 export interface Scene {
   canvases: Canvas[];
+  points: Point[];
 }
 
 export type Edit =
-  | { kind: "move"; calls: number[]; dx: number; dy: number }
+  | { kind: "move"; calls: number[]; dx: number; dy: number; detach?: boolean }
+  | { kind: "set-point"; point: number; x: number; y: number }
+  | { kind: "extract-point"; call: number; arg: number; name: string | null }
   | { kind: "set-coord"; call: number; arg: number; x: number; y: number }
   | { kind: "set-arg-text"; call: number; arg: number; text: string }
   | { kind: "set-named"; call: number; key: string; text: string | null }
