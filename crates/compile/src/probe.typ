@@ -14,6 +14,8 @@
   rgb(fill.sample(50%)).to-hex()
 } else { none }
 
+#let __cetz_probe_compass = ("east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east")
+
 #let __cetz_probe(id, elements) = {
   if type(elements) != array { return elements }
   elements.map(el => if type(el) != function { el } else { ctx => {
@@ -24,7 +26,14 @@
     let anchors = (:)
     let anchor-fn = element.at("anchors", default: none)
     if type(anchor-fn) == function {
-      for name in anchor-fn(()) {
+      let names = anchor-fn(())
+      // A compass anchor is where a ray from the centre meets the shape's
+      // own path, and CeTZ panics when it misses. Only an open arc can miss
+      // (one from 0° to 60° has no "north-west"); groups and the other
+      // shapes measure a closed path or their bounds.
+      let open-arc = "arc-start" in names and "chord-center" in names and drawables.any(d => d.type == "path" and d.segments.any(s => not s.at(1)))
+      for name in names {
+        if open-arc and name in __cetz_probe_compass { continue }
         anchors.insert(name, anchor-fn(name))
       }
     }

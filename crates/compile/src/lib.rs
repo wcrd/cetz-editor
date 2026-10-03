@@ -469,6 +469,30 @@ mod tests {
         assert_point(&probes[2]["anchors"]["center"], [1.0, 3.0]);
     }
 
+    /// An open arc has no border at some compass directions, and asking
+    /// CeTZ for one panics.
+    #[test]
+    fn probes_open_arcs_without_compass_anchors() {
+        let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
+            eprintln!("skipping: no local Typst package cache");
+            return;
+        };
+        let source = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\
+            #canvas({\n  import draw: *\n  arc((0, 0), start: 0deg, stop: 60deg, anchor: \"origin\")\n  \
+            arc((3, 0), start: 0deg, stop: 30deg, mode: \"PIE\")\n  group(name: \"g\", line((0, 3), (2, 4)))\n})";
+        let mut world = EditorWorld::new();
+        world.set_main_probed(source);
+        let out = compile_with_cache(&mut world, &cache);
+        assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
+        let probes: serde_json::Value = serde_json::from_str(&out.probes.unwrap()).unwrap();
+        let [open, pie, group] = probes.as_array().unwrap().as_slice() else { panic!("expected three probes") };
+        assert_point(&open["anchors"]["origin"], [0.0, 0.0]);
+        assert!(open["anchors"].get("north").is_none());
+        // Closed arcs and groups around open paths keep theirs.
+        assert!(pie["anchors"].get("north").is_some());
+        assert!(group["anchors"].get("north").is_some());
+    }
+
     /// CeTZ computes border anchors by intersection, so allow float noise.
     fn assert_point(value: &serde_json::Value, expected: [f64; 2]) {
         let p: Vec<f64> = value.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
