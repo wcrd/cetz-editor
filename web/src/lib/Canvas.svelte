@@ -906,8 +906,8 @@
 
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
-    if (editor.tool !== "join") joining = undefined;
-    if (editor.tool !== "point" && editor.tool !== "join" && !isLineTool()) toolHover = undefined;
+    if (!isJoinTool()) joining = undefined;
+    if (editor.tool !== "point" && !isJoinTool() && !isLineTool()) toolHover = undefined;
   });
 
   /**
@@ -968,7 +968,7 @@
     joining = undefined;
     if (path.extend) return finishExtend(path, path.extend, closed);
     if (path.refs.length < 2) return;
-    const text = `line(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
+    const text = `${editor.tool === "curve" ? "catmull" : "line"}(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
     for (const { arg, snap } of path.links) steps.push(({ created, map }) => snapEdit(created[0], arg, snap, map));
     if (editor.chain(steps)) editor.tool = "select";
@@ -994,7 +994,17 @@
     const from = joining.extend ? [joining.extend.from] : [];
     const pages = [...from, ...joining.pages, ...(toolHover ? [toolHover.page] : [])];
     if (pages.length < 2) return undefined;
-    return pages.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
+    if (editor.tool !== "curve") return pages.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
+    // A Catmull-Rom spline through the points, as cubic Béziers.
+    const at = (i: number) => pages[Math.max(0, Math.min(pages.length - 1, i))];
+    let d = `M${pages[0][0]},${pages[0][1]}`;
+    for (let i = 0; i < pages.length - 1; i++) {
+      const [p0, p1, p2, p3] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
+      const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+      const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+      d += ` C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${p2[0]},${p2[1]}`;
+    }
+    return d;
   });
 
   function onpointerdown(e: PointerEvent) {
@@ -1008,7 +1018,7 @@
       placePoint(p);
       return;
     }
-    if (e.button === 0 && !spaceHeld && editor.tool === "join") {
+    if (e.button === 0 && !spaceHeld && isJoinTool()) {
       joinAt(p, e.detail >= 2);
       return;
     }
@@ -1108,8 +1118,8 @@
       arcMove(arcing, p);
       return;
     }
-    if (!drag && (editor.tool === "point" || editor.tool === "join")) {
-      toolHover = toolTarget(p, editor.tool === "join");
+    if (!drag && (editor.tool === "point" || isJoinTool())) {
+      toolHover = toolTarget(p, isJoinTool());
       return;
     }
     // Line tools preview where a press would start: just the snap, no ghost.
@@ -1332,6 +1342,11 @@
 
   function isLineTool() {
     return editor.tool === "line" || editor.tool === "arrow";
+  }
+
+  /** Tools that build a path point by point: join (a line) and curve (a catmull). */
+  function isJoinTool() {
+    return editor.tool === "join" || editor.tool === "curve";
   }
 
   /** Tools drawn out from a centre: the drag sets a radius and an angle. */
@@ -2044,12 +2059,15 @@
     left: 50%;
     transform: translateX(-50%);
     padding: 4px 10px;
-    border-radius: 999px;
     background: var(--text);
     color: var(--bg);
     font-size: 12px;
     pointer-events: none;
-    white-space: nowrap;
+    /* Wraps on a narrow canvas instead of running off both sides. */
+    width: max-content;
+    max-width: calc(100% - 24px);
+    text-align: center;
+    border-radius: 12px;
   }
   .menu {
     position: absolute;

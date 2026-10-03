@@ -186,6 +186,7 @@
     { id: "text", label: "Text", key: "T", icon: "M5 6V4h14v2M12 4v16M9 20h6" },
     { id: "point", label: "Named point", key: ".", icon: "M12 3v4M12 17v4M3 12h4M17 12h4M12 9.5a2.5 2.5 0 1 0 0.01 0z" },
     { id: "join", label: "Join points", key: "J", icon: "M5 18L9 6l10 4-4 9zM5 18h.01M9 6h.01M19 10h.01M15 19h.01" },
+    { id: "curve", label: "Curve through points", key: "K", icon: "M4 18C6 6 11 6 12 12s6 6 8-6M4 18h.01M12 12h.01M20 6h.01" },
   ];
 
   // Typst's points are 1/72 in, so a PNG at N ppi has N / 72 pixels per point.

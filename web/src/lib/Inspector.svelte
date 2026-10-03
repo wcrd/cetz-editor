@@ -41,7 +41,7 @@
     if (arg.value.type === "content" || parseText(arg.text)) return "Text";
     if (base === "content" || base === "circle" || base === "anchor") return index === (base === "anchor" ? 1 : 0) ? "Position" : `Argument ${i + 1}`;
     if (base === "rect") return index === 0 ? "Corner" : "Opposite corner";
-    if (base === "line" || base === "bezier") return index === 0 ? "Start" : index === positional.length - 1 ? "End" : `Point ${index + 1}`;
+    if (base === "line" || base === "bezier" || base === "catmull" || base === "hobby") return index === 0 ? "Start" : index === positional.length - 1 ? "End" : `Point ${index + 1}`;
     if (base === "brace" || base === "flat-brace") return index === 0 ? "Start" : "End";
     if (base === "polygon" || base === "n-star") return index === 0 ? "Center" : "Sides";
     if (base === "arc") return "Position";

@@ -10,6 +10,7 @@ Press **?** in the app for a quick version of this guide.
 | **N** | Polygon: drag from the centre to a corner, which sets its size and rotation (`polygon((0, 0), 6, radius: 1)`) |
 | **U** | Arc: drag from the centre to where it starts (or click both), then move to sweep it either way and click to finish |
 | **.** | Named point: click to place one, then type its name |
+| **K** | Curve through points: the join tool's clicks and snapping, written as a smooth `catmull(..)` |
 | **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
 | Drag a shape | Move it (snaps its first point to the grid) |
