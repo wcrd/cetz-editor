@@ -57,7 +57,7 @@
       <p>
         Both start at the centre. A polygon's drag ends on a corner, setting its size and rotation. An arc's drag ends where
         it starts (or click the centre, then the start); move to sweep it either way round, and click to finish. Radii snap to
-        the grid and angles to 15°.
+        the grid and angles to 15°. Drag the square on a selected circle, polygon, star or arc to change its radius.
       </p>
     </section>
     <section>

@@ -48,6 +48,7 @@
       }
     | { kind: "marquee"; start: Point; end: Point; base: number[]; basePoints: number[] }
     | { kind: "rotate"; spin: Spin; from: number; angle: number; edit?: Edit }
+    | { kind: "radius"; reach: Reach; r: number; edit?: Edit }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -393,6 +394,51 @@
 
   function overSpin(p: Point): boolean {
     return !!spinHandle && Math.hypot(p[0] - spinHandle.knob[0], p[1] - spinHandle.knob[1]) * editor.zoom < 9;
+  }
+
+  // --- Radius ---------------------------------------------------------------
+
+  /** The anchors a shape's radius handle sits on (on its outline) and measures from. */
+  const RADIUS_ANCHORS: Record<string, [edge: string, center: string]> = {
+    circle: ["east", "center"],
+    polygon: ["corner-0", "center"],
+    "n-star": ["corner-0", "center"],
+    arc: ["arc-center", "origin"],
+  };
+
+  /** The selected shape's radius handle: where it is and the centre (page), and the radius (local). */
+  type Reach = { call: number; probe: Probe; point: Point; center: Point; r: number };
+
+  const reach = $derived.by((): Reach | undefined => {
+    if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "radius")) return undefined;
+    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const probe = call && probeOf.get(call.id);
+    const names = call && RADIUS_ANCHORS[baseName(call.callee)];
+    if (!call || !probe || !names || call.in_loop) return undefined;
+    // An ellipse's `(x, y)` radius has no one length to drag.
+    const arg = call.args.find((a) => a.key === "radius");
+    if (arg && arg.value.type !== "number") return undefined;
+    const [edge, center] = names.map((n) => probe.anchors[n]);
+    if (!isVec(edge) || !isVec(center)) return undefined;
+    const point = editor.toPage(frameOf(probe), edge);
+    const c = editor.toPage(frameOf(probe), center);
+    const [a, b] = [c, point].map((q) => pageToLocal(frameOf(probe), probe.transform, q));
+    return { call: call.id, probe, point, center: c, r: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  });
+
+  let nearReach = $state(false);
+
+  function overReach(p: Point): boolean {
+    return !!reach && Math.hypot(p[0] - reach.point[0], p[1] - reach.point[1]) * editor.zoom < 8;
+  }
+
+  /** The radius with the handle dragged to `p`: its start plus how far `p` went out from the centre. */
+  function radiusAt(reach: Reach, p: Point): number {
+    const [c, h, q] = [reach.center, reach.point, p].map((v) => pageToLocal(frameOf(reach.probe), reach.probe.transform, v));
+    const len = Math.hypot(h[0] - c[0], h[1] - c[1]) || 1;
+    const r = reach.r + ((q[0] - h[0]) * (h[0] - c[0]) + (q[1] - h[1]) * (h[1] - c[1])) / len;
+    const snapping = editor.snap && !mods.free;
+    return Math.max(snapping ? editor.snapValue(r) : r, snapping ? editor.gridStep : 0.01);
   }
 
   /** Counter-clockwise degrees of `p` around `c`, on the page. */
@@ -908,6 +954,10 @@
       return;
     }
 
+    if (reach && overReach(p)) {
+      drag = { kind: "radius", reach, r: reach.r };
+      return;
+    }
     if (spin && overSpin(p)) {
       drag = { kind: "rotate", spin, from: pageAngle(spin.pivot, p), angle: spin.angle };
       return;
@@ -987,9 +1037,10 @@
     }
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
-      nearSpin = editor.tool === "select" && !spaceHeld && overSpin(p);
-      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin ? grabAt(p) : undefined;
-      const hit = nearGrab || nearSpin ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      nearReach = editor.tool === "select" && !spaceHeld && overReach(p);
+      nearSpin = editor.tool === "select" && !spaceHeld && !nearReach && overSpin(p);
+      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach ? grabAt(p) : undefined;
+      const hit = nearGrab || nearSpin || nearReach ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
@@ -1094,6 +1145,12 @@
         else editor.endDrag();
         break;
       }
+      case "radius": {
+        drag.r = radiusAt(drag.reach, p);
+        drag.edit = { kind: "set-named", call: drag.reach.call, key: "radius", text: num(drag.r) };
+        editor.previewEdit(drag.edit);
+        break;
+      }
       case "create": {
         if (mods.angle && isLineTool()) {
           const from = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -1141,6 +1198,7 @@
         break;
       case "handle":
       case "rotate":
+      case "radius":
         editor.endDrag(d.edit);
         break;
       case "create":
@@ -1475,7 +1533,7 @@
   const cursor = $derived(
     drag?.kind === "rotate"
       ? "grabbing"
-      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin
+      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach
       ? "grab"
       : editor.tool !== "select"
         ? "crosshair"
@@ -1576,6 +1634,11 @@
         {:else if spinHandle}
           <line class="spin-stem" x1={spinHandle.stem[0]} y1={spinHandle.stem[1]} x2={spinHandle.knob[0]} y2={spinHandle.knob[1]} />
           <circle class="handle spin" class:near={nearSpin} cx={spinHandle.knob[0]} cy={spinHandle.knob[1]} r={4.5 / editor.zoom} />
+        {/if}
+
+        {#if reach}
+          {@const r = 4 / editor.zoom}
+          <rect class="handle" class:near={nearReach} x={reach.point[0] - r} y={reach.point[1] - r} width={2 * r} height={2 * r} />
         {/if}
 
         {#each markers as m (m.id)}
@@ -1700,6 +1763,8 @@
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "radius"}
+      <div class="hint">radius {num(drag.r)} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
@@ -1707,9 +1772,9 @@
     {:else if drag?.kind === "create" && editor.tool === "polygon"}
       <div class="hint">Drag to a corner · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if (drag?.kind === "create" && editor.tool === "arc") || (arcing && arcing.r === undefined)}
-      <div class="hint">{drag ? "Drag" : "Click"} where the arc starts · Esc to cancel · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+      <div class="hint">{drag ? "Drag" : "Click"} where the arc starts · Esc cancels</div>
     {:else if arcing}
-      <div class="hint">Move to sweep the arc, either way · click to finish · Esc to cancel · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+      <div class="hint">Move to sweep · click to finish · Esc cancels</div>
     {/if}
     {#if sharing}
       <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>
