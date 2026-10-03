@@ -248,81 +248,85 @@
 <svelte:window {onkeydown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
 <div class="app">
-  <header class="toolbar">
-    <div class="group">
-      <button
-        class:active={codeOpen}
-        title="{codeOpen ? 'Hide' : 'Show'} code (⌘\)"
-        aria-label="Toggle code panel"
-        aria-pressed={codeOpen}
-        onclick={() => toggleCode()}
-      >
-        <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM10 5v14M6.5 9h1.5M6.5 12h1.5" /></svg>
-      </button>
-    </div>
-
-    <div class="group">
-      <button title="New tab" aria-label="New file" onclick={() => newDocument(tabs)}>
-        <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6" /></svg>
-      </button>
-      <button title="Open (⌘O)" aria-label="Open file" onclick={() => openFile(tabs)}>
-        <svg viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v12H3zM3 9h18" /></svg>
-      </button>
-      <button title="Save (⌘S)" aria-label="Save file" onclick={() => save(editor)}>
-        <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7" /></svg>
-      </button>
-    </div>
-
-    <div class="group tools" role="toolbar" aria-label="Tools">
-      {#each tools as t}
+  <header class="toolbar" class:code-open={codeOpen}>
+    <div class="section code-section">
+      <div class="group">
         <button
-          class="tool"
-          class:active={editor.tool === t.id}
-          title="{t.label} ({t.key})"
-          aria-label={t.label}
-          aria-pressed={editor.tool === t.id}
-          onclick={() => (editor.tool = t.id)}
+          class:active={codeOpen}
+          title="{codeOpen ? 'Hide' : 'Show'} code (⌘\)"
+          aria-label="Toggle code panel"
+          aria-pressed={codeOpen}
+          onclick={() => toggleCode()}
         >
-          <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
-          <kbd aria-hidden="true">{t.key}</kbd>
+          <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM10 5v14M6.5 9h1.5M6.5 12h1.5" /></svg>
         </button>
-      {/each}
+      </div>
+
+      <div class="group">
+        <button title="New tab" aria-label="New file" onclick={() => newDocument(tabs)}>
+          <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6" /></svg>
+        </button>
+        <button title="Open (⌘O)" aria-label="Open file" onclick={() => openFile(tabs)}>
+          <svg viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v12H3zM3 9h18" /></svg>
+        </button>
+        <button title="Save (⌘S)" aria-label="Save file" onclick={() => save(editor)}>
+          <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7" /></svg>
+        </button>
+      </div>
+
+      <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
     </div>
 
-    <div class="group">
-      <button title="Undo (⌘Z)" aria-label="Undo" onclick={() => editor.code?.undo()}>
-        <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3" /></svg>
-      </button>
-      <button title="Redo (⇧⌘Z)" aria-label="Redo" onclick={() => editor.code?.redo()}>
-        <svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" /></svg>
-      </button>
-    </div>
+    <div class="section canvas-section">
+      <div class="group tools" role="toolbar" aria-label="Tools">
+        {#each tools as t}
+          <button
+            class="tool"
+            class:active={editor.tool === t.id}
+            title="{t.label} ({t.key})"
+            aria-label={t.label}
+            aria-pressed={editor.tool === t.id}
+            onclick={() => (editor.tool = t.id)}
+          >
+            <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
+            <kbd aria-hidden="true">{t.key}</kbd>
+          </button>
+        {/each}
+      </div>
 
-    <div class="group toggles">
-      <button
-        class:active={editor.infinite}
-        title="Infinite canvas (I)"
-        aria-label="Infinite canvas"
-        aria-pressed={editor.infinite}
-        onclick={toggleInfinite}
-      >
-        <svg viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" /></svg>
-      </button>
-      <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
-      <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
-      <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
-      <select bind:value={editor.gridStep} title="Grid step (canvas units)">
-        {#each [0.1, 0.25, 0.5, 1] as step}<option value={step}>{step}</option>{/each}
-      </select>
-    </div>
+      <div class="group">
+        <button title="Undo (⌘Z)" aria-label="Undo" onclick={() => editor.code?.undo()}>
+          <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3" /></svg>
+        </button>
+        <button title="Redo (⇧⌘Z)" aria-label="Redo" onclick={() => editor.code?.redo()}>
+          <svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" /></svg>
+        </button>
+      </div>
 
-    <div class="group zoom">
-      <button title="Zoom out (⌘−)" aria-label="Zoom out" onclick={() => editor.viewport?.zoomBy(0.8)}>−</button>
-      <button class="pct" title="Fit (⌘0)" onclick={() => editor.viewport?.fit()}>{Math.round(editor.zoom * 100)}%</button>
-      <button title="Zoom in (⌘+)" aria-label="Zoom in" onclick={() => editor.viewport?.zoomBy(1.25)}>+</button>
-    </div>
+      <div class="group toggles">
+        <button
+          class:active={editor.infinite}
+          title="Infinite canvas (I)"
+          aria-label="Infinite canvas"
+          aria-pressed={editor.infinite}
+          onclick={toggleInfinite}
+        >
+          <svg viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" /></svg>
+        </button>
+        <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
+        <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
+        <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
+        <select bind:value={editor.gridStep} title="Grid step (canvas units)">
+          {#each [0.1, 0.25, 0.5, 1] as step}<option value={step}>{step}</option>{/each}
+        </select>
+      </div>
 
-    <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
+      <div class="group zoom">
+        <button title="Zoom out (⌘−)" aria-label="Zoom out" onclick={() => editor.viewport?.zoomBy(0.8)}>−</button>
+        <button class="pct" title="Fit (⌘0)" onclick={() => editor.viewport?.fit()}>{Math.round(editor.zoom * 100)}%</button>
+        <button title="Zoom in (⌘+)" aria-label="Zoom in" onclick={() => editor.viewport?.zoomBy(1.25)}>+</button>
+      </div>
+    </div>
   </header>
 
   <div class="tabs" role="tablist" aria-label="Open files">
@@ -458,15 +462,45 @@
     flex-direction: column;
     height: 100vh;
   }
+  /* The header shares the body's code column, so the file controls sit over
+     the code and the drawing tools start at the canvas's left edge. */
   .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 6px 12px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
     border-bottom: 1px solid var(--border);
     background: var(--panel);
     font-size: 13px;
     min-height: 34px;
+  }
+  .toolbar.code-open {
+    grid-template-columns: minmax(280px, 30%) minmax(0, 1fr);
+  }
+  /* Too narrow to line up with the code column and still fit the canvas
+     controls; let the file controls take only what they need. */
+  @media (max-width: 1060px) {
+    .toolbar.code-open {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .toolbar.code-open .code-section {
+      border-right: none;
+    }
+  }
+  .section {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    padding: 6px 12px;
+  }
+  .toolbar.code-open .code-section {
+    border-right: 1px solid var(--border);
+  }
+  .canvas-section {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .toggles {
+    margin-left: auto;
   }
   .group {
     display: flex;
@@ -835,9 +869,15 @@
     .status {
       display: none;
     }
-    .toolbar {
+    .toolbar,
+    .toolbar.code-open {
+      display: flex;
       overflow-x: auto;
       gap: 8px;
+      padding: 6px 12px;
+    }
+    .section {
+      display: contents;
     }
     .group {
       flex: none;
