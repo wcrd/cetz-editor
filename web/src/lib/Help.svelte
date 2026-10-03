@@ -78,7 +78,7 @@
       <p>
         Drag the knob above a selected shape; hold <kbd>⇧</kbd> for 15° steps. Polygons, stars and text set their <code>angle</code>; anything else is wrapped in
         a <code>scope</code> that starts with a <code>rotate</code>, which keeps its name usable outside, and later turns edit
-        that rotation. Back at 0°, the scope goes away. The knob off the bottom-right corner scales the same way, into the same scope.
+        that rotation. Back at 0°, the scope goes away. The knob off the bottom-right corner of a group, scope or your own function scales the same way, into the same scope; shapes resize with their own handles.
       </p>
     </section>
     <section>

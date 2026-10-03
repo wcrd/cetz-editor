@@ -397,6 +397,10 @@
    * How the selected shape scales: about `pivot` (page) from `factor`, with
    * the edit for a new factor. It goes in the shape's wrapper scope beside
    * any rotation, about the rotation's pivot so the two don't fight.
+   *
+   * Only groups, scopes and your own functions get it, since their geometry
+   * is out of reach; CeTZ's shapes have their own handles for size. A shape
+   * that's already scaled keeps it, so the scale can be changed or undone.
    */
   type Grow = { pivot: Point; factor: number; edit: (factor: number) => Edit };
 
@@ -409,6 +413,10 @@
     const outer = wrap && probeOf.get(wrap.scope.id);
     const rotate = wrap?.transforms.find((t) => baseName(t.callee) === "rotate");
     const scale = wrap?.transforms.find((t) => baseName(t.callee) === "scale");
+    const shape = editor.wrappedShape(call.id) ?? call;
+    const opaque =
+      editor.calls.some((c) => c.parent === shape.id) || editor.scene.variables.some((v) => v.kind === "function" && v.name === shape.callee);
+    if (!opaque && !scale) return undefined;
     const originOf = (t: Call | undefined) => {
       const v = t?.args.find((a) => a.key === "origin")?.value;
       return v?.type === "coord" ? ([v.x, v.y] as Point) : undefined;
