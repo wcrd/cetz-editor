@@ -239,7 +239,7 @@
         return `Fetching ${s.packages.join(", ")}…`;
       case "done": {
         const errors = s.diagnostics.filter((d) => d.error).length;
-        return errors ? `${errors} error${errors === 1 ? "" : "s"}` : `${s.ms.toFixed(0)} ms`;
+        return errors ? `${errors} error${errors === 1 ? "" : "s"}` : `compile: ${s.ms.toFixed(0)} ms`;
       }
     }
   });
