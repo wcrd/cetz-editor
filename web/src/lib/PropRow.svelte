@@ -1,53 +1,53 @@
 <script lang="ts">
-  // One option as a row: its name (faded when not given), its field, a
-  // remove button, and for strokes and marks a disclosure with their less
-  // common keys as nested rows.
+  // One option as a row, for one shape or several: its name (faded when no
+  // shape gives it), its field, a remove button, and for strokes and marks a
+  // disclosure with their less common keys as nested rows.
   import PropField from "./PropField.svelte";
   import PropRow from "./PropRow.svelte";
-  import { markSet, parseMark, parseStroke, strokeSet } from "./props";
+  import { partOf, setPart, type Change } from "./props";
   import { MARK_MORE, STROKE_MORE, type Opt } from "./schema";
 
   let {
     opt,
-    text,
+    texts,
     commit,
     onkeydown,
     depth = 0,
   }: {
     opt: Opt;
-    text: string;
-    commit: (text: string | null) => void;
+    /** Each selected shape's value source, "" where the option isn't given. */
+    texts: string[];
+    commit: (change: Change) => void;
     onkeydown: (e: KeyboardEvent) => void;
     depth?: number;
   } = $props();
 
   let open = $state(false);
+  const given = $derived(texts.some((t) => t !== ""));
 
-  /** Sub-options, read from and written back into this value. */
+  /** Sub-options of a stroke or mark, when every shape's value can be read. */
   const more = $derived.by(() => {
-    if (opt.kind === "stroke") {
-      const s = parseStroke(text);
-      // Strokes inside marks don't need their own disclosure.
-      if (s && depth === 0) return { opts: STROKE_MORE, get: (k: string) => s.entries.find((e) => e.key === k)?.text ?? "", set: (k: string, t: string | null) => strokeSet(s, k, t) };
-    }
-    if (opt.kind === "mark") {
-      const m = parseMark(text);
-      if (m) return { opts: MARK_MORE, get: (k: string) => m.find((e) => e.key === k)?.text ?? "", set: (k: string, t: string | null) => markSet(m, k, t) };
-    }
-    return null;
+    // Strokes inside marks don't need their own disclosure.
+    const kind = opt.kind === "stroke" && depth === 0 ? "stroke" : opt.kind === "mark" ? "mark" : null;
+    if (!kind || texts.some((t) => partOf(kind, t, "") === undefined)) return null;
+    return {
+      opts: kind === "stroke" ? STROKE_MORE : MARK_MORE,
+      texts: (key: string) => texts.map((t) => partOf(kind, t, key) ?? ""),
+      commit: (key: string) => (c: Change) => commit(setPart(kind, key, c)),
+    };
   });
-  const setCount = $derived(more ? more.opts.filter((o) => more.get(o.key) !== "").length : 0);
+  const setCount = $derived(more ? more.opts.filter((o) => more.texts(o.key).some((t) => t !== "")).length : 0);
 </script>
 
-<div class="row" class:unset={text === ""} style:--depth={depth}>
+<div class="row" class:unset={!given} style:--depth={depth}>
   <span class="label" title={opt.help}>
     {#if more}
       <button class="disclose" class:open aria-expanded={open} title="{open ? 'Hide' : 'Show'} more {opt.key} options" onclick={() => (open = !open)}>▸</button>
     {/if}
     {opt.key}{#if more && setCount > 0 && !open}<span class="count">+{setCount}</span>{/if}
   </span>
-  <PropField {opt} {text} {commit} {onkeydown} />
-  {#if text !== ""}
+  <PropField {opt} {texts} {commit} {onkeydown} />
+  {#if given}
     <button class="icon" title="Remove {opt.key}" onclick={() => commit(null)}>×</button>
   {:else}
     <span></span>
@@ -55,7 +55,7 @@
 </div>
 {#if more && open}
   {#each more.opts as sub (sub.key)}
-    <PropRow opt={sub} text={more.get(sub.key)} commit={(t) => commit(more.set(sub.key, t))} {onkeydown} depth={depth + 1} />
+    <PropRow opt={sub} texts={more.texts(sub.key)} commit={more.commit(sub.key)} {onkeydown} depth={depth + 1} />
   {/each}
 {/if}
 

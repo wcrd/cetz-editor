@@ -1,99 +1,122 @@
 <script lang="ts">
-  // The value of one option, set or not: a widget for its kind (stroke,
-  // mark, choice, number, ...) with CeTZ's default as the placeholder. A
-  // value the widget can't read, or the </> button, shows the plain code.
+  // The value of one option, set or not, for one shape or several: a widget
+  // for its kind (stroke, mark, choice, number, ...) with CeTZ's default as
+  // the placeholder, or "mixed" where the shapes differ. A value the widget
+  // can't read, or the </> button, shows the plain code.
   import ColorInput from "./ColorInput.svelte";
   import { num } from "./format";
-  import { canonical, choiceLabel, DASHES, lengthText, MARKS, markEnd, markSet, parseExpr, parseMark, parseStroke, strokeGet, strokeSet } from "./props";
+  import { canonical, choiceLabel, common, DASHES, lengthText, MARKS, parseExpr, parseMark, parseStroke, partOf, setPart, type Change } from "./props";
   import type { Opt } from "./schema";
 
   let {
     opt,
-    text,
+    texts,
     commit,
     onkeydown,
   }: {
     opt: Opt;
-    /** The value's source, or "" when the option isn't given. */
-    text: string;
-    commit: (text: string | null) => void;
+    /** Each selected shape's value source, "" where the option isn't given. */
+    texts: string[];
+    commit: (change: Change) => void;
     onkeydown: (e: KeyboardEvent) => void;
   } = $props();
 
-  let raw = $state(false);
-  const node = $derived(text ? parseExpr(text) : null);
-  const stroke = $derived(opt.kind === "stroke" ? parseStroke(text) : null);
-  const mark = $derived(opt.kind === "mark" ? parseMark(text) : null);
-  const unset = $derived(text === "");
+  /** The value of the default option in a select. */
+  const DEFAULT = "\u0000default";
 
-  /** Whether the widget for this kind can show the current value. */
-  const readable = $derived.by(() => {
-    if (unset) return true;
-    switch (opt.kind) {
-      case "stroke":
-        return stroke !== null;
-      case "mark":
-        return mark !== null;
-      case "choice":
-        return opt.options.includes(canonical(text)) || canonical(text) === canonical(opt.default);
-      case "number":
-        return node?.kind === "number" || (node?.kind === "numeric" && (!opt.unit || node.unit === opt.unit));
-      case "bool":
-        return node?.kind === "bool";
-      default:
-        return true;
-    }
-  });
+  let raw = $state(false);
+  const value = $derived(common(texts));
+  const text = $derived(value.text);
+  const mixed = $derived(value.mixed);
+  const node = $derived(text ? parseExpr(text) : null);
+  const unset = $derived(text === "" && !mixed);
+
+  /** A stroke's or mark's key, shared across the shapes. */
+  const part = (key: string) => common(texts.map((t) => partOf(opt.kind as "stroke" | "mark", t, key) ?? ""));
+
+  /** Whether the widget for this kind can show every shape's value. */
+  const readable = $derived(
+    texts.every((t) => {
+      if (t === "") return true;
+      const n = parseExpr(t);
+      switch (opt.kind) {
+        case "stroke":
+          return parseStroke(t) !== null;
+        case "mark":
+          return parseMark(t) !== null;
+        case "choice":
+          return opt.options.includes(canonical(t)) || canonical(t) === canonical(opt.default);
+        case "number":
+          return n?.kind === "number" || (n?.kind === "numeric" && (!opt.unit || n.unit === opt.unit));
+        case "bool":
+          return n?.kind === "bool";
+        default:
+          return true;
+      }
+    }),
+  );
   const view = $derived(raw || !readable ? "code" : opt.kind);
+  const placeholder = $derived(mixed ? "mixed" : opt.default);
 
   const str = (s: string) => JSON.stringify(s);
+  const fromSelect = (v: string) => (v === DEFAULT || v === "" ? null : v);
 
-  function setNumber(value: string) {
-    if (value.trim() === "") return commit(null);
-    const n = Number(value);
+  function setNumber(input: string) {
+    if (input.trim() === "") return commit(null);
+    const n = Number(input);
     if (!Number.isFinite(n)) return;
     const unit = node?.kind === "numeric" ? node.unit : (opt.kind === "number" && opt.unit) || "";
     commit(`${num(n)}${unit}`);
   }
+
+  function indeterminate(el: HTMLInputElement, on: boolean) {
+    el.indeterminate = on;
+    return { update: (v: boolean) => (el.indeterminate = v) };
+  }
 </script>
 
-<div class="field" class:unset>
+<div class="field" class:unset={unset || mixed}>
   {#if view === "color"}
-    <ColorInput {text} {commit} {onkeydown} title={opt.key} placeholder={opt.default} />
-  {:else if view === "stroke" && stroke}
-    {@const paint = strokeGet(stroke, "paint")}
-    {@const dash = strokeGet(stroke, "dash")}
-    {@const current = dash?.node.kind === "str" ? dash.node.value : dash ? dash.text : ""}
-    <ColorInput text={stroke.none ? "none" : (paint?.text ?? "")} code={false} title="Stroke color" commit={(t) => commit(strokeSet(stroke, "paint", t))} />
+    <ColorInput {text} {mixed} {commit} {onkeydown} title={opt.key} {placeholder} />
+  {:else if view === "stroke"}
+    {@const paint = part("paint")}
+    {@const thickness = part("thickness")}
+    {@const dash = part("dash")}
+    {@const current = dash.mixed ? null : dash.text ? choiceLabel(dash.text) : ""}
+    <ColorInput text={text.trim() === "none" ? "none" : paint.text} mixed={paint.mixed} code={false} title="Stroke color" commit={(t) => commit(setPart("stroke", "paint", t))} />
     <input
       class="code length"
       title="Thickness"
-      placeholder={stroke.none ? "none" : "1pt"}
-      value={strokeGet(stroke, "thickness")?.text ?? ""}
-      onchange={(e) => commit(strokeSet(stroke, "thickness", lengthText(e.currentTarget.value)))}
+      placeholder={thickness.mixed ? "mixed" : text.trim() === "none" ? "none" : "1pt"}
+      value={thickness.text}
+      onchange={(e) => commit(setPart("stroke", "thickness", lengthText(e.currentTarget.value)))}
       {onkeydown}
       spellcheck="false"
     />
-    <select title="Dash pattern" onchange={(e) => commit(strokeSet(stroke, "dash", e.currentTarget.value ? str(e.currentTarget.value) : null))}>
-      <option value="" selected={current === ""}>solid</option>
+    <select title="Dash pattern" onchange={(e) => commit(setPart("stroke", "dash", fromSelect(e.currentTarget.value) && str(e.currentTarget.value)))}>
+      {#if current === null}<option value="" selected disabled>mixed</option>{/if}
+      <option value={DEFAULT} selected={current === ""}>solid</option>
       {#each DASHES.slice(1) as d}<option value={d} selected={current === d}>{d}</option>{/each}
       {#if current && !DASHES.includes(current)}<option value={current} selected>{current}</option>{/if}
     </select>
-  {:else if view === "mark" && mark}
-    {@const fill = mark.find((e) => e.key === "fill")}
+  {:else if view === "mark"}
+    {@const fill = part("fill")}
     {#each ["start", "end"] as const as end}
-      {@const current = markEnd(mark, end)}
-      <select title="{end === 'start' ? 'Start' : 'End'} mark" onchange={(e) => commit(markSet(mark, end, e.currentTarget.value ? str(e.currentTarget.value) : null))}>
-        <option value="" selected={current === ""}>none</option>
+      {@const p = part(end)}
+      {@const current = p.mixed ? null : p.text ? choiceLabel(p.text) : ""}
+      <select title="{end === 'start' ? 'Start' : 'End'} mark" onchange={(e) => commit(setPart("mark", end, fromSelect(e.currentTarget.value) && str(e.currentTarget.value)))}>
+        {#if current === null}<option value="" selected disabled>mixed</option>{/if}
+        <option value={DEFAULT} selected={current === ""}>none</option>
         {#each MARKS as [sym, name]}<option value={sym} selected={current === sym}>{name}</option>{/each}
         {#if current && !MARKS.some(([s]) => s === current)}<option value={current} selected>{current}</option>{/if}
       </select>
     {/each}
-    <ColorInput text={fill?.text ?? ""} code={false} title="Mark fill" commit={(t) => commit(markSet(mark, "fill", t))} />
+    <ColorInput text={fill.text} mixed={fill.mixed} code={false} title="Mark fill" commit={(t) => commit(setPart("mark", "fill", t))} />
   {:else if view === "choice" && opt.kind === "choice"}
-    {@const current = unset ? "" : canonical(text)}
-    <select onchange={(e) => commit(e.currentTarget.value || null)}>
-      <option value="" selected={current === ""}>{choiceLabel(opt.default)}</option>
+    {@const current = mixed ? null : unset ? "" : canonical(text)}
+    <select onchange={(e) => commit(fromSelect(e.currentTarget.value))}>
+      {#if current === null}<option value="" selected disabled>mixed</option>{/if}
+      <option value={DEFAULT} selected={current === ""}>{choiceLabel(opt.default)}</option>
       {#each opt.options.filter((o) => o !== canonical(opt.default)) as o}<option value={o} selected={current === o}>{choiceLabel(o)}</option>{/each}
     </select>
   {:else if view === "number" && opt.kind === "number"}
@@ -101,18 +124,24 @@
       class="number"
       type="number"
       step={opt.step}
-      placeholder={opt.default.replace(opt.unit ?? "", "")}
+      placeholder={mixed ? "mixed" : opt.default.replace(opt.unit ?? "", "")}
       value={node?.kind === "number" || node?.kind === "numeric" ? num(node.value) : ""}
       onchange={(e) => setNumber(e.currentTarget.value)}
       {onkeydown}
     />
     {#if opt.unit || node?.kind === "numeric"}<span class="unit">{node?.kind === "numeric" ? node.unit : opt.unit}</span>{/if}
   {:else if view === "bool"}
-    <input type="checkbox" checked={node?.kind === "bool" ? node.value : opt.default === "true"} onchange={(e) => commit(String(e.currentTarget.checked))} />
+    <input
+      type="checkbox"
+      title={mixed ? "mixed" : undefined}
+      checked={node?.kind === "bool" ? node.value : !mixed && opt.default === "true"}
+      use:indeterminate={mixed}
+      onchange={(e) => commit(String(e.currentTarget.checked))}
+    />
   {:else if view === "length"}
-    <input class="code" value={text} placeholder={opt.default} onchange={(e) => commit(lengthText(e.currentTarget.value))} {onkeydown} spellcheck="false" />
+    <input class="code" value={text} {placeholder} onchange={(e) => commit(lengthText(e.currentTarget.value))} {onkeydown} spellcheck="false" />
   {:else}
-    <input class="code" value={text} placeholder={opt.default} onchange={(e) => commit(e.currentTarget.value.trim() || null)} {onkeydown} spellcheck="false" />
+    <input class="code" value={text} {placeholder} onchange={(e) => commit(e.currentTarget.value.trim() || null)} {onkeydown} spellcheck="false" />
   {/if}
   {#if !unset && opt.kind !== "code" && opt.kind !== "length" && opt.kind !== "color" && (raw || readable)}
     <button class="icon toggle" class:on={raw} title={raw ? "Show fields" : "Edit as code"} onclick={() => (raw = !raw)}>&lt;/&gt;</button>

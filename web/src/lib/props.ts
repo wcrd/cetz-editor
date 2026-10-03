@@ -394,3 +394,36 @@ export function choiceLabel(text: string): string {
   const n = parseExpr(text);
   return n?.kind === "str" ? n.value : text;
 }
+
+// --- Changes across shapes ---------------------------------------------------
+
+/**
+ * What a field commits: a new value (`null` removes it), or a function of
+ * each shape's current value, so a change to one part of a stroke or mark
+ * keeps the rest of every selected shape's own value.
+ */
+export type Change = string | null | ((old: string) => string | null);
+
+export const applyChange = (c: Change, old: string) => (typeof c === "function" ? c(old) : c);
+
+/** The shared value of several, or `mixed` when they differ. */
+export function common(texts: string[]): { text: string; mixed: boolean } {
+  const mixed = texts.some((t) => t !== texts[0]);
+  return { text: mixed ? "" : (texts[0] ?? ""), mixed };
+}
+
+/** One key of a stroke or mark value ("" if not given), or undefined if the value can't be read. */
+export function partOf(kind: "stroke" | "mark", text: string, key: string): string | undefined {
+  const entries = kind === "stroke" ? parseStroke(text)?.entries : (parseMark(text) ?? undefined);
+  return entries?.find(byKey(key))?.text ?? (entries ? "" : undefined);
+}
+
+/** Changes one key of a stroke or mark; a value that can't be read starts over. */
+export function setPart(kind: "stroke" | "mark", key: string, c: Change): (old: string) => string | null {
+  return (old) => {
+    const value = applyChange(c, partOf(kind, old, key) ?? "");
+    return kind === "stroke"
+      ? strokeSet(parseStroke(old) ?? { none: false, entries: [] }, key, value)
+      : markSet(parseMark(old) ?? [], key, value);
+  };
+}

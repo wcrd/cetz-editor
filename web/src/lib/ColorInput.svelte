@@ -8,6 +8,7 @@
     text,
     commit,
     code = true,
+    mixed = false,
     title = "Color",
     placeholder = "none",
     onkeydown,
@@ -17,6 +18,8 @@
     commit: (text: string | null) => void;
     /** Also show the expression as an editable code box. */
     code?: boolean;
+    /** Several shapes with different colors. */
+    mixed?: boolean;
     title?: string;
     /** Shown in the code box when unset: what CeTZ uses instead. */
     placeholder?: string;
@@ -25,11 +28,11 @@
 
   const node = $derived(text ? parseExpr(text) : null);
   const hex = $derived(colorHex(node));
-  const state = $derived(!text || node?.kind === "auto" ? "unset" : node?.kind === "none" ? "none" : hex ? "known" : "unknown");
+  const state = $derived(mixed ? "unknown" : !text || node?.kind === "auto" ? "unset" : node?.kind === "none" ? "none" : hex ? "known" : "unknown");
 </script>
 
 <span class="color" class:wide={code}>
-  <label class="swatch {state}" style:--swatch={hex} title={text ? `${title}: ${text}` : `${title}: not set`}>
+  <label class="swatch {state}" style:--swatch={hex} title={mixed ? `${title}: mixed` : text ? `${title}: ${text}` : `${title}: not set`}>
     <input type="color" value={hex ?? "#000000"} onchange={(e) => commit(colorText(e.currentTarget.value))} />
   </label>
   {#if code}

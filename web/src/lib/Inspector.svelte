@@ -5,7 +5,7 @@
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
   import PropRow from "./PropRow.svelte";
-  import { parseText } from "./props";
+  import { applyChange, parseText, type Change } from "./props";
   import { optFor, optionsFor, wrappedOptions } from "./schema";
   import TextField from "./TextField.svelte";
   import { baseName, STATE_CALLS, type Arg, type Call } from "./scene";
@@ -71,10 +71,18 @@
     editor.edit({ kind: "set-arg-text", call: call.id, arg: i, text });
   }
 
-  function setNamed(ids: number[], key: string, text: string | null) {
-    if (text !== null && text.trim() === "") text = null;
+  /** Sets a named argument on each call, applying `change` to that call's own value. */
+  function setNamed(ids: number[], key: string, change: Change) {
+    const edits = ids.flatMap((id) => {
+      const call = editor.callById.get(id);
+      if (!call) return [];
+      const old = valueOf(call, key);
+      let text = applyChange(change, old);
+      if (text !== null && text.trim() === "") text = null;
+      return (text ?? "") === old ? [] : [{ id, text }];
+    });
     // Ids shift as earlier edits change the text; map each through the chain.
-    editor.chain(ids.map((id) => ({ map }) => ({ kind: "set-named", call: map(id), key, text })));
+    if (edits.length > 0) editor.chain(edits.map(({ id, text }) => ({ map }) => ({ kind: "set-named", call: map(id), key, text })));
   }
 
   function setName(call: Call, value: string) {
@@ -104,7 +112,19 @@
     return { groups, other };
   }
 
-  const valueOf = (call: Call, key: string) => call.args.find((a) => a.key === key)?.text ?? "";
+  /** The options every one of these calls takes, and named arguments they all have. */
+  function sharedOptions(calls: Call[]) {
+    const each = calls.map(options);
+    const takes = each.map((o) => new Set([...o.groups.flatMap((g) => g.opts), ...o.other].map((opt) => opt.key)));
+    const shared = (key: string) => takes.every((keys) => keys.has(key));
+    const groups = (each[0]?.groups ?? []).map((g) => ({ ...g, opts: g.opts.filter((o) => shared(o.key)) })).filter((g) => g.opts.length > 0);
+    const other = (each[0]?.other ?? []).filter((o) => shared(o.key));
+    return { groups, other };
+  }
+
+  function valueOf(call: Call, key: string): string {
+    return call.args.find((a) => a.key === key)?.text ?? "";
+  }
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement && e.shiftKey)) {
@@ -176,14 +196,14 @@
       <section>
         <h3>{group.title}</h3>
         {#each group.opts as opt (opt.key)}
-          <PropRow {opt} text={valueOf(call, opt.key)} commit={(t) => setNamed([call.id], opt.key, t)} onkeydown={onKey} />
+          <PropRow {opt} texts={[valueOf(call, opt.key)]} commit={(c) => setNamed([call.id], opt.key, c)} onkeydown={onKey} />
         {/each}
       </section>
     {/each}
     <section>
       {#if opts.other.length > 0 || opts.groups.length === 0}<h3>Other</h3>{/if}
       {#each opts.other as opt (opt.key)}
-        <PropRow {opt} text={valueOf(call, opt.key)} commit={(t) => setNamed([call.id], opt.key, t)} onkeydown={onKey} />
+        <PropRow {opt} texts={[valueOf(call, opt.key)]} commit={(c) => setNamed([call.id], opt.key, c)} onkeydown={onKey} />
       {/each}
       <div class="row add">
         <input class="code key" placeholder="property" list="cetz-keys" bind:value={newKey} onkeydown={(e) => e.key === "Enter" && addNamed([call.id])} spellcheck="false" />
@@ -199,11 +219,22 @@
       {#if ids.some((id) => editor.isGroup(id))}<button title="Put each group's shapes back in its place (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
       <button title="Wrap these in a group (⌘G)" onclick={() => editor.groupSelection()}>Group</button>
     </header>
+    {@const calls = ids.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
+    {@const opts = sharedOptions(calls)}
+    {#if opts.groups.length === 0 && opts.other.length === 0}<p class="note">These shapes have no options in common.</p>{/if}
+    {#each opts.groups as group (group.title)}
+      <section>
+        <h3>{group.title}</h3>
+        {#each group.opts as opt (opt.key)}
+          <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(ids, opt.key, c)} onkeydown={onKey} />
+        {/each}
+      </section>
+    {/each}
     <section>
-      <div class="quick">
-        <label>Fill <input type="color" value="#ffffff" onchange={(e) => setNamed(ids, "fill", `rgb("${e.currentTarget.value}")`)} /></label>
-        <label>Stroke <input type="color" value="#000000" onchange={(e) => setNamed(ids, "stroke", `rgb("${e.currentTarget.value}")`)} /></label>
-      </div>
+      {#if opts.other.length > 0}<h3>Other</h3>{/if}
+      {#each opts.other as opt (opt.key)}
+        <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(ids, opt.key, c)} onkeydown={onKey} />
+      {/each}
       <div class="row add">
         <input class="code key" placeholder="property" list="cetz-keys" bind:value={newKey} spellcheck="false" />
         <input class="code" placeholder="value" bind:value={newValue} onkeydown={(e) => e.key === "Enter" && addNamed(ids)} spellcheck="false" />
@@ -343,23 +374,6 @@
   .inspector :global(textarea) {
     width: 100%;
     resize: vertical;
-  }
-  input[type="color"] {
-    width: 26px;
-    height: 22px;
-    padding: 1px;
-    flex: none;
-  }
-  .quick {
-    display: flex;
-    gap: 12px;
-    margin-top: 8px;
-    color: var(--muted);
-  }
-  .quick label {
-    display: flex;
-    align-items: center;
-    gap: 4px;
   }
   .inspector :global(button) {
     font: inherit;

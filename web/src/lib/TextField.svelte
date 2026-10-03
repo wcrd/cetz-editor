@@ -4,7 +4,7 @@
   // `text(...)` / `strong` / `emph` around it.
   import ColorInput from "./ColorInput.svelte";
   import PropRow from "./PropRow.svelte";
-  import { isBold, isItalic, lengthText, textFill, textProp, textSize, withBody, withStyle, type TextChange, type TextStyle } from "./props";
+  import { applyChange, isBold, isItalic, lengthText, textFill, textProp, textSize, withBody, withStyle, type TextChange, type TextStyle } from "./props";
   import { TEXT_MORE } from "./schema";
 
   let {
@@ -60,7 +60,8 @@
   {#if open}
     <div class="props">
       {#each TEXT_MORE as opt (opt.key)}
-        <PropRow {opt} text={textProp(style, opt.key)?.text ?? ""} commit={(t) => set({ prop: opt.key, text: t })} {onkeydown} />
+        {@const value = textProp(style, opt.key)?.text ?? ""}
+        <PropRow {opt} texts={[value]} commit={(c) => set({ prop: opt.key, text: applyChange(c, value) })} {onkeydown} />
       {/each}
     </div>
   {/if}
