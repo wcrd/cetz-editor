@@ -213,7 +213,12 @@
   /** What a call draws: by its name for CeTZ's own functions, else from what the probe saw. */
   function kindOf(call: Call): Kind {
     const known = BY_NAME[baseName(call.callee)];
-    if (known === "line") return call.args.some((a) => a.key === "mark") ? "arrow" : "line";
+    if (known === "line") {
+      // `line(..., close: true)` draws a polygon; marks come after the path.
+      const path = editor.probesById.get(call.id)?.[0]?.drawables.find((d) => d.type === "path");
+      if (path?.type === "path" && path.segments[0]?.[1]) return "polygon";
+      return call.args.some((a) => a.key === "mark") ? "arrow" : "line";
+    }
     if (known) return known;
     if (editor.calls.some((c) => c.parent === call.id)) return "group";
     const probe = editor.probesById.get(call.id)?.[0];
