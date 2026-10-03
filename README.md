@@ -173,7 +173,9 @@ font and weight for `text(5pt)[...]`, `strong[...]` and the like; color,
 thickness, dash, cap and join for `stroke`; start and end marks and their
 size and placement; swatches for colors such as `luma(90%)` or
 `orange.lighten(85%)`. Anything else, or any field after clicking `</>`, is
-edited as a Typst expression. Your last session is restored on reload, and you can
+edited as a Typst expression. With several shapes selected it lists the
+options they share, shows differing values as "mixed", and changing one part
+of a stroke or mark keeps the rest of each shape's own value. Your last session is restored on reload, and you can
 drop a `.typ` file on the window to open it. Hover the file name to see whether
 Save writes back to the opened file. Browsers only reveal a picked file's name,
 not its folder, so the full path can't be shown.
