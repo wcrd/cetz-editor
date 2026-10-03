@@ -28,7 +28,7 @@
   type Snap = { point: Point; target?: number; anchor?: string; named?: number; ref?: string; vertex?: { call: number; arg: number } };
   type Drag =
     | { kind: "pan"; start: Point; pan: Point }
-    | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean }
+    | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean; box?: Box }
     | { kind: "handle"; call: number; arg: number; probe: Probe; snap?: Snap; edit?: Edit }
     | {
         kind: "point";
@@ -816,6 +816,71 @@
     return mods.free ? [x, y] : [editor.snapValue(x), editor.snapValue(y)];
   }
 
+  // --- Smart guides -----------------------------------------------------------
+
+  type Box = { x0: number; y0: number; x1: number; y1: number };
+  /** A guide on the page: vertical at `x` or horizontal at `y`, running `from` to `to` along the other axis. */
+  type Guide = { x?: number; y?: number; from: number; to: number };
+  let guides = $state<Guide[]>([]);
+  /** Other shapes' bounds for the drag in progress, worked out on first use. */
+  let guideCache: Box[] | undefined;
+
+  /** The page bounds of the shapes you can click, other than `exclude` and what's in them. */
+  function guideTargets(exclude: number[]): Box[] {
+    if (guideCache) return guideCache;
+    const skip = new Set(exclude.flatMap((id) => [...editor.family(id)]));
+    guideCache = editor.calls.filter((c) => editor.isSelectable(c) && !skip.has(c.id)).flatMap((c) => editor.boundsOf(c.id) ?? []);
+    return guideCache;
+  }
+
+  /**
+   * How far to shift `box` (page) so its left, centre or right lines up with
+   * another shape's, and likewise top, middle or bottom, within a few pixels;
+   * and the guides that show it. A point is a box with no size.
+   */
+  function alignBox(box: Box, targets: Box[]): { dx?: number; dy?: number; lines: Guide[] } {
+    const reach = 6 / editor.zoom;
+    const nearest = (lo: "x0" | "y0", hi: "x1" | "y1") => {
+      let best: { shift: number; at: number; t: Box } | undefined;
+      const mine = [box[lo], (box[lo] + box[hi]) / 2, box[hi]];
+      for (const t of targets) {
+        for (const at of [t[lo], (t[lo] + t[hi]) / 2, t[hi]]) {
+          for (const m of mine) {
+            const shift = at - m;
+            if (Math.abs(shift) <= reach && (!best || Math.abs(shift) < Math.abs(best.shift))) best = { shift, at, t };
+          }
+        }
+      }
+      return best;
+    };
+    const [bx, by] = [nearest("x0", "x1"), nearest("y0", "y1")];
+    const [sx, sy] = [bx?.shift ?? 0, by?.shift ?? 0];
+    // Each guide runs across both shapes, where they'll be.
+    const lines: Guide[] = [];
+    if (bx) lines.push({ x: bx.at, from: Math.min(box.y0 + sy, bx.t.y0), to: Math.max(box.y1 + sy, bx.t.y1) });
+    if (by) lines.push({ y: by.at, from: Math.min(box.x0 + sx, by.t.x0), to: Math.max(box.x1 + sx, by.t.x1) });
+    return { dx: bx?.shift, dy: by?.shift, lines };
+  }
+
+  function shiftBox(b: Box, [dx, dy]: Point): Box {
+    return { x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy };
+  }
+
+  /** Like `snapPoint`, but on each axis an edge or centre of another shape within reach wins over the grid. */
+  function snapPointGuided(frame: Frame, transform: number[][] | undefined, p: Point, exclude: number[]): Point {
+    const grid = snapPoint(frame, transform, p);
+    if (mods.free) {
+      guides = [];
+      return grid;
+    }
+    const g = alignBox({ x0: p[0], y0: p[1], x1: p[0], y1: p[1] }, guideTargets(exclude));
+    guides = g.lines;
+    if (g.dx === undefined && g.dy === undefined) return grid;
+    const onGrid = editor.toPage(frame, transformPoint(transform, grid));
+    const local = pageToLocal(frame, transform, [g.dx !== undefined ? p[0] + g.dx : onGrid[0], g.dy !== undefined ? p[1] + g.dy : onGrid[1]]);
+    return local.map((v) => Math.round(v * 1e4) / 1e4) as Point;
+  }
+
   /** The frame and transform new shapes are drawn in: the end of the active canvas. */
   function creationFrame(): { frame: Frame; transform?: number[][] } {
     const canvas = editor.activeCanvas;
@@ -1203,6 +1268,7 @@
 
   function onpointerdown(e: PointerEvent) {
     menu = undefined;
+    guideCache = undefined;
     if (e.button === 2) return;
     viewport.setPointerCapture(e.pointerId);
     const p = pagePoint(e);
@@ -1300,7 +1366,7 @@
         editor.selection = [id];
         editor.pointSelection = [];
       }
-      if (editor.selected.includes(id)) drag = { kind: "move", start: p, moved: false, delta: [0, 0], detach: e.altKey };
+      if (editor.selected.includes(id)) drag = { kind: "move", start: p, moved: false, delta: [0, 0], detach: e.altKey, box: selectionBox && { ...selectionBox } };
       return;
     }
 
@@ -1360,6 +1426,17 @@
           -(p[1] - drag.start[1]) / probe.length,
         ]);
         drag.delta = snapDelta(dx, dy);
+        // Line the selection's bounds up with other shapes', per axis, over the grid.
+        const raw: Point = [p[0] - drag.start[0], p[1] - drag.start[1]];
+        const g = drag.box && !mods.free ? alignBox(shiftBox(drag.box, raw), guideTargets(editor.selected)) : undefined;
+        guides = g?.lines ?? [];
+        if (g && (g.dx !== undefined || g.dy !== undefined)) {
+          const m = probe.transform;
+          const [wx, wy] = m ? [m[0][0] * drag.delta[0] + m[0][1] * drag.delta[1], m[1][0] * drag.delta[0] + m[1][1] * drag.delta[1]] : drag.delta;
+          const want = [g.dx !== undefined ? raw[0] + g.dx : wx * probe.length, g.dy !== undefined ? raw[1] + g.dy : -wy * probe.length];
+          const local = untransformDelta(m, [want[0] / probe.length, -want[1] / probe.length]);
+          drag.delta = local.map((v) => Math.round(v * 1e4) / 1e4) as Point;
+        }
         drag.detach = e.altKey;
         editor.dragMove(drag.delta[0], drag.delta[1], drag.detach);
         break;
@@ -1378,7 +1455,7 @@
             drag.snap = snap;
             drag.edit = edit;
           } else {
-            const [x, y] = snapPoint(frameOf(probe), probe.transform, p);
+            const [x, y] = snapPointGuided(frameOf(probe), probe.transform, p, [call]);
             drag.snap = undefined;
             drag.edit = { kind: "set-coord", call, arg, x, y };
             editor.previewEdit(drag.edit);
@@ -1387,7 +1464,8 @@
           // Move the shared point itself; snap it onto other points, or anchors of shapes that don't use it.
           const snap = findSnap(p, new Set(editor.pointUsers.get(drag.point) ?? []), { excludePoint: drag.point });
           drag.snap = snap;
-          const [x, y] = snap ? pageToLocal(drag.frame, drag.transform, snap.point) : snapPoint(drag.frame, drag.transform, p);
+          if (snap) guides = [];
+          const [x, y] = snap ? pageToLocal(drag.frame, drag.transform, snap.point) : snapPointGuided(drag.frame, drag.transform, p, editor.pointUsers.get(drag.point) ?? []);
           const own = editor.pointById.get(drag.point);
           drag.edit =
             drag.group?.length && own
@@ -1404,8 +1482,9 @@
         if (edit && editor.previewEdit(edit)) {
           drag.snap = snap;
           drag.edit = edit;
+          guides = [];
         } else {
-          const [x, y] = snapPoint(frameOf(drag.probe), drag.probe.transform, p);
+          const [x, y] = snapPointGuided(frameOf(drag.probe), drag.probe.transform, p, [drag.call]);
           drag.snap = undefined;
           drag.edit = { kind: "set-coord", call: drag.call, arg: drag.arg, x, y };
           editor.previewEdit(drag.edit);
@@ -1471,7 +1550,7 @@
       }
       case "reshape": {
         const { probe } = drag.reshape;
-        drag.edit = drag.reshape.edit(snapPoint(frameOf(probe), probe.transform, p));
+        drag.edit = drag.reshape.edit(snapPointGuided(frameOf(probe), probe.transform, p, editor.selected));
         if (drag.edit) editor.previewEdit(drag.edit);
         else editor.endDrag();
         break;
@@ -1495,7 +1574,8 @@
           break;
         }
         drag.endSnap = findSnap(p, undefined, { anchors: isLineTool(), vertices: isLineTool(), at: insertAt() });
-        drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPoint(drag.frame, drag.transform, p);
+        if (drag.endSnap) guides = [];
+        drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPointGuided(drag.frame, drag.transform, p, []);
         break;
       }
     }
@@ -1513,6 +1593,8 @@
   function onpointerup() {
     const d = drag;
     drag = undefined;
+    guides = [];
+    guideCache = undefined;
     if (!d) return;
     switch (d.kind) {
       case "move":
@@ -2006,6 +2088,14 @@
           <rect class="handle" class:near={nearReach} x={reach.point[0] - r} y={reach.point[1] - r} width={2 * r} height={2 * r} />
         {/each}
 
+        {#each guides as g, i (i)}
+          {#if g.x !== undefined}
+            <line class="guide" x1={g.x} y1={g.from} x2={g.x} y2={g.to} />
+          {:else}
+            <line class="guide" x1={g.from} y1={g.y} x2={g.to} y2={g.y} />
+          {/if}
+        {/each}
+
         {#each markers as m (m.id)}
           <g class="point" class:hovered={editor.hoveredPoint === m.id} class:picked={m.selected} data-point={m.id}>
             <circle cx={m.page[0]} cy={m.page[1]} r={4 / editor.zoom} />
@@ -2252,6 +2342,12 @@
     fill: color-mix(in srgb, var(--snap) 12%, transparent);
     stroke: var(--snap);
     stroke-width: 2.5;
+    pointer-events: none;
+  }
+  .guide {
+    stroke: var(--snap);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
     pointer-events: none;
   }
   .spin-stem {

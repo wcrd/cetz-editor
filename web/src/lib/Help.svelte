@@ -32,6 +32,13 @@
     </section>
 
     <section>
+      <h3>Smart guides</h3>
+      <p>
+        Moving, resizing or drawing lines shapes up with the others: edges and centres within a few pixels snap together, and
+        an orange guide shows the match. <kbd>{cmd}</kbd> turns this off with the rest of snapping.
+      </p>
+    </section>
+    <section>
       <h3><kbd>.</kbd> Named point</h3>
       <p>
         Click to drop a point, then type its name. It's written once in the code and referenced by name everywhere it's used,

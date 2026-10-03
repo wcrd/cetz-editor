@@ -121,6 +121,12 @@ button next to the field turns this off: the comments are then ignored, and
 the step is a view setting remembered in this browser, which also sets the
 default.
 
+**Smart guides.** Moving shapes, dragging a handle or drawing a shape lines
+it up with the other shapes on the canvas: when its left, centre or right
+(top, middle or bottom) comes within a few pixels of another shape's, it
+snaps there and an orange guide shows the match. A guide wins over the grid
+on its axis; the other axis still snaps to the grid. ⌘ turns both off.
+
 **Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
 15° steps (lengths still snap to the grid along horizontal and vertical ones),
 and the rotation handle to 15° steps.
