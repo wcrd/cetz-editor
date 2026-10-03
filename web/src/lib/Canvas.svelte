@@ -16,7 +16,12 @@
   let spaceHeld = $state(false);
 
   type Point = [number, number];
-  type Snap = { target: number; anchor: string; point: Point };
+  /**
+   * Somewhere a drag can snap to: another shape's anchor (`target` +
+   * `anchor`, written as `"name.anchor"`), or a named point (`named`,
+   * written as `ref`).
+   */
+  type Snap = { point: Point; target?: number; anchor?: string; named?: number; ref?: string };
   type Drag =
     | { kind: "pan"; start: Point; pan: Point }
     | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean }
@@ -210,10 +215,15 @@
     return p ? (p.anchors[0] ?? p.path) : "";
   }
 
-  /** Point markers: all with "Points" on, else the hovered one; handles cover the selection's. */
+  /**
+   * Point markers: all of them with "Points" on, while drawing, or while
+   * dragging a handle (they're snap targets then); else the hovered one.
+   * Handles cover the selection's own points.
+   */
   const markers = $derived.by(() => {
     const withHandles = new Set(handles.map((h) => h.shared));
-    const ids = editor.showPoints ? editor.scene.points.map((p) => p.id) : editor.hoveredPoint !== undefined ? [editor.hoveredPoint] : [];
+    const all = editor.showPoints || editor.tool !== "select" || drag?.kind === "handle" || (drag?.kind === "point" && drag.detach);
+    const ids = all ? editor.scene.points.map((p) => p.id) : editor.hoveredPoint !== undefined ? [editor.hoveredPoint] : [];
     return ids.filter((id) => !withHandles.has(id) && placed.get(id)).map((id) => ({ id, page: placed.get(id)!.page }));
   });
 
@@ -266,19 +276,58 @@
     }),
   );
 
-  function findSnap(p: Point, exclude?: number | Set<number>): Snap | undefined {
+  /** How code names a point: `"A"` for an anchor, else its variable path. */
+  function refText(id: number): string | undefined {
+    const p = editor.pointById.get(id);
+    if (!p) return undefined;
+    if (p.anchors.length > 0) return JSON.stringify(p.anchors[0]);
+    return p.path.replace(/\[(\d+)\]$/, ".at($1)");
+  }
+
+  /** Named points you can snap to. */
+  const pointTargets = $derived(
+    editor.scene.points.flatMap((p) => {
+      const where = placed.get(p.id);
+      const ref = refText(p.id);
+      return where && ref ? [{ named: p.id, ref, point: where.page }] : [];
+    }),
+  );
+
+  /**
+   * The nearest snap target within reach. `exclude` skips anchors of those
+   * shapes; `points: false` skips named points, `anchors: false` shape
+   * anchors. Named points win near-ties, since they're what you usually mean.
+   */
+  function findSnap(
+    p: Point,
+    exclude?: number | Set<number>,
+    { points = true, anchors = true, excludePoint }: { points?: boolean; anchors?: boolean; excludePoint?: number } = {},
+  ): Snap | undefined {
     const radius = 8 / editor.zoom;
     let best: Snap | undefined;
     let bestDist = radius;
-    for (const t of snapTargets) {
-      if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
-      const dist = Math.hypot(t.point[0] - p[0], t.point[1] - p[1]);
+    const consider = (t: Snap, weight: number) => {
+      const dist = Math.hypot(t.point[0] - p[0], t.point[1] - p[1]) * weight;
       if (dist < bestDist) {
         best = t;
         bestDist = dist;
       }
+    };
+    if (points) for (const t of pointTargets) if (t.named !== excludePoint) consider(t, 0.75);
+    if (anchors) {
+      for (const t of snapTargets) {
+        if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
+        consider(t, 1);
+      }
     }
     return best;
+  }
+
+  /** The edit that points one argument at a snap target. */
+  function snapEdit(call: number, arg: number, snap: Snap): Edit | undefined {
+    if (snap.ref !== undefined) return { kind: "set-arg-text", call, arg, text: snap.ref };
+    if (snap.target !== undefined && snap.anchor !== undefined) return { kind: "connect", call, arg, target: snap.target, anchor: snap.anchor };
+    return undefined;
   }
 
   // --- Pointer interaction -------------------------------------------------
@@ -307,7 +356,7 @@
 
     if (editor.tool !== "select") {
       const { frame, transform } = creationFrame();
-      const startSnap = isLineTool() ? findSnap(p) : undefined;
+      const startSnap = findSnap(p, undefined, { anchors: isLineTool() });
       const start = startSnap ? pageToLocal(frame, transform, startSnap.point) : snapPoint(frame, transform, p);
       drag = { kind: "create", start, end: start, startSnap, frame, transform };
       return;
@@ -392,15 +441,16 @@
           const { call, arg, probe } = drag.use;
           const snap = findSnap(p, call);
           drag.snap = snap;
-          if (snap) {
-            drag.edit = { kind: "connect", call, arg, target: snap.target, anchor: snap.anchor };
+          const edit = snap && snapEdit(call, arg, snap);
+          if (edit) {
+            drag.edit = edit;
           } else {
             const [x, y] = snapPoint(frameOf(probe), probe.transform, p);
             drag.edit = { kind: "set-coord", call, arg, x, y };
           }
         } else {
-          // Move the shared point itself; snap it onto anchors of shapes that don't use it.
-          const snap = findSnap(p, new Set(editor.pointUsers.get(drag.point) ?? []));
+          // Move the shared point itself; snap it onto other points, or anchors of shapes that don't use it.
+          const snap = findSnap(p, new Set(editor.pointUsers.get(drag.point) ?? []), { excludePoint: drag.point });
           drag.snap = snap;
           const [x, y] = snap ? pageToLocal(drag.frame, drag.transform, snap.point) : snapPoint(drag.frame, drag.transform, p);
           drag.edit = { kind: "set-point", point: drag.point, x, y };
@@ -411,8 +461,9 @@
       case "handle": {
         const snap = findSnap(p, drag.call);
         drag.snap = snap;
-        if (snap) {
-          drag.edit = { kind: "connect", call: drag.call, arg: drag.arg, target: snap.target, anchor: snap.anchor };
+        const edit = snap && snapEdit(drag.call, drag.arg, snap);
+        if (edit) {
+          drag.edit = edit;
         } else {
           const [x, y] = snapPoint(frameOf(drag.probe), drag.probe.transform, p);
           drag.edit = { kind: "set-coord", call: drag.call, arg: drag.arg, x, y };
@@ -437,7 +488,7 @@
         break;
       }
       case "create": {
-        drag.endSnap = isLineTool() ? findSnap(p) : undefined;
+        drag.endSnap = findSnap(p, undefined, { anchors: isLineTool() });
         drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPoint(drag.frame, drag.transform, p);
         break;
       }
@@ -510,32 +561,41 @@
     let [x1, y1] = d.end;
     const tiny = Math.hypot(x1 - x0, y1 - y0) < 1e-6;
     const pt = (x: number, y: number) => `(${num(x)}, ${num(y)})`;
+    // Ends snapped to a named point are written by name.
+    const startRef = d.startSnap?.ref;
+    const endRef = tiny ? undefined : d.endSnap?.ref;
+    const a = startRef ?? pt(x0, y0);
     let text: string;
     switch (editor.tool) {
       case "line":
       case "arrow":
         if (tiny) [x1, y1] = [x0 + 2, y0];
-        text = `line(${pt(x0, y0)}, ${pt(x1, y1)}${editor.tool === "arrow" ? ', mark: (end: ">")' : ""})`;
+        text = `line(${a}, ${endRef ?? pt(x1, y1)}${editor.tool === "arrow" ? ', mark: (end: ">")' : ""})`;
         break;
       case "rect":
         if (tiny) [x1, y1] = [x0 + 2, y0 - 1];
-        text = `rect(${pt(Math.min(x0, x1), Math.min(y0, y1))}, ${pt(Math.max(x0, x1), Math.max(y0, y1))})`;
+        text =
+          startRef || endRef
+            ? `rect(${a}, ${endRef ?? pt(x1, y1)})`
+            : `rect(${pt(Math.min(x0, x1), Math.min(y0, y1))}, ${pt(Math.max(x0, x1), Math.max(y0, y1))})`;
         break;
       case "circle": {
         const r = tiny ? 0.5 : Math.hypot(x1 - x0, y1 - y0);
-        text = `circle(${pt(x0, y0)}, radius: ${num(r)})`;
+        text = `circle(${a}, radius: ${num(r)})`;
         break;
       }
       case "text":
-        text = `content(${pt(x0, y0)}, [Text])`;
+        text = `content(${a}, [Text])`;
         break;
       default:
         return;
     }
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
+    // Ends snapped to another shape's anchor connect to it (naming it if needed).
     for (const [arg, snap] of [[0, d.startSnap], [1, tiny ? undefined : d.endSnap]] as const) {
-      if (snap) {
-        steps.push(({ created, map }) => ({ kind: "connect", call: created[0], arg, target: map(snap.target), anchor: snap.anchor }));
+      if (snap?.target !== undefined && snap.anchor !== undefined) {
+        const { target, anchor } = snap;
+        steps.push(({ created, map }) => ({ kind: "connect", call: created[0], arg, target: map(target), anchor }));
       }
     }
     if (editor.chain(steps)) {
@@ -626,7 +686,10 @@
   {onpointermove}
   {onpointerup}
   {ondblclick}
-  onpointerleave={() => (editor.hovered = undefined)}
+  onpointerleave={() => {
+    editor.hovered = undefined;
+    pointer = undefined;
+  }}
   role="application"
   aria-label="Drawing canvas"
 >
@@ -733,7 +796,7 @@
         {#if preview}<path class="preview" d={preview} />{/if}
 
         {#if activeSnap}
-          <circle class="snap" cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
+          <circle class="snap" class:named={activeSnap.named !== undefined} cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
         {/if}
       </g>
     </svg>
@@ -910,6 +973,10 @@
     stroke: var(--snap);
     stroke-width: 2;
     pointer-events: none;
+  }
+  .snap.named {
+    stroke: var(--point);
+    stroke-width: 2.5;
   }
   .empty {
     position: absolute;
