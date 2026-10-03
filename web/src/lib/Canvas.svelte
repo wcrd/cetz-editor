@@ -368,10 +368,14 @@
   // --- Snapping modifiers ----------------------------------------------------
 
   const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
-  /** ⌘ (Ctrl off macOS) places freely; Shift locks segments to 15° steps. Read from each pointer event. */
-  let mods = $state({ free: false, angle: false });
+  /**
+   * ⌘ (Ctrl off macOS) places freely; Shift locks segments to 15° steps;
+   * ⌥ joins onto points as literal coordinates, not shared ones. Read from
+   * each pointer event.
+   */
+  let mods = $state({ free: false, angle: false, detach: false });
   function readMods(e: PointerEvent | KeyboardEvent) {
-    mods = { free: isMac ? e.metaKey : e.ctrlKey, angle: e.shiftKey };
+    mods = { free: isMac ? e.metaKey : e.ctrlKey, angle: e.shiftKey, detach: e.altKey };
   }
 
   /**
@@ -483,7 +487,8 @@
     const target = toolTarget(p, true);
     if (path.pages.length > 0 && near(path.pages[path.pages.length - 1], target.page)) return;
     const literal = `(${num(target.local[0])}, ${num(target.local[1])})`;
-    const snap = target.snap;
+    // With ⌥ the point lands where it snapped but stays a literal.
+    const snap = mods.detach ? undefined : target.snap;
     let ref = snap?.ref ?? literal;
     const connects = [...path.connects];
     if (snap?.target !== undefined && snap.anchor !== undefined) {
@@ -906,7 +911,7 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control") readMods(e);
+    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control" || e.key === "Alt") readMods(e);
     if (joining && !(e.target as HTMLElement).closest?.(".cm-editor") && !(e.target instanceof HTMLInputElement)) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -923,7 +928,7 @@
     }
   }
   function onkeyup(e: KeyboardEvent) {
-    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control") readMods(e);
+    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control" || e.key === "Alt") readMods(e);
     if (e.key === " ") spaceHeld = false;
   }
 
@@ -1068,7 +1073,13 @@
         {/if}
 
         {#if activeSnap}
-          <circle class="snap" class:named={activeSnap.named !== undefined || activeSnap.vertex !== undefined} cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
+          <circle
+            class="snap"
+            class:named={(activeSnap.named !== undefined || activeSnap.vertex !== undefined) && !(joining && mods.detach)}
+            cx={activeSnap.point[0]}
+            cy={activeSnap.point[1]}
+            r={6 / editor.zoom}
+          />
         {/if}
       </g>
     </svg>
@@ -1087,7 +1098,7 @@
       />
     {/if}
     {#if joining}
-      <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+      <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "create" && isLineTool()}
       <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {/if}
