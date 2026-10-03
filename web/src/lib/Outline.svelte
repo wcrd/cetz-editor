@@ -5,7 +5,7 @@
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
   import { isVec, type Probe, type Vec3 } from "./probe";
-  import type { Call, Point, Variable } from "./scene";
+  import { baseName, type Call, type Point, type Variable } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -114,6 +114,85 @@
     return `#${index + 1}`;
   }
 
+  // --- Icons ---------------------------------------------------------------
+
+  type Kind = "line" | "arrow" | "rect" | "circle" | "polygon" | "curve" | "text" | "anchor" | "group" | "style" | "transform" | "other";
+
+  const ICONS: Record<Kind, string> = {
+    line: "M5 19L19 5",
+    arrow: "M5 19L19 5M11 5h8v8",
+    rect: "M4 6h16v12H4z",
+    circle: "M12 4a8 8 0 1 0 0.01 0z",
+    polygon: "M12 4l8 6-3 9H7l-3-9z",
+    curve: "M4 18C8 4 16 20 20 6",
+    text: "M5 7V5h14v2M12 5v14M9 19h6",
+    anchor: "M12 3v18M3 12h18M12 9a3 3 0 1 0 0.01 0z",
+    group: "M8 4H5v16h3M16 4h3v16h-3",
+    style: "M4 20l4-1 10-10-3-3L5 16zM13 7l3 3",
+    transform: "M19 12a7 7 0 1 1-2-4.9M19 4v4h-4",
+    other: "M8 12h.01M12 12h.01M16 12h.01",
+  };
+
+  const VARIABLE_ICONS: Record<Variable["kind"], string> = {
+    point: "M12 9a3 3 0 1 0 0.01 0z",
+    points: "M9 4C6 4 7 9 4 12c3 3 2 8 5 8M15 4c3 0 2 5 5 8-3 3-2 8-5 8",
+    function: "M15 4c-3 0-4 2-4 5v8c0 2-1 3-3 3M7 11h8",
+    value: "M6 9h12M6 15h12",
+  };
+
+  const BY_NAME: Record<string, Kind> = {
+    line: "line",
+    rect: "rect",
+    grid: "rect",
+    circle: "circle",
+    "circle-through": "circle",
+    ellipse: "circle",
+    arc: "curve",
+    "arc-through": "curve",
+    bezier: "curve",
+    "bezier-through": "curve",
+    catmull: "curve",
+    hobby: "curve",
+    "merge-path": "curve",
+    polygon: "polygon",
+    "n-star": "polygon",
+    content: "text",
+    text: "text",
+    anchor: "anchor",
+    "copy-anchors": "anchor",
+    group: "group",
+    scope: "group",
+    "on-layer": "group",
+    floating: "group",
+    hide: "group",
+    "set-style": "style",
+    "set-ctx": "style",
+    translate: "transform",
+    rotate: "transform",
+    scale: "transform",
+    "set-origin": "transform",
+    "set-transform": "transform",
+    "set-viewport": "transform",
+  };
+
+  /** What a call draws: by its name for CeTZ's own functions, else from what the probe saw. */
+  function kindOf(call: Call): Kind {
+    const known = BY_NAME[baseName(call.callee)];
+    if (known === "line") return call.args.some((a) => a.key === "mark") ? "arrow" : "line";
+    if (known) return known;
+    if (editor.calls.some((c) => c.parent === call.id)) return "group";
+    const probe = editor.probesById.get(call.id)?.[0];
+    if (!probe || probe.drawables.length === 0) return "other";
+    const paths = probe.drawables.filter((d) => d.type === "path");
+    if (paths.length === 0) return "text";
+    const first = paths[0];
+    if (first.type !== "path" || first.segments.length === 0) return "other";
+    const [, closed, segments] = first.segments[0];
+    if (segments.some((s) => s[0] === "c")) return "curve";
+    if (closed) return "polygon";
+    return call.args.some((a) => a.key === "mark") || paths.length > 1 ? "arrow" : "line";
+  }
+
   function select(call: Call) {
     editor.scope = call.parent ?? undefined;
     editor.selection = [call.id];
@@ -134,7 +213,7 @@
             onpointerenter={() => (editor.hoveredPoint = p.id)}
             onpointerleave={() => (editor.hoveredPoint = undefined)}
           >
-            <span class="name point-name">{v.name}</span>
+            <span class="name point-name"><span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.point} /></svg></span>{v.name}</span>
             <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
             <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
             <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
@@ -144,6 +223,7 @@
           <li>
             <button class="row group" onclick={() => (folded = toggle(folded, v.name))} aria-expanded={open}>
               <span class="chevron" class:open>›</span>
+              <span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.points} /></svg></span>
               <span class="name">{v.name}</span>
               <span class="meta">{points.length} points</span>
             </button>
@@ -168,6 +248,8 @@
         {:else}
           <li>
             <button class="row readonly" onclick={() => jumpTo(v)} title="Show in code">
+              <span class="chevron-space"></span>
+              <span class="icon var-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS[v.kind]} /></svg></span>
               <span class="name">{v.name}</span>
               <span class="kind">{v.kind === "function" ? "function" : ""}</span>
               <span class="meta code">{v.summary}</span>
@@ -186,6 +268,7 @@
     {#each rows as { call, depth } (call.id)}
       {@const instances = editor.probesById.get(call.id) ?? []}
       {@const looped = call.in_loop}
+      {@const kind = kindOf(call)}
       {@const defined = definedBy(call)}
       {@const open = unfolded.has(call.id)}
       <li>
@@ -203,11 +286,14 @@
             onpointerenter={() => (editor.hovered = call.id)}
             onpointerleave={() => (editor.hovered = undefined)}
           >
-            {#if looped}
-              <span class="flow" title="Drawn by a loop">↻</span>
-            {:else if call.conditional}
-              <span class="flow" title="Only drawn when its condition holds">⑂</span>
-            {/if}
+            <span class="icon" title={kind}>
+              <svg viewBox="0 0 24 24"><path d={ICONS[kind]} /></svg>
+              {#if looped}
+                <span class="flow" title="Drawn by a loop">↻</span>
+              {:else if call.conditional}
+                <span class="flow" title="Only drawn when its condition holds">⑂</span>
+              {/if}
+            </span>
             <span class="name">{call.callee}</span>
             {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
             <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
@@ -378,19 +464,57 @@
     width: 14px;
     flex: none;
   }
-  /* Loop and condition markers, and the repetition count. */
-  .flow {
+  /* What each row draws, with loop and condition markers as badges. */
+  .icon {
+    position: relative;
     flex: none;
-    display: inline-grid;
+    width: 16px;
+    height: 16px;
+    align-self: center;
+    color: var(--muted);
+  }
+  .icon svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .row.shape:hover .icon,
+  .row.shape.hovered .icon {
+    color: var(--text);
+  }
+  .var-icon {
+    margin-right: 6px;
+  }
+  .point-name .var-icon {
+    display: inline-block;
+    vertical-align: -3px;
+  }
+  .point-icon {
+    color: var(--point);
+  }
+  .point-icon svg {
+    stroke-width: 2.4;
+  }
+  .flow {
+    position: absolute;
+    right: -5px;
+    bottom: -4px;
+    display: grid;
     place-items: center;
-    width: 15px;
-    height: 15px;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
     border: 1px solid var(--snap);
+    background: var(--panel);
     color: var(--snap);
-    font-size: 10px;
+    font-size: 8px;
+    font-weight: 700;
     line-height: 1;
-    align-self: center;
   }
   .pill {
     flex: none;
