@@ -316,7 +316,7 @@
               <li
                 class="row point child"
                 class:hovered={editor.hoveredPoint === p.id}
-                style:padding-left="{46 + depth * 14}px"
+                style:padding-left="{42 + depth * 14}px"
                 onpointerenter={() => hoverPoint(p.id)}
                 onpointerleave={() => (editor.hoveredPoint = undefined)}
               >
@@ -334,7 +334,7 @@
                     class="row instance"
                     class:focused
                     class:hovered={editor.hoveredInstance?.call === call.id && editor.hoveredInstance.index === index}
-                    style:padding-left="{46 + depth * 14}px"
+                    style:padding-left="{42 + depth * 14}px"
                     title="Drawn by the loop; edit its points or the call to change it"
                     onclick={() => (editor.focusedInstance = focused ? undefined : { call: call.id, index })}
                     onpointerenter={() => (editor.hoveredInstance = { call: call.id, index })}
@@ -414,13 +414,13 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 70px 70px 18px;
   }
-  /* Columns: chevron at 4px, icon at 22px, name at 46px; children start
+  /* Columns: chevron at 4px, icon at 18px, name at 42px; children start
      at their parent's name column. */
   .row.point:not(.child) {
-    padding-left: 22px;
+    padding-left: 18px;
   }
   .row.child {
-    padding-left: 46px;
+    padding-left: 42px;
   }
   .shape-button {
     flex: 1;
@@ -466,19 +466,23 @@
   .chevron {
     display: inline-block;
     width: 10px;
+    text-align: center;
     color: var(--muted);
     transition: transform 0.1s;
   }
   .chevron.open {
     transform: rotate(90deg);
   }
+  /* The caret sits snug against the icon: 4px apart rather than the row gap. */
   .chevron-button,
   .row.group .chevron {
-    width: 12px;
+    width: 10px;
     flex: none;
+    margin-right: -2px;
   }
   .chevron-space {
-    width: 12px;
+    width: 10px;
+    margin-right: -2px;
     flex: none;
   }
   /* What each row draws, with loop and condition markers as badges. */
@@ -553,7 +557,7 @@
     position: absolute;
     top: 0;
     bottom: 6px;
-    left: calc(var(--indent) + 29.5px);
+    left: calc(var(--indent) + 25.5px);
     border-left: 1px dotted var(--muted);
     opacity: 0.6;
   }
@@ -563,7 +567,7 @@
   .row.instance::before {
     content: "";
     position: absolute;
-    left: calc(var(--indent) + 26px);
+    left: calc(var(--indent) + 22px);
     width: 6px;
     height: 6px;
     border-radius: 50%;
