@@ -94,6 +94,7 @@ export type Edit =
   | { kind: "move-points"; points: number[]; dx: number; dy: number }
   | { kind: "delete-points"; points: number[] }
   | { kind: "extract-point"; call: number; arg: number; name: string | null }
+  | { kind: "share-point"; call: number; arg: number; from: number; from_arg: number }
   | { kind: "add-point"; canvas: number | null; x: number; y: number; name: string | null }
   | { kind: "rename-point"; point: number; name: string }
   | { kind: "set-coord"; call: number; arg: number; x: number; y: number }

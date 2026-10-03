@@ -43,6 +43,10 @@ pub enum Edit {
     /// Turn a literal coordinate argument into a shared point: insert
     /// `anchor("name", (x, y))` before the call and use `"name"` instead.
     ExtractPoint { call: usize, arg: usize, name: Option<String> },
+    /// Make a coordinate argument use the same point as another call's
+    /// argument (`from`, `from_arg`): that one's shared point if it has one,
+    /// else its literal becomes a new `anchor("P1", ..)` that both use.
+    SharePoint { call: usize, arg: usize, from: usize, from_arg: usize },
     /// Set one positional coordinate argument. Literal coordinates keep their
     /// formatting; anything else (an anchor name, an expression) is replaced.
     SetCoord { call: usize, arg: usize, x: f64, y: f64 },
@@ -185,25 +189,28 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             }
         }
         Edit::ExtractPoint { call, arg, name } => {
-            let call = find_call(&scene, *call)?;
-            let arg = call.args.get(*arg).ok_or("no such argument")?;
-            if !matches!(arg.value, Value::Coord { .. }) || arg.point.is_some() {
-                return Err("only a literal coordinate can become a shared point".into());
-            }
             let name = match name {
                 Some(n) if !n.is_empty() && !n.contains('.') => n.clone(),
                 Some(_) => return Err("a point name can't be empty or contain '.'".into()),
                 None => unique_point_name(&scene),
             };
-            let definition = format!("anchor({:?}, {})", name, arg.text);
-            let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
-            if source[line_start..call.range.start].trim().is_empty() {
-                let indent = &source[line_start..call.range.start];
-                patches.push(patch(line_start..line_start, format!("{indent}{definition}\n")));
-            } else {
-                patches.push(patch(call.range.start..call.range.start, format!("{definition}; ")));
+            extract_point(source, find_call(&scene, *call)?, *arg, &name, &mut patches)?;
+        }
+        Edit::SharePoint { call, arg, from, from_arg } => {
+            if (call, arg) == (from, from_arg) {
+                return Err("a point can't be shared with itself".into());
             }
-            patches.push(patch(arg.value_range.clone(), format!("{name:?}")));
+            let target = find_arg(&scene, *call, *arg)?;
+            let from_call = find_call(&scene, *from)?;
+            let source_arg = from_call.args.get(*from_arg).ok_or("no such argument")?;
+            let text = if source_arg.point.is_some() {
+                source_arg.text.clone()
+            } else {
+                let name = unique_point_name(&scene);
+                extract_point(source, from_call, *from_arg, &name, &mut patches)?;
+                format!("{name:?}")
+            };
+            patches.push(patch(target.value_range.clone(), text));
         }
         Edit::SetCoord { call, arg, x, y } => {
             let arg = find_arg(&scene, *call, *arg)?;
@@ -583,6 +590,25 @@ fn valid_new_name(scene: &Scene, name: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
+/// Turns a literal coordinate argument into `anchor("name", (x, y))` before
+/// its call, used as `"name"`.
+fn extract_point(source: &str, call: &Call, arg: usize, name: &str, patches: &mut Vec<Patch>) -> Result<(), String> {
+    let arg = call.args.get(arg).ok_or("no such argument")?;
+    if !matches!(arg.value, Value::Coord { .. }) || arg.point.is_some() {
+        return Err("only a literal coordinate can become a shared point".into());
+    }
+    let definition = format!("anchor({:?}, {})", name, arg.text);
+    let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+    if source[line_start..call.range.start].trim().is_empty() {
+        let indent = &source[line_start..call.range.start];
+        patches.push(patch(line_start..line_start, format!("{indent}{definition}\n")));
+    } else {
+        patches.push(patch(call.range.start..call.range.start, format!("{definition}; ")));
+    }
+    patches.push(patch(arg.value_range.clone(), format!("{name:?}")));
+    Ok(())
+}
+
 /// `P1`, `P2`, ... whichever isn't already an anchor or element name.
 fn unique_point_name(scene: &Scene) -> String {
     (1..).map(|i| format!("P{i}")).find(|n| !name_taken(scene, n)).unwrap()
@@ -881,6 +907,20 @@ mod tests {
         let b = scene.points.iter().find(|p| p.path == "pts.B").unwrap().id;
         let out = apply(SHARED, &Edit::SetPoint { point: b, x: 2.5, y: -1.0 }).unwrap();
         assert!(out.source.contains("B: (2.5, -1)"));
+    }
+
+    #[test]
+    fn share_point_names_a_literal_or_reuses_a_name() {
+        let src = "#canvas({\n  import draw: *\n  line((0, 0), (2, 0), (2, 2))\n  line((3, 0), (4, 1))\n})\n";
+        let (a, b) = (shared_id(src, "line((0"), shared_id(src, "line((3"));
+        let out = apply(src, &Edit::SharePoint { call: b, arg: 1, from: a, from_arg: 1 }).unwrap();
+        assert_eq!(out.source, "#canvas({\n  import draw: *\n  anchor(\"P1\", (2, 0))\n  line((0, 0), \"P1\", (2, 2))\n  line((3, 0), \"P1\")\n})\n");
+        // Already shared: the other argument just uses it too.
+        let a = shared_id(&out.source, "line((0");
+        let b = shared_id(&out.source, "line((3");
+        let again = apply(&out.source, &Edit::SharePoint { call: b, arg: 0, from: a, from_arg: 1 }).unwrap();
+        assert!(again.source.contains("line(\"P1\", \"P1\")") && !again.source.contains("P2"), "{}", again.source);
+        assert!(apply(src, &Edit::SharePoint { call: a, arg: 1, from: a, from_arg: 1 }).is_err());
     }
 
     #[test]
