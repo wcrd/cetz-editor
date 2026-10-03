@@ -316,7 +316,7 @@
               <li
                 class="row point child"
                 class:hovered={editor.hoveredPoint === p.id}
-                style:padding-left="{22 + depth * 14}px"
+                style:padding-left="{48 + depth * 14}px"
                 onpointerenter={() => hoverPoint(p.id)}
                 onpointerleave={() => (editor.hoveredPoint = undefined)}
               >
@@ -334,7 +334,7 @@
                     class="row instance"
                     class:focused
                     class:hovered={editor.hoveredInstance?.call === call.id && editor.hoveredInstance.index === index}
-                    style:padding-left="{30 + depth * 14}px"
+                    style:padding-left="{48 + depth * 14}px"
                     title="Drawn by the loop; edit its points or the call to change it"
                     onclick={() => (editor.focusedInstance = focused ? undefined : { call: call.id, index })}
                     onpointerenter={() => (editor.hoveredInstance = { call: call.id, index })}
@@ -414,8 +414,13 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 70px 70px 18px;
   }
+  /* Columns: chevron at 4px, icon at 24px, name at 48px; children start
+     at their parent's name column. */
+  .row.point:not(.child) {
+    padding-left: 24px;
+  }
   .row.child {
-    padding-left: 22px;
+    padding-left: 48px;
   }
   .shape-button {
     flex: 1;
@@ -467,7 +472,8 @@
   .chevron.open {
     transform: rotate(90deg);
   }
-  .chevron-button {
+  .chevron-button,
+  .row.group .chevron {
     width: 14px;
     flex: none;
   }
@@ -499,11 +505,12 @@
     color: var(--text);
   }
   .var-icon {
-    margin-right: 6px;
+    margin-right: 2px;
   }
   .point-name .var-icon {
     display: inline-block;
     vertical-align: -3px;
+    margin-right: 8px;
   }
   .point-icon {
     color: var(--point);
@@ -546,7 +553,7 @@
     position: absolute;
     top: 0;
     bottom: 6px;
-    left: calc(var(--indent) + 17px);
+    left: calc(var(--indent) + 31.5px);
     border-left: 1px dotted var(--muted);
     opacity: 0.6;
   }
@@ -556,7 +563,7 @@
   .row.instance::before {
     content: "";
     position: absolute;
-    left: calc(var(--indent) + 14px);
+    left: calc(var(--indent) + 28px);
     width: 6px;
     height: 6px;
     border-radius: 50%;
