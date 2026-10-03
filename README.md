@@ -7,20 +7,19 @@ diagrams that edits your hand-written Typst source in place. Everything runs
 in the browser: the Typst compiler is compiled to WebAssembly, and there's no
 backend.
 
-- **Drag, draw and restyle on a canvas.** Every change is a minimal edit to
-  the source, and every byte you didn't touch stays exactly as you wrote it.
-- **Exact geometry from CeTZ itself.** Selection outlines, handles and anchors
-  come from CeTZ's own computed shapes (see
-  [docs/spikes/01-cetz-geometry.md](docs/spikes/01-cetz-geometry.md)), so
-  they're right for rotations, scaling, groups, Bézier curves and math labels.
-- **Code and canvas stay in sync.** Clicking a shape selects its call in the
-  code, and putting the cursor in a call selects its shape. Undo covers edits
-  from both.
+![The editor with the zone diagram open on an infinite canvas: hovering a face in the outline highlights it on the canvas and in the code, and the outline lists the diagram's named points and shapes](assets/screenshot-outline.png)
+
+## Features
+- **Drag, draw and restyle on a canvas.** Every change is a minimal edit to the source.
+- **Exact geometry from CeTZ itself.** Selection outlines, handles and anchors come from CeTZ's own computed shapes.
+- **Code and canvas stay in sync.** Edit from either. Clicking a shape selects its call in the code, and putting the cursor in a call selects its shape. Undo covers edits from both.
+- **Sync to a local file or export to SVG, PNG, PDF.**
+- **Multipage support.** Support for CeTZ with multiple diagrams.
 
 ## Getting started
 
 Requires Rust (with the `wasm32-unknown-unknown` target), `wasm-bindgen-cli`
-0.2.129, Node and pnpm. `typst` and LaTeX are only needed for `just render`.
+0.2.129, Node and pnpm.
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -43,143 +42,15 @@ just dev
 | `just dev` | Build the WASM modules and start the dev server |
 | `just build` | Production build into `web/dist` |
 | `just test` | Rust tests and a Svelte type-check |
-| `just render` | Render `fixtures/` to `generated/` with the Typst and LaTeX CLIs |
+| `just render` | For testing only. Render `fixtures/` to `generated/` with the Typst and LaTeX CLIs |
 
 The first compile downloads CeTZ from packages.typst.org. After that it's
-cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packages-vs-cdn.md)).
+cached in the browser.
 
 ## Using it
 
-| | |
-|---|---|
-| **V** / **L** / **A** / **R** / **C** / **T** | Select, line, arrow, rectangle, circle, text tools |
-| **.** | Named point: click to place one, then type its name |
-| **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
-| Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
-| Drag a shape | Move it (snaps its first point to the grid) |
-| Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
-| Double-click a group | Enter it to select its children (Esc to leave) |
-| Arrow keys (Shift: 1 unit) | Nudge by one grid step |
-| ⌘D / Delete | Duplicate / delete |
-| ⌘G / ⇧⌘G | Group the selection / ungroup the selected groups |
-| ⌘] / ⌘[ (Shift: all the way) | Bring forward / send backward |
-| ⌘Z / ⇧⌘Z | Undo / redo, for canvas and code edits alike |
-| ⌘O / ⌘S / ⇧⌘S | Open / save / save as. Saving writes back to the opened file in Chromium; other browsers download it |
-| Export button (next to Save) | PDF, SVG, or PNG at 144 or 300 ppi, named after the file (`diagram.typ` → `diagram.pdf`). It's the whole document compiled as written, all pages stacked for SVG and PNG, the same as `typst compile` gives |
-| Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
-| ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
-| P | Show every shared point's marker |
-| G | Toggle the grid |
-| I | Infinite canvas: hide the page edge, extend the grid everywhere, and keep the drawing still as an auto-sized page grows |
-| ⌘\ | Show or hide the code panel (left). The inspector stays on the right |
-
-**Shared points.** Points defined once and used by name are linked to their
-definition: `let A = (0, 0)`, entries of `let pts = (A: ..., B: ...)`, and
-CeTZ anchors (`anchor("A", (0, 0))`, or a `for (k, p) in pts { anchor(k, p) }`
-loop). Dragging a shared corner, or a shape that uses one, edits the definition,
-so every shape using it follows. Hold ⌥ while dragging to detach just that use
-into its own coordinate (dropping it on another anchor reconnects it). The
-inspector shows each corner's point (`→ A (pts.A)`) with a Detach button, and
-a Share button turns a literal coordinate into a shared `anchor(...)`. New
-anchors go at the top of the shape's block, after the anchors already there
-(below any `rotate` or other transform the shape is under, since the
-coordinate is in its frame), so every shape can use them and they don't pin
-the shape's place in the stacking order. For anchors already scattered through
-a file, right-click empty canvas for **Gather anchors at top**: each moves up
-in its block, in order, until it reaches a transform or something it uses
-(`anchor("C", "r.east")` stays below `r`). Hover a point to highlight the
-shapes using it, and click its marker to select them.
-
-**Drawing with named points.** While a drawing tool is active every named
-point shows, and the start or end of a line, rect, circle or label snaps to
-one and writes its name (`line("A", "G")`, `rect("E", "C")`) instead of
-numbers. Handles snap to them the same way. The point tool (**.**) adds a
-point to a dictionary an anchor loop names (`pts = (…, I: (3, 5.75))`), or
-inserts `anchor("P1", (x, y))` with the other anchors at the top, and opens its name for
-editing. Double-click a point's name in the outline to rename it everywhere
-it's used by that name. The join tool (**J**) builds a path from points:
-`line("A", "B", "G", close: true)`, snapping to named points and to other
-shapes' anchors (an unnamed shape gets a name in the same undo step).
-
-**Right-click menu.** Right-click anywhere on the canvas for what applies
-there: on shapes, Duplicate, Group (two or more), Ungroup, Bring forward or
-to front, Send backward or to back, and Delete (a shape outside the selection
-becomes the selection); on a named point, Rename, Select shapes using it and
-Delete; on empty canvas, Select all, Zoom to fit, Gather anchors at top and
-the points and grid toggles; while joining, Finish, Close and Cancel.
-
-**Editing a line's points.** Right-click a line for **Add point here** (on
-the nearest segment, on the grid when snapping), **Continue from start/end**
-and **Close/Open path**; right-click one of its points to remove it or carry
-on from it. With a line selected, starting the join tool on either end also
-carries on from there: the new points go into the same `line(..)`, and
-clicking the other end closes it.
-
-**Stacking.** CeTZ draws in code order, so what's in front is what comes later
-in its block. ⌘] moves the selection's code past the next statement that
-draws something, ⌘[ back past the previous one, and with Shift as far as it
-can go. In the outline, which lists shapes in code order (top is drawn
-first), drag a row to move it among the shapes in its block. A comment on the
-lines above a shape, or after it on its line, moves with it. Nothing moves
-past an `import`, a `set-style` or transform (that would change what it
-applies to), or a shape it uses by name or that uses it (`"box.east"` must
-come after `box`); the edit stops there, or refuses with a message. An anchor
-or `let` it depends on, which draws nothing, comes along instead.
-
-**Groups.** ⌘G (or Group in the inspector) wraps the selected shapes in
-`group(name: "group", { ... })` where the first of them was, and anything
-outside that used their names now goes through the group (`"box.east"` becomes
-`"group.box.east"`). The shapes must be in the same block. A shape that's
-further down moves up to join the group, unless it uses something defined in
-between. ⇧⌘G puts a group's shapes back in its place and turns `"g.box.east"`
-back into `"box.east"`. Either command refuses with a message, rather than
-change the drawing, when a transform would stop or start applying to other
-shapes, when something uses the group's own anchors (`"g.north"`), or when
-names would clash.
-
-**Grid step.** Type any size into the toolbar's grid field (`0.3`), a
-fraction (`1/3`), or pick a preset. Snapping, the grid and the rulers all
-follow it. It's kept in the file, as a comment on the line above each canvas
-that Typst ignores:
-
-```typst
-// cetz-editor: grid 0.2
-#canvas({ ... })
-```
-
-so a drawing opens with its own grid, and changing the step is an edit you
-can undo. A canvas without the comment uses the default (0.2). The file
-button next to the field turns this off: the comments are then ignored, and
-the step is a view setting remembered in this browser, which also sets the
-default.
-
-**Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
-15° steps (lengths still snap to the grid along horizontal and vertical ones).
-Hold **⌘** (Ctrl elsewhere) to place without any snapping: no grid, points or
-anchors. It works for every drawing tool, handle and move.
-
-**Outline.** With nothing selected, the right panel shows the document:
-**Variables** (every `let`; point variables and dictionaries of points are
-editable here, other values show a summary and jump to the code) and
-**Shapes** (every draw call). Calls in loops show how many shapes they drew
-(`line ×4`) and expand into those repetitions, read-only and labelled by the
-points they connect (`A → E`); hover or click one to highlight just it.
-
-The inspector lists every option the selected CeTZ function takes, set or
-not, with CeTZ's default shown when unset (`close` and `mark` for lines,
-`anchor`, `frame` and `padding` for content, `mode` for arcs, ...). Your own
-functions that forward to a CeTZ one, like `let face(..a) = line(..a)`, get
-that function's options. Values get fields: text size, color, bold, italic,
-font and weight for `text(5pt)[...]`, `strong[...]` and the like; color,
-thickness, dash, cap and join for `stroke`; start and end marks and their
-size and placement; swatches for colors such as `luma(90%)` or
-`orange.lighten(85%)`. Anything else, or any field after clicking `</>`, is
-edited as a Typst expression. With several shapes selected it lists the
-options they share, shows differing values as "mixed", and changing one part
-of a stroke or mark keeps the rest of each shape's own value. Your last session is restored on reload, and you can
-drop a `.typ` file on the window to open it. Hover the file name to see whether
-Save writes back to the opened file. Browsers only reveal a picked file's name,
-not its folder, so the full path can't be shown.
+See [USAGE.md](USAGE.md) for shortcuts, shared points, drawing with named
+points, stacking, groups, the grid and the inspector.
 
 ## How it works
 
@@ -203,8 +74,6 @@ patches, CodeMirror applies them as one undoable transaction, and everything
 holding offsets is remapped through the patches until the next compile. While
 you drag, the editor previews edits in the worker and shifts the overlay
 natively, so it stays responsive when compiles lag.
-
-See [docs/plan.md](docs/plan.md) for the design and milestones.
 
 ## Limitations
 
