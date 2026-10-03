@@ -184,6 +184,7 @@ dependencies = [
 name = "cetz-scene"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "typst-syntax",
 ]
 
@@ -192,6 +193,7 @@ name = "cetz-wasm"
 version = "0.1.0"
 dependencies = [
  "cetz-scene",
+ "serde_json",
  "wasm-bindgen",
 ]
 

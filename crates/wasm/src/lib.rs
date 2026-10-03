@@ -24,3 +24,18 @@ pub fn summarize(source: &str) -> ParseSummary {
         lossless: s.lossless,
     }
 }
+
+/// The scene model (canvases, draw calls, arguments) as JSON.
+#[wasm_bindgen]
+pub fn scene(source: &str) -> String {
+    serde_json::to_string(&cetz_scene::parse(source)).unwrap_or_else(|_| "{\"canvases\":[]}".into())
+}
+
+/// Applies an edit (JSON, see `cetz_scene::Edit`) and returns the
+/// `EditResult` as JSON.
+#[wasm_bindgen]
+pub fn apply_edit(source: &str, edit: &str) -> Result<String, JsError> {
+    let edit: cetz_scene::Edit = serde_json::from_str(edit).map_err(|e| JsError::new(&format!("invalid edit: {e}")))?;
+    let result = cetz_scene::apply(source, &edit).map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+}

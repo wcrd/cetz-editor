@@ -1,8 +1,13 @@
 //! Parses CeTZ source into a scene the editor can manipulate.
 
+mod edit;
 mod instrument;
+mod scene;
+mod walk;
 
+pub use edit::{Edit, EditResult, Patch, apply};
 pub use instrument::{Instrumented, PROBE_PATH, instrument};
+pub use scene::{Arg, Call, Canvas, Scene, Value, parse};
 
 use std::ops::Range;
 

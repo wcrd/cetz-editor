@@ -5,7 +5,9 @@
 //!
 //! Rendering is unchanged: the probe only adds invisible metadata.
 
-use typst_syntax::{LinkedNode, SyntaxKind};
+use typst_syntax::LinkedNode;
+
+use crate::walk;
 
 /// Path of the probe library in the compiler's virtual file system.
 pub const PROBE_PATH: &str = "/__cetz-editor/probe.typ";
@@ -43,15 +45,17 @@ impl Instrumented {
 
 pub fn instrument(source: &str) -> Instrumented {
     let root = typst_syntax::parse(source);
-    let mut calls = Vec::new();
-    for_each_canvas_body(&LinkedNode::new(&root), &mut |body| walk_code(body, &mut calls));
-    calls.sort_unstable();
-    calls.dedup();
+    let mut spans = Vec::new();
+    walk::for_each_canvas(&LinkedNode::new(&root), &mut |_, body| {
+        walk::for_each_call(body, walk::Context::default(), &mut |call, _| spans.push(call.range()));
+    });
+    spans.sort_unstable_by_key(|r| r.start);
+    spans.dedup();
 
     let mut edits: Vec<(usize, String)> = vec![(0, PREAMBLE.to_string())];
-    for &(start, end) in &spans(&root, &calls) {
-        edits.push((start, format!("__cetz_probe({start}, ")));
-        edits.push((end, ")".to_string()));
+    for span in &spans {
+        edits.push((span.start, format!("__cetz_probe({}, ", span.start)));
+        edits.push((span.end, ")".to_string()));
     }
     // Stable sort keeps a closing `)` before an opening wrap at the same offset.
     edits.sort_by_key(|(at, _)| *at);
@@ -66,89 +70,8 @@ pub fn instrument(source: &str) -> Instrumented {
         last = at;
     }
     text.push_str(&source[last..]);
+    let calls = spans.iter().map(|r| r.start).collect();
     Instrumented { text, insertions, calls }
-}
-
-/// Byte ranges of the calls starting at the given offsets.
-fn spans(root: &typst_syntax::SyntaxNode, calls: &[usize]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    collect_calls(&LinkedNode::new(root), calls, &mut out);
-    out
-}
-
-fn collect_calls(node: &LinkedNode, calls: &[usize], out: &mut Vec<(usize, usize)>) {
-    if node.kind() == SyntaxKind::FuncCall && calls.binary_search(&node.offset()).is_ok() {
-        out.push((node.offset(), node.offset() + node.len()));
-    }
-    for child in node.children() {
-        collect_calls(&child, calls, out);
-    }
-}
-
-/// Finds `canvas(..., { body })` / `cetz.canvas(...)` calls and visits the
-/// `Code` node of each body block.
-fn for_each_canvas_body(node: &LinkedNode, f: &mut impl FnMut(&LinkedNode)) {
-    if node.kind() == SyntaxKind::FuncCall && is_canvas_callee(node) {
-        if let Some(body) = args(node).and_then(|a| a.children().filter(|c| c.kind() == SyntaxKind::CodeBlock).last()) {
-            if let Some(code) = block_code(&body) {
-                f(&code);
-            }
-        }
-    }
-    for child in node.children() {
-        for_each_canvas_body(&child, f);
-    }
-}
-
-fn is_canvas_callee(call: &LinkedNode) -> bool {
-    let Some(callee) = call.children().next() else { return false };
-    match callee.kind() {
-        SyntaxKind::Ident => callee.get().leaf_text() == "canvas",
-        SyntaxKind::FieldAccess => callee.children().last().is_some_and(|f| f.get().leaf_text() == "canvas"),
-        _ => false,
-    }
-}
-
-fn args<'a>(call: &LinkedNode<'a>) -> Option<LinkedNode<'a>> {
-    call.children().find(|c| c.kind() == SyntaxKind::Args)
-}
-
-fn block_code<'a>(block: &LinkedNode<'a>) -> Option<LinkedNode<'a>> {
-    block.children().find(|c| c.kind() == SyntaxKind::Code)
-}
-
-/// Records statement-level calls in a code body, descending into loops,
-/// conditionals, nested blocks, and block arguments (`group({ ... })`).
-fn walk_code(code: &LinkedNode, calls: &mut Vec<usize>) {
-    for stmt in code.children() {
-        walk_stmt(&stmt, calls);
-    }
-}
-
-fn walk_stmt(stmt: &LinkedNode, calls: &mut Vec<usize>) {
-    match stmt.kind() {
-        SyntaxKind::FuncCall => {
-            calls.push(stmt.offset());
-            if let Some(args) = args(stmt) {
-                for arg in args.children().filter(|a| a.kind() == SyntaxKind::CodeBlock) {
-                    walk_block(&arg, calls);
-                }
-            }
-        }
-        SyntaxKind::ForLoop | SyntaxKind::WhileLoop | SyntaxKind::Conditional => {
-            for child in stmt.children().filter(|c| c.kind() == SyntaxKind::CodeBlock) {
-                walk_block(&child, calls);
-            }
-        }
-        SyntaxKind::CodeBlock => walk_block(stmt, calls),
-        _ => {}
-    }
-}
-
-fn walk_block(block: &LinkedNode, calls: &mut Vec<usize>) {
-    if let Some(code) = block_code(block) {
-        walk_code(&code, calls);
-    }
 }
 
 #[cfg(test)]
