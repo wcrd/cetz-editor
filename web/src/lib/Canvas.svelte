@@ -456,30 +456,51 @@
     arc: ["arc-center", "origin"],
   };
 
-  /** The selected shape's radius handle: where it is and the centre (page), and the radius (local). */
-  type Reach = { call: number; probe: Probe; point: Point; center: Point; r: number };
+  /**
+   * A radius handle of the selected shape: where it is and the centre
+   * (page), the radius it measures (local), and the `radius:` text for a new
+   * value (`stretch`: ⌥, which makes a circle an ellipse along this axis).
+   */
+  type Reach = { call: number; probe: Probe; point: Point; center: Point; r: number; text: (r: number, stretch: boolean) => string; stretchy?: boolean };
 
-  const reach = $derived.by((): Reach | undefined => {
-    if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "radius")) return undefined;
+  const reaches = $derived.by((): Reach[] => {
+    if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "radius")) return [];
     const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
-    const names = call && RADIUS_ANCHORS[baseName(call.callee)];
-    if (!call || !probe || !names || call.in_loop) return undefined;
-    // An ellipse's `(x, y)` radius has no one length to drag.
+    const base = call && baseName(call.callee);
+    const names = base && RADIUS_ANCHORS[base];
+    if (!call || !probe || !names || call.in_loop) return [];
+    const at = (name: string) => {
+      const v = probe.anchors[name];
+      return isVec(v) ? editor.toPage(frameOf(probe), v) : undefined;
+    };
+    const center = at(names[1]);
+    if (!center) return [];
+    const reach = (name: string, text: Reach["text"]): Reach[] => {
+      const point = at(name);
+      if (!point) return [];
+      const [a, b] = [center, point].map((q) => pageToLocal(frameOf(probe), probe.transform, q));
+      return [{ call: call.id, probe, point, center, r: Math.hypot(b[0] - a[0], b[1] - a[1]), text }];
+    };
     const arg = call.args.find((a) => a.key === "radius");
-    if (arg && arg.value.type !== "number") return undefined;
-    const [edge, center] = names.map((n) => probe.anchors[n]);
-    if (!isVec(edge) || !isVec(center)) return undefined;
-    const point = editor.toPage(frameOf(probe), edge);
-    const c = editor.toPage(frameOf(probe), center);
-    const [a, b] = [c, point].map((q) => pageToLocal(frameOf(probe), probe.transform, q));
-    return { call: call.id, probe, point, center: c, r: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+    // An ellipse, `radius: (x, y)`: one square per axis.
+    if (base === "circle" && arg?.value.type === "coord") {
+      const { x: rx, y: ry } = arg.value;
+      return [...reach("east", (r) => `(${num(r)}, ${num(ry)})`), ...reach("north", (r) => `(${num(rx)}, ${num(r)})`)];
+    }
+    if (arg && arg.value.type !== "number") return [];
+    const round = reach(names[0], (r, stretch) => {
+      if (!stretch || base !== "circle") return num(r);
+      const [a, b] = [center, at("north")!].map((q) => pageToLocal(frameOf(probe), probe.transform, q));
+      return `(${num(r)}, ${num(Math.hypot(b[0] - a[0], b[1] - a[1]))})`;
+    });
+    return round.map((r) => ({ ...r, stretchy: base === "circle" }));
   });
 
   let nearReach = $state(false);
 
-  function overReach(p: Point): boolean {
-    return !!reach && Math.hypot(p[0] - reach.point[0], p[1] - reach.point[1]) * editor.zoom < 8;
+  function reachAt(p: Point): Reach | undefined {
+    return reaches.find((r) => Math.hypot(p[0] - r.point[0], p[1] - r.point[1]) * editor.zoom < 8);
   }
 
   /** The radius with the handle dragged to `p`: its start plus how far `p` went out from the centre. */
@@ -1070,7 +1091,8 @@
       drag = { kind: "reshape", reshape };
       return;
     }
-    if (reach && overReach(p)) {
+    const reach = reachAt(p);
+    if (reach) {
       drag = { kind: "radius", reach, r: reach.r };
       return;
     }
@@ -1154,7 +1176,7 @@
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
       nearReshape = editor.tool === "select" && !spaceHeld && reshapeAt(p) !== undefined;
-      nearReach = editor.tool === "select" && !spaceHeld && !nearReshape && overReach(p);
+      nearReach = editor.tool === "select" && !spaceHeld && !nearReshape && reachAt(p) !== undefined;
       nearSpin = editor.tool === "select" && !spaceHeld && !nearReach && overSpin(p);
       nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach && !nearReshape ? grabAt(p) : undefined;
       const hit = nearGrab || nearSpin || nearReach || nearReshape ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
@@ -1276,7 +1298,7 @@
       }
       case "radius": {
         drag.r = radiusAt(drag.reach, p);
-        drag.edit = { kind: "set-named", call: drag.reach.call, key: "radius", text: num(drag.r) };
+        drag.edit = { kind: "set-named", call: drag.reach.call, key: "radius", text: drag.reach.text(drag.r, mods.detach) };
         editor.previewEdit(drag.edit);
         break;
       }
@@ -1785,10 +1807,10 @@
           <circle class="handle" class:edge={r.edge} cx={r.point[0]} cy={r.point[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
         {/each}
 
-        {#if reach}
+        {#each reaches as reach, i (i)}
           {@const r = 4 / editor.zoom}
           <rect class="handle" class:near={nearReach} x={reach.point[0] - r} y={reach.point[1] - r} width={2 * r} height={2 * r} />
-        {/if}
+        {/each}
 
         {#each markers as m (m.id)}
           <g class="point" class:hovered={editor.hoveredPoint === m.id} class:picked={m.selected} data-point={m.id}>
@@ -1915,7 +1937,7 @@
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "radius"}
-      <div class="hint">radius {num(drag.r)} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+      <div class="hint">radius {num(drag.r)}{drag.reach.stretchy ? ` · ${isMac ? "⌥" : "Alt"} ellipse` : ""} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
