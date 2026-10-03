@@ -162,7 +162,7 @@ export class Editor {
   /** Whether saving writes straight back to a file on disk (vs. asking where). */
   fileLinked = $state(false);
   /** The file on disk saving writes to, when the browser gave us one. */
-  handle?: FileHandle;
+  handle = $state.raw<FileHandle>();
   /** The file's line ending. The source always uses `\n`; saving restores this. */
   lineEnding = $state<"\n" | "\r\n">("\n");
   /** Bumped whenever a document is loaded, so views can reset (e.g. refit). */

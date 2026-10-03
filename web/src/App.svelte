@@ -24,6 +24,7 @@
       void e.source;
       void e.fileName;
       void e.savedSource;
+      void e.handle;
     }
     const timer = setTimeout(() => saveSession(tabs), 400);
     return () => clearTimeout(timer);

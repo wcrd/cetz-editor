@@ -11,6 +11,8 @@ export interface FileHandle {
   getFile(): Promise<File>;
   createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>;
   isSameEntry?(other: FileHandle): Promise<boolean>;
+  queryPermission?(o: { mode: "readwrite" }): Promise<PermissionState>;
+  requestPermission?(o: { mode: "readwrite" }): Promise<PermissionState>;
 }
 type PickerOptions = {
   suggestedName?: string;
@@ -96,7 +98,7 @@ export async function save(editor: Editor, saveAs = false) {
       if (!fsWindow.showSaveFilePicker) return download(editor, text, source);
       handle = editor.handle = await fsWindow.showSaveFilePicker({ suggestedName: editor.fileName, types: TYPES });
     }
-    const writable = await handle.createWritable();
+    const writable = await writableFor(handle);
     await writable.write(text);
     await writable.close();
     editor.fileName = handle.name;
@@ -106,6 +108,20 @@ export async function save(editor: Editor, saveAs = false) {
   } catch (err) {
     if (!isAbort(err)) editor.flash(`Couldn't save: ${err}`);
   }
+}
+
+/**
+ * Opens a file for writing. A handle restored from an earlier visit needs the
+ * user's permission again; saving is a click or keypress, so the browser can ask.
+ */
+async function writableFor(handle: FileHandle) {
+  const mode = { mode: "readwrite" } as const;
+  if (handle.queryPermission && (await handle.queryPermission(mode)) !== "granted") {
+    if ((await handle.requestPermission?.(mode)) !== "granted") {
+      throw new DOMException(`Not allowed to write to ${handle.name}`, "NotAllowedError");
+    }
+  }
+  return handle.createWritable();
 }
 
 function download(editor: Editor, text: string, source: string) {
@@ -143,12 +159,23 @@ export function loadSession(): { tabs: SavedTab[]; active: number } | undefined 
 }
 
 export function restoreSession(tabs: Tabs, session: { tabs: SavedTab[]; active: number }) {
-  for (const saved of session.tabs) {
+  const editors = session.tabs.map((saved) => {
     const editor = tabs.open(saved.source, saved.fileName, false);
     editor.savedSource = saved.savedSource;
     editor.lineEnding = saved.lineEnding ?? "\n";
-  }
+    return editor;
+  });
   tabs.active = tabs.editors[session.active] ?? tabs.editors[0];
+  // Relink the tabs to their files on disk. The handles are saved alongside
+  // the tabs; a name check guards against the two stores getting out of step.
+  relinked = loadHandles().then((handles) => {
+    editors.forEach((editor, i) => {
+      const handle = handles?.[i];
+      if (!handle || handle.name !== editor.fileName || editor.handle) return;
+      editor.handle = handle;
+      editor.fileLinked = true;
+    });
+  });
 }
 
 export function saveSession(tabs: Tabs) {
@@ -163,5 +190,50 @@ export function saveSession(tabs: Tabs) {
     localStorage.removeItem(OLD_SESSION_KEY);
   } catch {
     // Ignore: the session just won't be restored.
+  }
+  // Wait for the restore, or this could overwrite the handles it's reading.
+  void relinked.then(() => saveHandles(tabs.editors.map((editor) => editor.handle)));
+}
+
+// File handles can't go in localStorage, but IndexedDB can store them: one
+// list, in tab order, beside the session above. (Their own database: the
+// package cache owns the "cetz-editor" one and its version.)
+const HANDLES_KEY = "tab-handles";
+let relinked: Promise<void> = Promise.resolve();
+
+function handleStore<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("cetz-editor-files", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("handles");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction("handles", mode);
+      const request = run(tx.objectStore("handles"));
+      tx.oncomplete = () => {
+        db.close();
+        resolve(request.result);
+      };
+      tx.onerror = tx.onabort = () => {
+        db.close();
+        reject(tx.error);
+      };
+    };
+  });
+}
+
+async function loadHandles(): Promise<(FileHandle | undefined)[] | undefined> {
+  try {
+    return await handleStore("readonly", (store) => store.get(HANDLES_KEY));
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveHandles(handles: (FileHandle | undefined)[]) {
+  try {
+    await handleStore("readwrite", (store) => store.put(handles, HANDLES_KEY));
+  } catch {
+    // Ignore: the tabs just won't be relinked after a reload.
   }
 }
