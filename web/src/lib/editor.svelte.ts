@@ -131,6 +131,8 @@ export class Editor {
   hovered = $state<number>();
   /** A group the user has entered (double-click) to select its children. */
   scope = $state<number>();
+  /** Groups folded closed in the outline. */
+  collapsed = $state(new Set<number>());
   get tool() { return this.prefs.tool; }
   set tool(v) { this.prefs.tool = v; }
   get snap() { return this.prefs.snap; }
@@ -295,6 +297,7 @@ export class Editor {
     this.selection = this.selection.map(map);
     this.pointSelection = this.pointSelection.map(map);
     if (this.scope !== undefined) this.scope = map(this.scope);
+    if (this.collapsed.size > 0) this.collapsed = new Set([...this.collapsed].map(map));
     this.hovered = undefined;
     this.hoveredPoint = undefined;
     this.hoveredInstance = undefined;

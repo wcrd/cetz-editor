@@ -1,7 +1,7 @@
 <script lang="ts">
   // The document outline, shown when nothing is selected: variables (the
   // definitions, editable when they're literal points) and shapes (the draw
-  // calls; loops expand into the repetitions CeTZ drew, read-only).
+  // calls; groups fold, loops expand into the repetitions CeTZ drew, read-only).
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
   import { isVec, type Probe, type Vec3 } from "./probe";
@@ -44,8 +44,12 @@
     if (!p) return;
     const v = editor.scene.variables.find((v) => p.path.startsWith(`${v.name}.`) || p.path.startsWith(`${v.name}[`));
     if (v && folded.has(v.name)) folded = toggle(folded, v.name);
-    const call = editor.calls.find((c) => c.range.start <= p.range.start && p.range.end <= c.range.end);
+    const within = editor.calls.filter((c) => c.range.start <= p.range.start && p.range.end <= c.range.end);
+    const call = within.at(-1);
     if (!v && call && !unfolded.has(call.id)) unfolded = toggle(unfolded, call.id);
+    if (!v && within.some((c) => editor.collapsed.has(c.id))) {
+      editor.collapsed = new Set([...editor.collapsed].filter((id) => !within.some((c) => c.id === id)));
+    }
   });
 
   function toggle<T>(set: Set<T>, key: T): Set<T> {
@@ -84,17 +88,27 @@
 
   // --- Shapes --------------------------------------------------------------
 
+  /** Calls with children: groups, scopes and the like. */
+  const groups = $derived(new Set(editor.calls.flatMap((c) => (c.parent === null ? [] : [c.parent]))));
+
+  /** Every call outside a folded group, with its nesting depth. */
   const rows = $derived(
-    editor.calls.map((call) => {
+    editor.calls.flatMap((call) => {
       let depth = 0;
-      for (let p = call.parent; p !== null; p = editor.callById.get(p)?.parent ?? null) depth++;
-      return { call, depth };
+      let hidden = false;
+      for (let p = call.parent; p !== null; p = editor.callById.get(p)?.parent ?? null) {
+        depth++;
+        hidden ||= editor.collapsed.has(p);
+      }
+      return hidden ? [] : [{ call, depth }];
     }),
   );
 
-  /** Points a call defines itself, e.g. `anchor("C", (5, 5))`. */
+  /** Points a call defines itself, e.g. `anchor("C", (5, 5))`, not those of its children. */
   function definedBy(call: Call): Point[] {
-    return editor.scene.points.filter((p) => p.range.start >= call.range.start && p.range.end <= call.range.end && !isVariablePoint(p));
+    const inside = (r: { start: number; end: number }, c: Call) => r.start >= c.range.start && r.end <= c.range.end;
+    const children = editor.calls.filter((c) => c.parent === call.id);
+    return editor.scene.points.filter((p) => inside(p.range, call) && !children.some((c) => inside(p.range, c)) && !isVariablePoint(p));
   }
 
   function isVariablePoint(p: Point): boolean {
@@ -418,7 +432,8 @@
       {@const looped = call.in_loop}
       {@const kind = kindOf(call)}
       {@const defined = definedBy(call)}
-      {@const open = unfolded.has(call.id)}
+      {@const group = groups.has(call.id)}
+      {@const open = group ? !editor.collapsed.has(call.id) : unfolded.has(call.id)}
       {@const edge = dropEdge(call.id)}
       <li data-row={call.id} class:drop-before={edge === "before"} class:drop-after={edge === "after"} ondragover={(e) => dragOver(e, call)} ondrop={dropHere}>
         <div
@@ -436,7 +451,11 @@
           }}
           ondragend={endDrag}
         >
-          {#if looped || defined.length > 0}
+          {#if group}
+            <button class="chevron-button" onclick={() => (editor.collapsed = toggle(editor.collapsed, call.id))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
+              <span class="chevron" class:open>›</span>
+            </button>
+          {:else if looped || defined.length > 0}
             <button class="chevron-button" onclick={() => (unfolded = toggle(unfolded, call.id))} aria-expanded={open} aria-label="Expand">
               <span class="chevron" class:open>›</span>
             </button>
@@ -462,7 +481,7 @@
             <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
           </button>
         </div>
-        {#if open}
+        {#if open && (defined.length > 0 || looped)}
           <ul class="children" style:--indent="{depth * 14}px">
             {#each defined as p (p.id)}
               <li
