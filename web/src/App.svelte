@@ -6,7 +6,8 @@
   import Outline from "./lib/Outline.svelte";
   import GridStep from "./lib/GridStep.svelte";
   import type { Editor, Tool } from "./lib/editor.svelte";
-  import { loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
+  import type { ExportFormat } from "./lib/compiler";
+  import { exportFile, loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
   import { PanelSize } from "./lib/panelSize.svelte";
   import Resizer from "./lib/Resizer.svelte";
   import { Tabs } from "./lib/tabs.svelte";
@@ -184,6 +185,20 @@
     { id: "join", label: "Join points", key: "J", icon: "M5 18L9 6l10 4-4 9zM5 18h.01M9 6h.01M19 10h.01M15 19h.01" },
   ];
 
+  // Typst's points are 1/72 in, so a PNG at N ppi has N / 72 pixels per point.
+  const exports: { label: string; format: ExportFormat; ppi?: number }[] = [
+    { label: "PDF", format: "pdf" },
+    { label: "SVG", format: "svg" },
+    { label: "PNG, 144 ppi", format: "png", ppi: 144 },
+    { label: "PNG, 300 ppi", format: "png", ppi: 300 },
+  ];
+  let exportMenu = $state(false);
+  let exportGroup = $state<HTMLElement>();
+
+  function onpointerdown(e: PointerEvent) {
+    if (exportMenu && !exportGroup?.contains(e.target as Node)) exportMenu = false;
+  }
+
   function isEditingText(target: EventTarget | null): boolean {
     const el = target as HTMLElement | null;
     return !!el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || !!el.closest?.(".cm-editor"));
@@ -192,6 +207,12 @@
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const typing = isEditingText(e.target);
+
+    if (exportMenu && e.key === "Escape") {
+      e.preventDefault();
+      exportMenu = false;
+      return;
+    }
 
     if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
@@ -335,7 +356,7 @@
   });
 </script>
 
-<svelte:window {onkeydown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
+<svelte:window {onkeydown} {onpointerdown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
 <div
   class="app"
@@ -368,6 +389,33 @@
         <button title="Save (⌘S)" aria-label="Save file" onclick={() => save(editor)}>
           <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7" /></svg>
         </button>
+        <div class="export" bind:this={exportGroup}>
+          <button
+            class:active={exportMenu}
+            title="Export as PDF, SVG or PNG"
+            aria-label="Export"
+            aria-haspopup="menu"
+            aria-expanded={exportMenu}
+            onclick={() => (exportMenu = !exportMenu)}
+          >
+            <svg viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5L12 4l4.5 4.5M5 14v6h14v-6" /></svg>
+          </button>
+          {#if exportMenu}
+            <div class="menu" role="menu">
+              {#each exports as x (x.label)}
+                <button
+                  role="menuitem"
+                  onclick={() => {
+                    exportMenu = false;
+                    void exportFile(editor, x.format, x.ppi && x.ppi / 72);
+                  }}
+                >
+                  {x.label}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
 
       <div class="status" class:failed={editor.hasErrors} title={compileLabel}>{compileLabel}</div>
@@ -697,6 +745,30 @@
   }
   .tool.active kbd {
     color: inherit;
+  }
+  .export {
+    position: relative;
+  }
+  .export .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    min-width: 140px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  }
+  .export .menu button {
+    text-align: left;
+    border: none;
+    border-radius: 5px;
+    padding: 0 10px;
+    white-space: nowrap;
   }
   .toolbar svg {
     width: 16px;

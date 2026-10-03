@@ -5,7 +5,7 @@
 // source changes, everything holding ids (probes, selection) is remapped
 // through the change's patches so it stays valid until the next compile.
 
-import type { TypstCompiler, CompilerStatus, Diagnostic } from "./compiler";
+import type { TypstCompiler, CompilerStatus, Diagnostic, ExportFormat } from "./compiler";
 import type { FileHandle } from "./files";
 import { OffsetIndex } from "./offsets";
 import { formatStep, parseStep } from "./pixels";
@@ -261,6 +261,11 @@ export class Editor {
     if (this.status.kind === "done") this.status = { kind: "compiling" };
     const id = this.#compiler.compile(source, (status, id) => this.#onCompiled(status, id));
     this.#requests.set(id, { source: this.source, draft });
+  }
+
+  /** The document as a file, compiled as written. */
+  export(format: ExportFormat, pixelPerPt?: number): Promise<Uint8Array> {
+    return this.#compiler.export(this.source, format, pixelPerPt);
   }
 
   #onCompiled(status: CompilerStatus, id: number) {

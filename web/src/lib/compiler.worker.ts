@@ -2,15 +2,15 @@
 
 import init, { Compiler, type CompileOutput } from "./wasm/cetz_worker";
 import { loadPackage } from "./packages";
-import type { Diagnostic, WorkerMessage, WorkerRequest } from "./compiler";
+import type { CompileRequest, Diagnostic, ExportRequest, WorkerMessage, WorkerRequest } from "./compiler";
 import type { Probe } from "./probe";
 
 const compiler = init().then(() => new Compiler());
 const inflight = new Map<string, Promise<void>>();
 let latest = 0;
 
-function post(message: WorkerMessage) {
-  self.postMessage(message);
+function post(message: WorkerMessage, transfer: Transferable[] = []) {
+  self.postMessage(message, { transfer });
 }
 
 function addPackage(c: Compiler, spec: string): Promise<void> {
@@ -38,11 +38,16 @@ function toPlain(d: CompileOutput["diagnostics"][number]): Diagnostic {
   return plain;
 }
 
-let pending: WorkerRequest | undefined;
+let pending: CompileRequest | undefined;
 
 // Requests queue up while a compile runs (e.g. during a drag). Defer to a
 // fresh task so all queued messages land first, then compile only the newest.
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
+  if (e.data.kind === "export") {
+    const request = e.data;
+    runExport(request).catch((err) => post({ id: request.id, kind: "exported", error: String(err) }));
+    return;
+  }
   latest = e.data.id;
   const first = pending === undefined;
   pending = e.data;
@@ -57,7 +62,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   });
 };
 
-async function run({ id, source }: WorkerRequest) {
+async function run({ id, source }: CompileRequest) {
   const c = await compiler;
 
   let ms = 0;
@@ -97,4 +102,33 @@ async function run({ id, source }: WorkerRequest) {
   const result = { svg: out.svg, diagnostics: out.diagnostics.map(toPlain), probes, pageHeights, ms };
   out.free();
   post({ id, kind: "done", ...result });
+}
+
+/** "message (line 3)", for the first error, or undefined if there are none. */
+function describeError(diagnostics: Diagnostic[]): string | undefined {
+  const d = diagnostics.find((d) => d.error);
+  if (!d) return undefined;
+  const where = d.line === undefined ? "" : ` (${d.file ? `${d.file}, ` : ""}line ${d.line + 1})`;
+  return d.message + where;
+}
+
+async function runExport({ id, source, format, pixelPerPt }: ExportRequest) {
+  const c = await compiler;
+  const attempted = new Set<string>();
+  for (;;) {
+    const out = c.export(source, format, pixelPerPt);
+    const missing = out.missing_packages.filter((spec) => !attempted.has(spec));
+    if (missing.length > 0) {
+      out.free();
+      missing.forEach((spec) => attempted.add(spec));
+      await Promise.all(missing.map((spec) => addPackage(c, spec)));
+      continue;
+    }
+    const data = out.data;
+    const error = describeError(out.diagnostics.map(toPlain));
+    out.free();
+    if (data) post({ id, kind: "exported", data }, [data.buffer]);
+    else post({ id, kind: "exported", error: error ?? "export failed" });
+    return;
+  }
 }

@@ -14,7 +14,7 @@ use typst_layout::PagedDocument;
 use typst::syntax::package::PackageSpec;
 use typst::syntax::{FileId, Lines, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
-use typst::utils::{LazyHash, PicoStr};
+use typst::utils::{LazyHash, PicoStr, Scalar};
 use typst::{Library, LibraryExt, World, WorldExt};
 
 /// The result of one compilation.
@@ -42,6 +42,33 @@ pub struct Diagnostic {
     /// Zero-based line and column in that file, when known.
     pub line: Option<usize>,
     pub column: Option<usize>,
+}
+
+/// A file format [`EditorWorld::export`] writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Format {
+    Pdf,
+    /// All pages stacked into one image, as the editor shows them.
+    Svg,
+    /// All pages stacked into one image, at this many pixels per point.
+    Png(f32),
+}
+
+/// The result of one export.
+#[derive(Debug, Default)]
+pub struct Export {
+    /// The file's contents, if compilation and export succeeded.
+    pub data: Option<Vec<u8>>,
+    pub diagnostics: Vec<Diagnostic>,
+    /// As in [`Output::missing_packages`]: add them and export again.
+    pub missing_packages: Vec<String>,
+}
+
+impl Diagnostic {
+    /// An error that isn't tied to a place in any file.
+    fn message(message: String) -> Self {
+        Self { error: true, message, file: None, line: None, column: None }
+    }
 }
 
 struct Probe {
@@ -160,25 +187,70 @@ impl EditorWorld {
     }
 
     pub fn compile(&mut self) -> Output {
+        let (doc, diagnostics, missing_packages) = self.compile_document();
+        let mut out = Output { diagnostics, missing_packages, ..Default::default() };
+        if let Some(doc) = doc {
+            out.svg = Some(typst_svg::svg_merged(&doc, &Default::default(), Abs::zero()));
+            out.page_heights = doc.pages().iter().map(|p| p.frame.height().to_pt()).collect();
+            if self.probe.is_some() {
+                out.probes = Some(probes_json(&doc));
+            }
+        }
+        out
+    }
+
+    /// Compiles `text` as written, not instrumented, and writes it as `format`.
+    pub fn export(&mut self, text: &str, format: Format) -> Export {
+        self.set_main(text);
+        let (doc, diagnostics, missing_packages) = self.compile_document();
+        let mut out = Export { diagnostics, missing_packages, ..Default::default() };
+        let Some(doc) = doc else { return out };
+        out.data = match format {
+            Format::Svg => Some(typst_svg::svg_merged(&doc, &Default::default(), Abs::zero()).into_bytes()),
+            Format::Png(pixel_per_pt) => {
+                let options = typst_render::RenderOptions {
+                    pixel_per_pt: Scalar::new(pixel_per_pt.into()),
+                    ..Default::default()
+                };
+                let pixmap = typst_render::render_merged(&doc, &options, Abs::zero(), None);
+                match pixmap.encode_png() {
+                    Ok(png) => Some(png),
+                    Err(err) => {
+                        out.diagnostics.push(Diagnostic::message(format!("couldn't encode the PNG: {err}")));
+                        None
+                    }
+                }
+            }
+            Format::Pdf => match typst_pdf::pdf(&doc, &Default::default()) {
+                Ok(pdf) => Some(pdf),
+                Err(errors) => {
+                    out.diagnostics.extend(errors.iter().map(|d| self.diagnostic(d)));
+                    None
+                }
+            },
+        };
+        out
+    }
+
+    /// Compiles the main source: the document if it succeeded, the
+    /// diagnostics, and the packages it's missing.
+    fn compile_document(&mut self) -> (Option<PagedDocument>, Vec<Diagnostic>, Vec<String>) {
         self.missing.lock().unwrap().clear();
         let Warned { output, warnings } = typst::compile::<PagedDocument>(self);
         // Bound comemo's cache; recent results stay for incremental recompiles.
         typst::comemo::evict(10);
 
-        let mut out = Output::default();
-        match output {
-            Ok(doc) => {
-                out.svg = Some(typst_svg::svg_merged(&doc, &Default::default(), Abs::zero()));
-                out.page_heights = doc.pages().iter().map(|p| p.frame.height().to_pt()).collect();
-                if self.probe.is_some() {
-                    out.probes = Some(probes_json(&doc));
-                }
+        let mut diagnostics = Vec::new();
+        let doc = match output {
+            Ok(doc) => Some(doc),
+            Err(errors) => {
+                diagnostics.extend(errors.iter().map(|d| self.diagnostic(d)));
+                None
             }
-            Err(errors) => out.diagnostics.extend(errors.iter().map(|d| self.diagnostic(d))),
-        }
-        out.diagnostics.extend(warnings.iter().map(|d| self.diagnostic(d)));
-        out.missing_packages = self.missing.lock().unwrap().iter().cloned().collect();
-        out
+        };
+        diagnostics.extend(warnings.iter().map(|d| self.diagnostic(d)));
+        let missing = self.missing.lock().unwrap().iter().cloned().collect();
+        (doc, diagnostics, missing)
     }
 
     fn diagnostic(&self, diag: &SourceDiagnostic) -> Diagnostic {
@@ -295,6 +367,28 @@ mod tests {
         let out = world.compile();
         assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
         assert!(out.svg.unwrap().starts_with("<svg"));
+    }
+
+    #[test]
+    fn exports_each_format() {
+        let mut world = EditorWorld::new();
+        let text = "#set page(width: 20pt, height: 10pt)\nHi\n#pagebreak()\nThere";
+        let pdf = world.export(text, Format::Pdf).data.unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let svg = world.export(text, Format::Svg).data.unwrap();
+        assert!(svg.starts_with(b"<svg"));
+        let png = world.export(text, Format::Png(2.0)).data.unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        // Both pages stacked, at two pixels per point: 40 x 40.
+        assert_eq!(&png[16..24], &[0, 0, 0, 40, 0, 0, 0, 40]);
+    }
+
+    #[test]
+    fn export_reports_errors_in_the_source() {
+        let mut world = EditorWorld::new();
+        let out = world.export("ok\n#undefined-thing", Format::Pdf);
+        assert!(out.data.is_none());
+        assert_eq!((out.diagnostics[0].line, out.diagnostics[0].column), (Some(1), Some(1)));
     }
 
     #[test]

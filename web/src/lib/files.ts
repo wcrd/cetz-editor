@@ -1,7 +1,8 @@
-// Opening and saving .typ files. Uses the File System Access API where the
-// browser has it (save writes back to the opened file); otherwise falls back
-// to a file input and a download.
+// Opening, saving and exporting .typ files. Uses the File System Access API
+// where the browser has it (save writes back to the opened file); otherwise
+// falls back to a file input and a download.
 
+import type { ExportFormat } from "./compiler";
 import type { Editor } from "./editor.svelte";
 import type { Tabs } from "./tabs.svelte";
 
@@ -9,7 +10,7 @@ import type { Tabs } from "./tabs.svelte";
 export interface FileHandle {
   name: string;
   getFile(): Promise<File>;
-  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>;
+  createWritable(): Promise<{ write(data: string | Blob): Promise<void>; close(): Promise<void> }>;
   isSameEntry?(other: FileHandle): Promise<boolean>;
   queryPermission?(o: { mode: "readwrite" }): Promise<PermissionState>;
   requestPermission?(o: { mode: "readwrite" }): Promise<PermissionState>;
@@ -125,11 +126,48 @@ async function writableFor(handle: FileHandle) {
 }
 
 function download(editor: Editor, text: string, source: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
-  const a = Object.assign(document.createElement("a"), { href: url, download: editor.fileName });
+  downloadBlob(new Blob([text], { type: "text/plain" }), editor.fileName);
+  editor.savedSource = source;
+}
+
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
   a.click();
   URL.revokeObjectURL(url);
-  editor.savedSource = source;
+}
+
+const EXPORT_TYPES: Record<ExportFormat, { description: string; mime: string }> = {
+  pdf: { description: "PDF document", mime: "application/pdf" },
+  svg: { description: "SVG image", mime: "image/svg+xml" },
+  png: { description: "PNG image", mime: "image/png" },
+};
+
+/**
+ * Exports the document next to its name (`diagram.typ` → `diagram.pdf`),
+ * asking where to save it, or downloading it where browsers can't ask.
+ */
+export async function exportFile(editor: Editor, format: ExportFormat, pixelPerPt?: number) {
+  if (editor.hasErrors) return editor.flash("Fix the errors before exporting");
+  const { description, mime } = EXPORT_TYPES[format];
+  const name = `${editor.fileName.replace(/\.typ$/i, "")}.${format}`;
+  // Compile while the picker is open: it has to open during the click.
+  const exported = editor.export(format, pixelPerPt).then((data) => new Blob([data as BlobPart], { type: mime }));
+  exported.catch(() => {});
+  try {
+    if (!fsWindow.showSaveFilePicker) return downloadBlob(await exported, name);
+    const handle = await fsWindow.showSaveFilePicker({
+      suggestedName: name,
+      types: [{ description, accept: { [mime]: [`.${format}`] } }],
+    });
+    const blob = await exported;
+    const writable = await writableFor(handle);
+    await writable.write(blob);
+    await writable.close();
+    editor.flash(`Exported ${handle.name}`);
+  } catch (err) {
+    if (!isAbort(err)) editor.flash(`Couldn't export: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 // The open tabs are kept in this browser so a reload doesn't lose work.

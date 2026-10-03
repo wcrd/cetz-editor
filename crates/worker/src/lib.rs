@@ -26,6 +26,27 @@ pub struct CompileOutput {
     pub page_heights: Vec<f64>,
 }
 
+#[wasm_bindgen(getter_with_clone)]
+pub struct ExportOutput {
+    /// The file's contents, if compilation and export succeeded.
+    pub data: Option<Vec<u8>>,
+    pub diagnostics: Vec<Diagnostic>,
+    /// Packages to fetch and add before exporting again, as `@ns/name:version`.
+    pub missing_packages: Vec<String>,
+}
+
+impl From<cetz_compile::Diagnostic> for Diagnostic {
+    fn from(d: cetz_compile::Diagnostic) -> Self {
+        Diagnostic {
+            error: d.error,
+            message: d.message,
+            file: d.file,
+            line: d.line.map(|n| n as u32),
+            column: d.column.map(|n| n as u32),
+        }
+    }
+}
+
 /// A Typst compiler holding one main source and any added packages.
 #[wasm_bindgen]
 pub struct Compiler {
@@ -58,21 +79,28 @@ impl Compiler {
         let out = self.world.compile();
         CompileOutput {
             svg: out.svg,
-            diagnostics: out
-                .diagnostics
-                .into_iter()
-                .map(|d| Diagnostic {
-                    error: d.error,
-                    message: d.message,
-                    file: d.file,
-                    line: d.line.map(|n| n as u32),
-                    column: d.column.map(|n| n as u32),
-                })
-                .collect(),
+            diagnostics: out.diagnostics.into_iter().map(Diagnostic::from).collect(),
             missing_packages: out.missing_packages,
             probes: out.probes,
             page_heights: out.page_heights,
         }
+    }
+
+    /// Compiles `source` as written and writes it as `format`: "pdf", "svg",
+    /// or "png" at `pixel_per_pt`. The next compile sets its own source.
+    pub fn export(&mut self, source: &str, format: &str, pixel_per_pt: f32) -> Result<ExportOutput, JsError> {
+        let format = match format {
+            "pdf" => cetz_compile::Format::Pdf,
+            "svg" => cetz_compile::Format::Svg,
+            "png" => cetz_compile::Format::Png(pixel_per_pt),
+            _ => return Err(JsError::new(&format!("unknown export format: {format}"))),
+        };
+        let out = self.world.export(source, format);
+        Ok(ExportOutput {
+            data: out.data,
+            diagnostics: out.diagnostics.into_iter().map(Diagnostic::from).collect(),
+            missing_packages: out.missing_packages,
+        })
     }
 }
 

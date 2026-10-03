@@ -65,6 +65,7 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | ⌘] / ⌘[ (Shift: all the way) | Bring forward / send backward |
 | ⌘Z / ⇧⌘Z | Undo / redo, for canvas and code edits alike |
 | ⌘O / ⌘S / ⇧⌘S | Open / save / save as. Saving writes back to the opened file in Chromium; other browsers download it |
+| Export button (next to Save) | PDF, SVG, or PNG at 144 or 300 ppi, named after the file (`diagram.typ` → `diagram.pdf`). It's the whole document compiled as written, all pages stacked for SVG and PNG, the same as `typst compile` gives |
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
 | ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
 | P | Show every shared point's marker |
@@ -188,8 +189,9 @@ crates/scene/    Parses canvas bodies into draw calls with byte ranges; applies
                  duplicate, delete) as minimal text patches; instruments
                  sources for the probe.
 crates/compile/  In-memory Typst world: embedded fonts, packages added by the
-                 host, SVG output, and probe queries. probe.typ wraps each
-                 CeTZ element to record its drawables, anchors and transform.
+                 host, SVG output, PDF/SVG/PNG export, and probe queries.
+                 probe.typ wraps each CeTZ element to record its drawables,
+                 anchors and transform.
 crates/wasm/     Small bindings to `scene` used on the main thread.
 crates/worker/   Bindings to `compile`, run in a Web Worker.
 web/             Svelte 5 app: canvas, inspector, CodeMirror code pane.
@@ -215,4 +217,4 @@ See [docs/plan.md](docs/plan.md) for the design and milestones.
 - Elements passed straight into wrappers like `on-layer(1, content(...))` lose
   their name and anchors, and children of `hide({...})` can't be selected.
 - New shapes are appended to the end of the active canvas.
-- The compiler module is about 38 MB (16 MB gzipped), mostly embedded fonts.
+- The compiler module is about 43 MB (17 MB gzipped), mostly embedded fonts.
