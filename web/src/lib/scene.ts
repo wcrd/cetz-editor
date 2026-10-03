@@ -91,6 +91,8 @@ export interface Scene {
 export type Edit =
   | { kind: "move"; calls: number[]; dx: number; dy: number; detach?: boolean }
   | { kind: "set-point"; point: number; x: number; y: number }
+  | { kind: "move-points"; points: number[]; dx: number; dy: number }
+  | { kind: "delete-points"; points: number[] }
   | { kind: "extract-point"; call: number; arg: number; name: string | null }
   | { kind: "add-point"; canvas: number | null; x: number; y: number; name: string | null }
   | { kind: "rename-point"; point: number; name: string }

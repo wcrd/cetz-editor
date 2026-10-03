@@ -39,11 +39,13 @@
         transform?: number[][];
         /** Set when dragging one use of the point (a shape's handle): Alt detaches it. */
         use?: { call: number; arg: number; probe: Probe };
+        /** Other selected points that move along with it. */
+        group?: number[];
         detach: boolean;
         snap?: Snap;
         edit?: Edit;
       }
-    | { kind: "marquee"; start: Point; end: Point; base: number[] }
+    | { kind: "marquee"; start: Point; end: Point; base: number[]; basePoints: number[] }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -223,21 +225,23 @@
 
   const placed = $derived(new Map(editor.scene.points.map((p) => [p.id, editor.placePoint(p.id)] as const)));
 
-  function pointLabel(id: number): string {
-    const p = editor.pointById.get(id);
-    return p ? (p.anchors[0] ?? p.path) : "";
-  }
+  const pointLabel = (id: number) => editor.pointLabel(id);
 
   /**
    * Point markers: all of them with "Points" on, while drawing, or while
-   * dragging a handle (they're snap targets then); else the hovered one.
-   * Handles cover the selection's own points.
+   * dragging a handle (they're snap targets then); else the hovered and
+   * selected ones. Handles cover the selected shape's own points.
    */
   const markers = $derived.by(() => {
     const withHandles = new Set(handles.map((h) => h.shared));
     const all = editor.showPoints || editor.tool !== "select" || drag?.kind === "handle" || (drag?.kind === "point" && drag.detach);
-    const ids = all ? editor.scene.points.map((p) => p.id) : editor.hoveredPoint !== undefined ? [editor.hoveredPoint] : [];
-    return ids.filter((id) => !withHandles.has(id) && placed.get(id)).map((id) => ({ id, page: placed.get(id)!.page }));
+    const some = new Set(editor.selectedPoints);
+    if (editor.hoveredPoint !== undefined) some.add(editor.hoveredPoint);
+    const ids = all ? editor.scene.points.map((p) => p.id) : [...some];
+    const selected = new Set(editor.selectedPoints);
+    return ids
+      .filter((id) => !withHandles.has(id) && placed.get(id))
+      .map((id) => ({ id, page: placed.get(id)!.page, selected: selected.has(id) }));
   });
 
   /** True while a drag would move shared points (so Alt would detach). */
@@ -435,6 +439,7 @@
     // The edit reports the new point as "created"; it isn't a shape to select.
     const point = editor.selection[0];
     editor.selection = [];
+    editor.pointSelection = [point];
     editor.tool = "select";
     editor.renamingPoint = point;
   }
@@ -524,8 +529,18 @@
     const marker = target.closest("[data-point]")?.getAttribute("data-point");
     if (marker) {
       const point = Number(marker);
+      const picked = editor.selectedPoints.includes(point);
+      if (e.shiftKey) {
+        editor.pointSelection = picked ? editor.selectedPoints.filter((id) => id !== point) : [...editor.selectedPoints, point];
+        return;
+      }
+      if (!picked) {
+        editor.selection = [];
+        editor.pointSelection = [point];
+      }
+      const group = editor.selectedPoints.filter((id) => id !== point);
       const where = placed.get(point);
-      if (where) drag = { kind: "point", point, start: p, moved: false, frame: where.frame, transform: where.transform, detach: false };
+      if (where) drag = { kind: "point", point, start: p, moved: false, frame: where.frame, transform: where.transform, detach: false, group };
       return;
     }
 
@@ -536,14 +551,19 @@
         editor.selection = editor.selected.includes(id) ? editor.selected.filter((s) => s !== id) : [...editor.selected, id];
       } else if (!editor.selected.includes(id)) {
         editor.selection = [id];
+        editor.pointSelection = [];
       }
       if (editor.selected.includes(id)) drag = { kind: "move", start: p, moved: false, delta: [0, 0], detach: e.altKey };
       return;
     }
 
     const base = e.shiftKey ? [...editor.selected] : [];
-    if (!e.shiftKey) editor.selection = [];
-    drag = { kind: "marquee", start: p, end: p, base };
+    const basePoints = e.shiftKey ? [...editor.selectedPoints] : [];
+    if (!e.shiftKey) {
+      editor.selection = [];
+      editor.pointSelection = [];
+    }
+    drag = { kind: "marquee", start: p, end: p, base, basePoints };
   }
 
   function onpointermove(e: PointerEvent) {
@@ -604,7 +624,11 @@
           const snap = findSnap(p, new Set(editor.pointUsers.get(drag.point) ?? []), { excludePoint: drag.point });
           drag.snap = snap;
           const [x, y] = snap ? pageToLocal(drag.frame, drag.transform, snap.point) : snapPoint(drag.frame, drag.transform, p);
-          drag.edit = { kind: "set-point", point: drag.point, x, y };
+          const own = editor.pointById.get(drag.point);
+          drag.edit =
+            drag.group?.length && own
+              ? { kind: "move-points", points: [drag.point, ...drag.group], dx: x - own.x, dy: y - own.y }
+              : { kind: "set-point", point: drag.point, x, y };
         }
         editor.previewEdit(drag.edit);
         break;
@@ -636,6 +660,15 @@
           if (ax <= x1 && bx >= x0 && ay <= y1 && by >= y0) hits.add(id);
         }
         editor.selection = [...hits];
+        // Points are only picked up while they're on show.
+        if (editor.showPoints) {
+          const points = new Set(drag.basePoints);
+          for (const [id, where] of placed) {
+            const [px, py] = where?.page ?? [NaN, NaN];
+            if (px >= x0 && px <= x1 && py >= y0 && py <= y1) points.add(id);
+          }
+          editor.pointSelection = [...points];
+        }
         break;
       }
       case "create": {
@@ -674,13 +707,9 @@
         }
         break;
       case "point":
-        if (d.moved) {
-          editor.endDrag(d.edit);
-        } else if (!d.use) {
-          // Clicking a point marker selects the shapes that use it.
-          const users = (editor.pointUsers.get(d.point) ?? []).map((id) => editor.selectableFor(id));
-          editor.selection = [...new Set(users.filter((id) => id !== undefined))];
-        }
+        if (d.moved) editor.endDrag(d.edit);
+        // A click (no drag) on one of several selected points picks just it.
+        else if (d.group?.length) editor.pointSelection = [d.point];
         break;
       case "handle":
         editor.endDrag(d.edit);
@@ -692,6 +721,15 @@
   }
 
   function ondblclick(e: MouseEvent) {
+    // Double-clicking a point marker selects the shapes that use it. (Pointer
+    // capture sends the event to the viewport, so look under the pointer.)
+    const marker = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-point]")?.getAttribute("data-point");
+    if (marker) {
+      const users = (editor.pointUsers.get(Number(marker)) ?? []).map((id) => editor.selectableFor(id));
+      editor.pointSelection = [];
+      editor.selection = [...new Set(users.filter((id) => id !== undefined))];
+      return;
+    }
     const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
     if (!hit) {
       editor.scope = undefined;
@@ -929,7 +967,7 @@
         </g>
 
         {#each markers as m (m.id)}
-          <g class="point" class:hovered={editor.hoveredPoint === m.id} data-point={m.id}>
+          <g class="point" class:hovered={editor.hoveredPoint === m.id} class:picked={m.selected} data-point={m.id}>
             <circle cx={m.page[0]} cy={m.page[1]} r={4 / editor.zoom} />
             <text x={m.page[0] + 6 / editor.zoom} y={m.page[1] - 6 / editor.zoom} font-size={11 / editor.zoom}>{pointLabel(m.id)}</text>
           </g>
@@ -1145,6 +1183,11 @@
   }
   .point.hovered circle {
     stroke: var(--point);
+    stroke-width: 3;
+  }
+  /* Not `.selected`: that's the selected shape's outline, which ignores the pointer. */
+  .point.picked circle {
+    stroke: var(--accent);
     stroke-width: 3;
   }
   .hint {

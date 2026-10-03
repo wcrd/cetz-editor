@@ -281,6 +281,7 @@
           <li
             class="row point"
             class:hovered={editor.hoveredPoint === p.id}
+            class:selected={editor.selectedPoints.includes(p.id)}
             onpointerenter={() => hoverPoint(p.id)}
             onpointerleave={() => (editor.hoveredPoint = undefined)}
           >
@@ -304,6 +305,7 @@
                   <li
                     class="row point child"
                     class:hovered={editor.hoveredPoint === p.id}
+                    class:selected={editor.selectedPoints.includes(p.id)}
                     onpointerenter={() => hoverPoint(p.id)}
                     onpointerleave={() => (editor.hoveredPoint = undefined)}
                   >
@@ -376,6 +378,7 @@
               <li
                 class="row point child"
                 class:hovered={editor.hoveredPoint === p.id}
+                class:selected={editor.selectedPoints.includes(p.id)}
                 style:padding-left="{42 + depth * 14}px"
                 onpointerenter={() => hoverPoint(p.id)}
                 onpointerleave={() => (editor.hoveredPoint = undefined)}
@@ -469,6 +472,9 @@
   }
   .row.point.hovered {
     background: color-mix(in srgb, var(--point) 10%, transparent);
+  }
+  .row.point.selected {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
   .row.point {
     display: grid;

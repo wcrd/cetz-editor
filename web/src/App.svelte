@@ -263,23 +263,26 @@
     if (mod) return;
 
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (editor.selected.length) editor.edit({ kind: "delete", calls: editor.selected });
+      editor.deleteSelection();
       e.preventDefault();
       return;
     }
     if (e.key === "Escape") {
       if (editor.draft) editor.endDrag();
       else if (editor.tool !== "select") editor.tool = "select";
-      else if (editor.selected.length) editor.selection = [];
-      else editor.scope = undefined;
+      else if (editor.selected.length || editor.selectedPoints.length) {
+        editor.selection = [];
+        editor.pointSelection = [];
+      } else editor.scope = undefined;
       return;
     }
     const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
-    if (arrows[e.key] && editor.selected.length) {
+    if (arrows[e.key] && (editor.selected.length || editor.selectedPoints.length)) {
       e.preventDefault();
       const step = e.shiftKey ? 1 : editor.gridStep;
       const [dx, dy] = arrows[e.key];
-      editor.edit({ kind: "move", calls: editor.selected, dx: dx * step, dy: dy * step });
+      if (editor.selected.length) editor.edit({ kind: "move", calls: editor.selected, dx: dx * step, dy: dy * step });
+      else editor.edit({ kind: "move-points", points: editor.selectedPoints, dx: dx * step, dy: dy * step });
       return;
     }
     // Before the tools: plain R is the rectangle.

@@ -12,6 +12,7 @@ import { isVec, transformPoint, type Probe, type Vec3 } from "./probe";
 import {
   allCalls,
   applyEdit,
+  baseName,
   mapOffset,
   parseScene,
   utf8Length,
@@ -119,6 +120,9 @@ export class Editor {
 
   selection = $state<number[]>([]);
   selected = $derived(this.selection.filter((id) => this.callById.has(id)));
+  /** Shared points picked on the canvas (their definitions' offsets). */
+  pointSelection = $state<number[]>([]);
+  selectedPoints = $derived(this.pointSelection.filter((id) => this.pointById.has(id)));
   hovered = $state<number>();
   /** A group the user has entered (double-click) to select its children. */
   scope = $state<number>();
@@ -281,6 +285,7 @@ export class Editor {
     const map = (offset: number) => mapOffset(patches, offset, utf8Length);
     this.probes = this.probes.map((p) => ({ ...p, id: map(p.id) }));
     this.selection = this.selection.map(map);
+    this.pointSelection = this.pointSelection.map(map);
     if (this.scope !== undefined) this.scope = map(this.scope);
     this.hovered = undefined;
     this.hoveredPoint = undefined;
@@ -337,6 +342,7 @@ export class Editor {
     this.draft = undefined;
     this.pendingMove = undefined;
     this.selection = [];
+    this.pointSelection = [];
     this.scope = undefined;
     this.probes = [];
     this.svg = undefined;
@@ -345,6 +351,42 @@ export class Editor {
     this.loads++;
     if (this.code) this.code.replaceAll(source, true);
     else this.source = source;
+  }
+
+  /** How a point is shown: its anchor name, else how code refers to it. */
+  pointLabel(id: number): string {
+    const p = this.pointById.get(id);
+    return p ? (p.anchors[0] ?? p.path) : "";
+  }
+
+  /**
+   * Deletes the selected shapes and points as one undoable change. Points'
+   * remaining uses keep their position as coordinates; says how many.
+   */
+  deleteSelection() {
+    const points = this.selectedPoints;
+    // An `anchor(..)` defining a selected point goes with the point.
+    const definesPoint = (id: number) => {
+      const call = this.callById.get(id);
+      return call !== undefined && baseName(call.callee) === "anchor" && call.args.some((a) => a.point !== null && points.includes(a.point));
+    };
+    const calls = this.selected.filter((id) => !definesPoint(id));
+    if (points.length === 0 && calls.length === 0) return;
+    const deleted = new Set(calls);
+    const kept = points.flatMap((id) =>
+      (this.pointUsers.get(id) ?? []).filter((c) => !deleted.has(c) && baseName(this.callById.get(c)?.callee ?? "") !== "anchor"),
+    ).length;
+    const steps: ((state: ChainState) => Edit | undefined)[] = [];
+    if (points.length > 0) steps.push(() => ({ kind: "delete-points", points }));
+    // Shapes go after: their ids move with the point deletion's patches.
+    if (calls.length > 0) steps.push(({ map }) => ({ kind: "delete", calls: calls.map(map) }));
+    if (!this.chain(steps)) return;
+    this.selection = [];
+    this.pointSelection = [];
+    if (points.length > 0) {
+      const what = points.length === 1 ? `Deleted ${this.pointLabel(points[0])}` : `Deleted ${points.length} points`;
+      this.flash(kept > 0 ? `${what} · ${kept} use${kept === 1 ? "" : "s"} kept as coordinates` : what);
+    }
   }
 
   flash(message: string) {
