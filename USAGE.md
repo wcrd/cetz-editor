@@ -141,6 +141,8 @@ editable here, other values show a summary and jump to the code) and
 **Shapes** (every draw call). Calls in loops show how many shapes they drew
 (`line ×4`) and expand into those repetitions, read-only and labelled by the
 points they connect (`A → E`); hover or click one to highlight just it.
+Hover a shape or point and click its × to delete it, as Delete would; a
+deleted point's other uses keep its position as coordinates.
 
 ![A selected face in the zone diagram: its call is highlighted in the code, its corners have handles on the named points B, F, G and C, and the inspector shows each point with its uses and a Detach button, plus its stroke and fill](assets/screenshot-inspector.png)
 

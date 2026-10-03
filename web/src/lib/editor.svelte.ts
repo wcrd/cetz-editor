@@ -383,18 +383,23 @@ export class Editor {
     return p ? (p.anchors[0] ?? p.path) : "";
   }
 
-  /**
-   * Deletes the selected shapes and points as one undoable change. Points'
-   * remaining uses keep their position as coordinates; says how many.
-   */
+  /** Deletes the selected shapes and points (see `remove`). */
   deleteSelection() {
-    const points = this.selectedPoints;
-    // An `anchor(..)` defining a selected point goes with the point.
+    this.remove(this.selected, this.selectedPoints);
+  }
+
+  /**
+   * Deletes shapes and points as one undoable change, and clears the
+   * selection. Points' remaining uses keep their position as coordinates;
+   * says how many.
+   */
+  remove(shapes: number[], points: number[]) {
+    // An `anchor(..)` defining a deleted point goes with the point.
     const definesPoint = (id: number) => {
       const call = this.callById.get(id);
       return call !== undefined && baseName(call.callee) === "anchor" && call.args.some((a) => a.point !== null && points.includes(a.point));
     };
-    const calls = this.selected.filter((id) => !definesPoint(id));
+    const calls = shapes.filter((id) => !definesPoint(id));
     if (points.length === 0 && calls.length === 0) return;
     const deleted = new Set(calls);
     const kept = points.flatMap((id) =>

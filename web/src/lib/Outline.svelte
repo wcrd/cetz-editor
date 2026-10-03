@@ -292,6 +292,12 @@
     editor.selection = [call.id];
   }
 
+  function remove(shapes: number[], points: number[]) {
+    editor.hovered = undefined;
+    editor.hoveredPoint = undefined;
+    editor.remove(shapes, points);
+  }
+
   // --- Reordering by drag --------------------------------------------------
 
   let list = $state<HTMLUListElement>();
@@ -354,6 +360,15 @@
   }
 </script>
 
+{#snippet removeButton(label: string, run: () => void)}
+  <button class="remove" onclick={run} title={label} aria-label={label}><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" /></svg></button>
+{/snippet}
+
+{#snippet uses(p: Point)}
+  <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
+  {@render removeButton("Delete point", () => remove([], [p.id]))}
+{/snippet}
+
 {#snippet pointName(p: Point, label: string)}
   {#if editor.renamingPoint === p.id}
     <input
@@ -397,7 +412,7 @@
             <span class="name point-name"><span class="icon var-icon point-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.point} /></svg></span>{@render pointName(p, v.name)}</span>
             <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
             <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
-            <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
+            {@render uses(p)}
           </li>
         {:else if v.kind === "points"}
           {@const open = !folded.has(v.name)}
@@ -421,7 +436,7 @@
                     <span class="name point-name">{@render pointName(p, entryName(v, p))}</span>
                     <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
                     <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
-                    <span class="uses" title="Shapes using it">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
+                    {@render uses(p)}
                   </li>
                 {/each}
               </ul>
@@ -500,6 +515,7 @@
             {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
             <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
           </button>
+          {@render removeButton(looped ? "Delete call (all its repetitions)" : "Delete", () => remove([call.id], []))}
         </div>
         {#if open && (defined.length > 0 || looped)}
           <ul class="children" style:--indent="{depth * 14}px">
@@ -515,7 +531,7 @@
                 <span class="name point-name">{@render pointName(p, p.anchors[0] ?? p.path)}</span>
                 <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
                 <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
-                <span class="uses">{editor.pointUsers.get(p.id)?.length ?? 0}</span>
+                {@render uses(p)}
               </li>
             {/each}
             {#if looped}
@@ -666,6 +682,40 @@
     color: var(--muted);
     font-size: 11px;
     text-align: right;
+  }
+  .remove {
+    display: none;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 1px;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .remove svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+  .remove:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 10%, transparent);
+  }
+  /* The delete button stands in for the use count while the row is hovered. */
+  .row:hover .remove,
+  .row:focus-within .remove {
+    display: block;
+  }
+  .row.point:hover .uses,
+  .row.point:focus-within .uses {
+    display: none;
   }
   .chevron {
     display: inline-block;
