@@ -507,7 +507,8 @@
   const RADIUS_ANCHORS: Record<string, [edge: string, center: string]> = {
     circle: ["east", "center"],
     polygon: ["corner-0", "center"],
-    "n-star": ["corner-0", "center"],
+    // A star's corners go inner, outer, ...; its radius is the outer one.
+    "n-star": ["corner-1", "center"],
     arc: ["arc-center", "origin"],
   };
 

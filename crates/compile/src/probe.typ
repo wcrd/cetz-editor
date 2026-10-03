@@ -32,9 +32,32 @@
       // (one from 0° to 60° has no "north-west"); groups and the other
       // shapes measure a closed path or their bounds.
       let open-arc = "arc-start" in names and "chord-center" in names and drawables.any(d => d.type == "path" and d.segments.any(s => not s.at(1)))
+      // A polygon's or star's corners and edge midpoints come from its
+      // outline's vertices: CeTZ 0.5.2's n-star works them out from a
+      // variable it never defines, so asking it panics.
+      let corners = names.filter(n => n.starts-with("corner-")).len()
+      let outline = drawables.find(d => d.type == "path")
+      let ring = if corners > 0 and "edge-0" in names and outline != none {
+        let (origin, _, segments) = outline.segments.first()
+        if segments.all(s => s.first() == "l") {
+          let ring = (origin,) + segments.map(s => s.at(1))
+          // A closed outline ends with a segment back to its start.
+          if ring.len() > 1 and ring.last() == origin { ring.slice(0, -1) } else { ring }
+        }
+      }
       for name in names {
         if open-arc and name in __cetz_probe_compass { continue }
-        anchors.insert(name, anchor-fn(name))
+        let corner = name.starts-with("corner-") and ring != none and ring.len() == corners
+        let edge = name.starts-with("edge-") and ring != none and ring.len() == corners
+        anchors.insert(name, if corner {
+          ring.at(int(name.slice(7)))
+        } else if edge {
+          let i = int(name.slice(5))
+          let (a, b) = (ring.at(i), ring.at(calc.rem(i + 1, ring.len())))
+          a.zip(b).map(((p, q)) => (p + q) / 2)
+        } else {
+          anchor-fn(name)
+        })
       }
     }
 

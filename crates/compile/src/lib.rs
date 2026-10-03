@@ -493,6 +493,35 @@ mod tests {
         assert!(group["anchors"].get("north").is_some());
     }
 
+    /// CeTZ 0.5.2's n-star panics on its own corner and edge anchors, so the
+    /// probe reads them off the outline, as it does for polygons.
+    #[test]
+    fn probes_corners_from_outlines() {
+        let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
+            eprintln!("skipping: no local Typst package cache");
+            return;
+        };
+        let source = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\
+            #canvas({\n  import draw: *\n  polygon((0, 0), 4, radius: 1)\n  n-star((3, 0), 5, radius: 1)\n})";
+        let mut world = EditorWorld::new();
+        world.set_main_probed(source);
+        let out = compile_with_cache(&mut world, &cache);
+        assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
+        let probes: serde_json::Value = serde_json::from_str(&out.probes.unwrap()).unwrap();
+        let [square, star] = probes.as_array().unwrap().as_slice() else { panic!("expected two probes") };
+        assert_point(&square["anchors"]["corner-0"], [1.0, 0.0]);
+        assert_point(&square["anchors"]["corner-1"], [0.0, 1.0]);
+        assert_point(&square["anchors"]["edge-0"], [0.5, 0.5]);
+        assert_point(&square["anchors"]["edge-3"], [0.5, -0.5]);
+        // Ten corners, inner then outer, each edge between two.
+        let point = |name: &str| star["anchors"][name].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let (c0, c1) = (point("corner-0"), point("corner-1"));
+        assert_point(&star["anchors"]["corner-0"], [3.5, 0.0]);
+        assert!(((c1[0] - 3.0).hypot(c1[1]) - 1.0).abs() < 1e-6, "{c1:?}");
+        assert_point(&star["anchors"]["edge-0"], [(c0[0] + c1[0]) / 2.0, (c0[1] + c1[1]) / 2.0]);
+        assert!(star["anchors"].get("corner-9").is_some());
+    }
+
     /// CeTZ computes border anchors by intersection, so allow float noise.
     fn assert_point(value: &serde_json::Value, expected: [f64; 2]) {
         let p: Vec<f64> = value.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
