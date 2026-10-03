@@ -61,6 +61,16 @@
     editor.pan = [(width - pageSize.w * editor.zoom) / 2, (height - pageSize.h * editor.zoom) / 2];
   }
 
+  /** Zoom a document opens at: 150%, or less if its page wouldn't fit. ⌘0 fits. */
+  const DEFAULT_ZOOM = 1.5;
+
+  function resetView() {
+    if (!pageSize || !width || !height) return;
+    const fits = Math.min((width - 64) / pageSize.w, (height - 64) / pageSize.h);
+    editor.zoom = Math.max(0.1, Math.min(DEFAULT_ZOOM, fits));
+    editor.pan = [(width - pageSize.w * editor.zoom) / 2, (height - pageSize.h * editor.zoom) / 2];
+  }
+
   function zoomAt(factor: number, [sx, sy]: Point) {
     const z = Math.min(32, Math.max(0.1, editor.zoom * factor));
     const k = z / editor.zoom;
@@ -68,11 +78,11 @@
     editor.zoom = z;
   }
 
-  // Fit each loaded document once; switching back to its tab keeps its view.
+  // Set up each loaded document's view once; switching back to its tab keeps its view.
   $effect(() => {
     if (pageSize && width && height && editor.fittedLoad !== editor.loads) {
       editor.fittedLoad = editor.loads;
-      fit();
+      resetView();
     }
   });
   $effect(() => {
