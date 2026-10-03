@@ -8,7 +8,7 @@
 
   let { editor }: { editor: Editor } = $props();
 
-  const PRESETS = ["0.1", "0.25", "0.5", "1", "1/3", "1/4"];
+  const PRESETS = ["0.1", "0.2", "0.25", "0.5", "1", "1/3", "1/4"];
   const KEY = "cetz-editor:grid-step";
 
   // Restore the last step once, when the toolbar first appears.

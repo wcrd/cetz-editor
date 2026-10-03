@@ -76,7 +76,7 @@ interface Request {
 export class Prefs {
   tool = $state<Tool>("select");
   snap = $state(true);
-  gridStep = $state(0.25);
+  gridStep = $state(0.2);
   showGrid = $state(true);
   /** Show every shared point's marker, not just the selection's. */
   showPoints = $state(false);
