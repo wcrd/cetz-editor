@@ -34,6 +34,8 @@ export interface CodeHandle {
   undo(): void;
   redo(): void;
   reveal(range: Range): void;
+  /** Re-measures layout, e.g. after the pane was hidden. */
+  refresh(): void;
 }
 
 /** Where a canvas sits on the page: canvas (0, 0) and points per unit. */
@@ -104,6 +106,8 @@ export class Editor {
   notice = $state<string>();
 
   fileName = $state("untitled.typ");
+  /** Whether saving writes straight back to a file on disk (vs. asking where). */
+  fileLinked = $state(false);
   /** The file's line ending. The source always uses `\n`; saving restores this. */
   lineEnding = $state<"\n" | "\r\n">("\n");
   /** Bumped whenever a document is loaded, so views can reset (e.g. refit). */

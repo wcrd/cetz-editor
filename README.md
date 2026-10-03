@@ -62,11 +62,14 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
 | ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
 | G | Toggle the grid |
+| ⌘\ | Show or hide the code panel (left). The inspector stays on the right |
 
 The inspector edits coordinates, text, the name and any named argument
 (`stroke`, `fill`, `mark`, ...) as Typst expressions. With nothing selected,
 it lists every draw call. Your last session is restored on reload, and you can
-drop a `.typ` file on the window to open it.
+drop a `.typ` file on the window to open it. Hover the file name to see whether
+Save writes back to the opened file. Browsers only reveal a picked file's name,
+not its folder, so the full path can't be shown.
 
 ## How it works
 

@@ -41,6 +41,7 @@ export function newDocument(editor: Editor) {
   if (!confirmDiscard(editor)) return;
   handle = undefined;
   editor.load(NEW_DOCUMENT, "untitled.typ");
+  editor.fileLinked = false;
   editor.savedSource = "";
 }
 
@@ -52,6 +53,7 @@ export async function openFile(editor: Editor) {
       const file = await picked.getFile();
       editor.load(await file.text(), file.name);
       handle = picked;
+      editor.fileLinked = true;
     } catch (err) {
       if (!isAbort(err)) editor.flash(`Couldn't open the file: ${err}`);
     }
@@ -70,6 +72,7 @@ export async function openDropped(editor: Editor, file: File, confirm = true) {
   if (confirm && !confirmDiscard(editor)) return;
   handle = undefined;
   editor.load(await file.text(), file.name);
+  editor.fileLinked = false;
 }
 
 export async function save(editor: Editor, saveAs = false) {
@@ -86,6 +89,7 @@ export async function save(editor: Editor, saveAs = false) {
     await writable.close();
     editor.fileName = handle.name;
     editor.savedSource = source;
+    editor.fileLinked = true;
     editor.flash(`Saved ${handle.name}`);
   } catch (err) {
     if (!isAbort(err)) editor.flash(`Couldn't save: ${err}`);

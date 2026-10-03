@@ -31,6 +31,27 @@
     if (editor.dirty) e.preventDefault();
   }
 
+  // Whether the code panel is open; remembered in this browser.
+  const CODE_OPEN_KEY = "cetz-editor:code-open";
+  let codeOpen = $state(readCodeOpen());
+  function readCodeOpen(): boolean {
+    try {
+      return localStorage.getItem(CODE_OPEN_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  }
+  function toggleCode(open = !codeOpen) {
+    codeOpen = open;
+    // CodeMirror can't measure while hidden; re-measure once it's visible.
+    if (open) requestAnimationFrame(() => editor.code?.refresh());
+    try {
+      localStorage.setItem(CODE_OPEN_KEY, String(open));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+
   let dropping = $state(false);
   function ondragover(e: DragEvent) {
     if (e.dataTransfer?.types.includes("Files")) {
@@ -82,6 +103,11 @@
     if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void save(editor, e.shiftKey);
+      return;
+    }
+    if (mod && e.key === "\\") {
+      e.preventDefault();
+      toggleCode();
       return;
     }
     if (mod && e.key.toLowerCase() === "o") {
@@ -157,6 +183,18 @@
     if (e.key === "g") editor.showGrid = !editor.showGrid;
   }
 
+  // Browsers only reveal a picked file's name, never its folder or path.
+  const fileTooltip = $derived(
+    [
+      editor.fileName,
+      editor.fileLinked
+        ? "Linked to the file you opened: Save (⌘S) overwrites it."
+        : "Not linked to a file on disk: Save asks where to save (or downloads).",
+      `Line endings: ${editor.lineEnding === "\r\n" ? "CRLF" : "LF"}`,
+      editor.dirty ? "Unsaved changes" : "No unsaved changes",
+    ].join("\n"),
+  );
+
   const compileLabel = $derived.by(() => {
     const s = editor.status;
     switch (s.kind) {
@@ -179,6 +217,18 @@
 <div class="app">
   <header class="toolbar">
     <div class="group">
+      <button
+        class:active={codeOpen}
+        title="{codeOpen ? 'Hide' : 'Show'} code (⌘\)"
+        aria-label="Toggle code panel"
+        aria-pressed={codeOpen}
+        onclick={() => toggleCode()}
+      >
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM10 5v14M6.5 9h1.5M6.5 12h1.5" /></svg>
+      </button>
+    </div>
+
+    <div class="group">
       <button title="New" aria-label="New file" onclick={() => newDocument(editor)}>
         <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6" /></svg>
       </button>
@@ -190,7 +240,7 @@
       </button>
     </div>
 
-    <div class="title">
+    <div class="title" title={fileTooltip}>
       <span class="file">{editor.fileName}</span>{#if editor.dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
     </div>
 
@@ -235,7 +285,25 @@
     <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
   </header>
 
-  <main>
+  <main class:code-open={codeOpen}>
+    <aside class="code-panel" aria-label="Code">
+      {#if !codeOpen}
+        <button class="rail" title="Show code (⌘\)" onclick={() => toggleCode(true)}>
+          <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+          <span>Code</span>
+        </button>
+      {/if}
+      <!-- Stays mounted while collapsed: CodeMirror owns the undo history. -->
+      <div class="code-body" class:collapsed={!codeOpen}>
+        <div class="panel-header">
+          <span>Code</span>
+          <button title="Hide code (⌘\)" aria-label="Hide code panel" onclick={() => toggleCode(false)}>
+            <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
+        </div>
+        <div class="code"><CodeEditor {editor} /></div>
+      </div>
+    </aside>
     <section class="stage">
       <Canvas {editor} />
       {#if editor.diagnostics.length > 0}
@@ -251,9 +319,8 @@
       {#if editor.notice}<div class="notice" role="status">{editor.notice}</div>{/if}
       {#if dropping}<div class="drop">Drop a .typ file to open it</div>{/if}
     </section>
-    <aside class="side">
-      <div class="panel inspector"><Inspector {editor} /></div>
-      <div class="panel code"><CodeEditor {editor} /></div>
+    <aside class="side" aria-label="Inspector">
+      <Inspector {editor} />
     </aside>
   </main>
 </div>
@@ -407,26 +474,107 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 400px;
+    grid-template-columns: 28px minmax(0, 1fr) 340px;
+    grid-template-areas: "code stage side";
+  }
+  main.code-open {
+    grid-template-columns: minmax(280px, 30%) minmax(0, 1fr) 340px;
   }
   .stage {
+    grid-area: stage;
     position: relative;
     min-width: 0;
   }
   .side {
-    display: grid;
-    grid-template-rows: minmax(160px, 45%) minmax(0, 1fr);
+    grid-area: side;
     border-left: 1px solid var(--border);
     background: var(--panel);
     min-height: 0;
-  }
-  .panel {
-    min-height: 0;
     overflow: hidden;
   }
-  .panel.code {
-    border-top: 1px solid var(--border);
+  .code-panel {
+    grid-area: code;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+  }
+  .code-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .code-body.collapsed {
+    display: none;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 6px 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .code {
+    flex: 1;
+    min-height: 0;
     background: var(--bg);
+  }
+  .panel-header button,
+  .rail {
+    font: inherit;
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .panel-header button {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+  }
+  .panel-header button:hover,
+  .rail:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+  }
+  .rail {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    border-radius: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .rail span {
+    writing-mode: vertical-rl;
+  }
+  .panel-header svg,
+  .rail svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    display: block;
+  }
+  .panel-header svg {
+    margin: auto;
   }
 
   .diagnostics {
@@ -477,12 +625,25 @@
   }
 
   @media (max-width: 760px) {
-    main {
+    main,
+    main.code-open {
       grid-template-columns: 1fr;
-      grid-template-rows: 1fr 45%;
+      grid-template-rows: minmax(0, 1fr) 35%;
+      grid-template-areas: "stage" "side";
+    }
+    main.code-open {
+      grid-template-rows: minmax(0, 1fr) 30% 30%;
+      grid-template-areas: "stage" "side" "code";
+    }
+    main:not(.code-open) .code-panel {
+      display: none;
     }
     .side {
       border-left: none;
+      border-top: 1px solid var(--border);
+    }
+    .code-panel {
+      border-right: none;
       border-top: 1px solid var(--border);
     }
     .toggles,

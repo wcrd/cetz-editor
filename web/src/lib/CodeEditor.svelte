@@ -112,6 +112,7 @@
       },
       undo: () => undo(view),
       redo: () => redo(view),
+      refresh: () => view.requestMeasure(),
       reveal(range: Range) {
         const from = editor.index.toUtf16(range.start);
         view.dispatch({ effects: EditorView.scrollIntoView(from, { y: "center" }) });
