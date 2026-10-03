@@ -203,12 +203,18 @@
             onpointerenter={() => (editor.hovered = call.id)}
             onpointerleave={() => (editor.hovered = undefined)}
           >
-            <span class="name">{call.callee}{#if looped}<span class="count"> ×{instances.length}</span>{/if}</span>
+            {#if looped}
+              <span class="flow" title="Drawn by a loop">↻</span>
+            {:else if call.conditional}
+              <span class="flow" title="Only drawn when its condition holds">⑂</span>
+            {/if}
+            <span class="name">{call.callee}</span>
+            {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
             <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
           </button>
         </div>
         {#if open}
-          <ul>
+          <ul class="children" style:--indent="{depth * 14}px">
             {#each defined as p (p.id)}
               <li
                 class="row point child"
@@ -230,7 +236,8 @@
                   <button
                     class="row instance"
                     class:focused
-                    style:padding-left="{26 + depth * 14}px"
+                    class:hovered={editor.hoveredInstance?.call === call.id && editor.hoveredInstance.index === index}
+                    style:padding-left="{30 + depth * 14}px"
                     title="Drawn by the loop; edit its points or the call to change it"
                     onclick={() => (editor.focusedInstance = focused ? undefined : { call: call.id, index })}
                     onpointerenter={() => (editor.hoveredInstance = { call: call.id, index })}
@@ -330,9 +337,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .count {
-    color: var(--muted);
-  }
   .kind {
     color: var(--muted);
     font-size: 11px;
@@ -374,11 +378,71 @@
     width: 14px;
     flex: none;
   }
-  .row.instance.focused {
+  /* Loop and condition markers, and the repetition count. */
+  .flow {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    border: 1px solid var(--snap);
+    color: var(--snap);
+    font-size: 10px;
+    line-height: 1;
+    align-self: center;
+  }
+  .pill {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 999px;
     background: color-mix(in srgb, var(--snap) 14%, transparent);
+    color: var(--snap);
+    font: 600 10.5px ui-monospace, "SF Mono", Menlo, monospace;
+    line-height: 16px;
+  }
+
+  /* Repetitions: derived, read-only, hung off a dotted guide line. */
+  .children {
+    position: relative;
+  }
+  .children::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 6px;
+    left: calc(var(--indent) + 17px);
+    border-left: 1px dotted var(--muted);
+    opacity: 0.6;
+  }
+  .row.instance {
+    position: relative;
+  }
+  .row.instance::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--indent) + 14px);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1px solid var(--muted);
+    background: var(--panel);
   }
   .row.instance .meta {
-    color: var(--text);
+    color: var(--muted);
+  }
+  .row.instance.hovered,
+  .row.instance.focused {
+    background: color-mix(in srgb, var(--snap) 12%, transparent);
+  }
+  .row.instance.hovered .meta,
+  .row.instance.focused .meta {
+    color: var(--snap);
+  }
+  .row.instance.hovered::before,
+  .row.instance.focused::before {
+    border-color: var(--snap);
+    background: var(--snap);
   }
   label {
     display: flex;
