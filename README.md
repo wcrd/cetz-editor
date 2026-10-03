@@ -86,4 +86,11 @@ natively, so it stays responsive when compiles lag.
 - Elements passed straight into wrappers like `on-layer(1, content(...))` lose
   their name and anchors, and children of `hide({...})` can't be selected.
 - New shapes are appended to the end of the active canvas.
+- Rotating or scaling a shape from the canvas wraps it in
+  `scope({ rotate(..); scale(..); shape })`. The scope keeps the shape's name
+  usable from outside, and goes away again at 0° and 1×. Scaling doesn't
+  change text or stroke widths.
+- An open arc has no compass anchors (`"arc.north"`) in the editor, since CeTZ
+  can't always find them. Polygon and star corners and edges are read off
+  their outlines, as CeTZ 0.5.2's star can't compute its own.
 - The compiler module is about 43 MB (17 MB gzipped), mostly embedded fonts.
