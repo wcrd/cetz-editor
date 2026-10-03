@@ -330,7 +330,8 @@
    * The nearest snap target within reach. `exclude` skips anchors of those
    * shapes; `points: false` skips named points, `anchors: false` shape
    * anchors, and `vertices` adds lines' literal vertices. Named points win
-   * near-ties, since they're what you usually mean, then vertices.
+   * near-ties, since they're what you usually mean, then vertices; an anchor
+   * within a few pixels of either (a path's `mid` near a corner) never wins.
    */
   function findSnap(
     p: Point,
@@ -353,11 +354,19 @@
         bestDist = dist;
       }
     };
-    if (points) for (const t of pointTargets) if (t.named !== excludePoint) consider(t, 0.75);
-    if (vertices) for (const t of vertexTargets) consider(t, 0.85);
+    const shadow = 4 / editor.zoom;
+    const corners: Snap[] = [];
+    const corner = (t: Snap, weight: number) => {
+      if (Math.hypot(t.point[0] - p[0], t.point[1] - p[1]) < radius + shadow) corners.push(t);
+      consider(t, weight);
+    };
+    if (points) for (const t of pointTargets) if (t.named !== excludePoint) corner(t, 0.75);
+    if (vertices) for (const t of vertexTargets) corner(t, 0.85);
     if (anchors) {
+      const shadowed = (q: Point) => corners.some((c) => Math.hypot(c.point[0] - q[0], c.point[1] - q[1]) < shadow);
       for (const t of snapTargets) {
         if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
+        if (shadowed(t.point)) continue;
         // Plain compass anchors (`east`) beat near-identical text ones (`base-east`, `mid-east`).
         consider(t, /^(base|mid)/.test(t.anchor) ? 1.15 : 1);
       }
