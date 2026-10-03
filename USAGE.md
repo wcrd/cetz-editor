@@ -23,6 +23,7 @@ Press **?** in the app for a quick version of this guide.
 | Drag the knob above a selected shape | Rotate it (⇧: 15° steps, which include level and upright). Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate`; turning it back to 0° removes the scope again. Selecting the scope selects the shape: its handles, inspector and Ungroup work as before |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
 | Double-click a group | Enter it to select its children (Esc to leave) |
+| Double-click text | Edit it in place: its `[markup]` or string, as source. Enter saves (⇧Enter for a new line), Esc cancels, clicking away saves. The text tool (**T**) opens it straight away |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
 | ⌘D / Delete | Duplicate / delete |
 | Align buttons (2+ shapes selected) | Line the shapes up by their bounds (left, centre, right, top, middle, bottom), or with 3+ space them evenly across or down; one undo step |

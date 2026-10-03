@@ -1633,12 +1633,17 @@
       editor.selection = [...new Set(users.filter((id) => id !== undefined))];
       return;
     }
-    const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
-    if (!hit) {
+    // A shape's own handle (text's sits in its middle) counts as the shape.
+    const onHandle = grab && "handle" in grab ? (editor.selectableFor(grab.handle.call) ?? grab.handle.call) : undefined;
+    const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id") ?? onHandle;
+    if (hit === null || hit === undefined) {
       editor.scope = undefined;
       return;
     }
     const id = Number(hit);
+    // Text (also turned or scaled) is edited where it is.
+    const shape = editor.wrappedShape(id) ?? editor.callById.get(id);
+    if (shape && startTextEdit(shape.id, pagePoint(e))) return;
     const hasChildren = editor.calls.some((c) => c.parent === id);
     if (hasChildren) {
       editor.scope = id;
@@ -1647,6 +1652,55 @@
       void tick().then(() => editor.focusInspector?.());
     }
   }
+
+  // --- Editing text in place ------------------------------------------------
+
+  /**
+   * Text being edited over its shape: the source of a `content(..)`'s
+   * `[markup]` body or string argument. `at` (page) places the editor until
+   * the shape has been drawn, as when the text tool has just made it.
+   */
+  type TextEdit = { call: number; arg: number; str: boolean; text: string; at: Point; select: boolean };
+  let textEdit = $state<TextEdit>();
+  let textArea = $state<HTMLTextAreaElement>();
+
+  /** Starts editing a `content(..)`'s text; false when it has no `[..]` or string to edit. */
+  function startTextEdit(id: number, at: Point, select = false): boolean {
+    const call = editor.callById.get(id);
+    if (!call || baseName(call.callee) !== "content" || call.in_loop) return false;
+    const arg = call.args.findIndex((a) => a.key === null && (a.value.type === "content" || a.value.type === "str"));
+    const value = call.args[arg]?.value;
+    if (value?.type === "content") textEdit = { call: id, arg, str: false, text: editor.index.slice(value.inner.start, value.inner.end), at, select };
+    else if (value?.type === "str") textEdit = { call: id, arg, str: true, text: value.value, at, select };
+    else return false;
+    return true;
+  }
+
+  function finishTextEdit(save: boolean) {
+    const t = textEdit;
+    const value = textArea?.value;
+    textEdit = undefined;
+    if (!t || !save || value === undefined || value === t.text) return;
+    editor.edit({ kind: "set-arg-text", call: t.call, arg: t.arg, text: t.str ? JSON.stringify(value) : `[${value}]` });
+  }
+
+  /** Where the text editor sits, in viewport pixels: over the text once it's drawn. */
+  const textBox = $derived.by(() => {
+    if (!textEdit) return undefined;
+    const probe = probeOf.get(textEdit.call);
+    const b = probe && probeBounds(probe);
+    const [a, c] = probe && b ? [editor.toPage(frameOf(probe), [b.x0, b.y1]), editor.toPage(frameOf(probe), [b.x1, b.y0])] : [textEdit.at, textEdit.at];
+    const screen = (q: Point) => [editor.pan[0] + q[0] * editor.zoom, editor.pan[1] + q[1] * editor.zoom];
+    const [[left, top], [right, bottom]] = [screen(a), screen(c)];
+    return { left, top, width: right - left, height: bottom - top };
+  });
+
+  $effect(() => {
+    if (!textArea || !textEdit) return;
+    textArea.focus();
+    if (textEdit.select) textArea.select();
+    else textArea.setSelectionRange(textArea.value.length, textArea.value.length);
+  });
 
   // --- Creating shapes -----------------------------------------------------
 
@@ -1816,11 +1870,12 @@
         [1, tiny ? undefined : d.endSnap],
       ],
       editor.tool === "brace" ? "decorations" : undefined,
+      editor.toPage(d.frame, transformPoint(d.transform, d.start)),
     );
   }
 
   /** Adds a new shape to the active canvas and selects it. `snaps` are where its point arguments were snapped. */
-  function insertShape(text: string, snaps: [number, Snap | undefined][], module?: string) {
+  function insertShape(text: string, snaps: [number, Snap | undefined][], module?: string, at?: Point) {
     const canvas = editor.activeCanvas ?? null;
     // A library's call (`decorations.brace`) also imports the library if needed.
     const steps: Parameters<Editor["chain"]>[0] = [module ? { kind: "insert-library", canvas, module, text } : { kind: "insert", canvas, text }];
@@ -1831,8 +1886,8 @@
     }
     if (editor.chain(steps)) {
       editor.tool = "select";
-      // The inspector mounts once the new shape is selected.
-      if (text.startsWith("content")) void tick().then(() => editor.focusInspector?.());
+      // New text opens for typing where it was placed, its placeholder selected.
+      if (text.startsWith("content") && at) startTextEdit(editor.selected[0], at, true);
     }
   }
 
@@ -2212,6 +2267,33 @@
         {/each}
       </div>
     {/if}
+    {#if textEdit && textBox}
+      <!-- Typst's default 11pt text, at the canvas's zoom. -->
+      <textarea
+        class="text-edit"
+        bind:this={textArea}
+        value={textEdit.text}
+        style:left="{textBox.left - 4}px"
+        style:top="{textBox.top - 3}px"
+        style:min-width="{Math.max(textBox.width + 8, 80)}px"
+        style:min-height="{textBox.height + 6}px"
+        style:font-size="{11 * editor.zoom}px"
+        rows={textEdit.text.split("\n").length}
+        spellcheck="false"
+        onpointerdown={(e) => e.stopPropagation()}
+        onblur={() => finishTextEdit(true)}
+        onkeydown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            finishTextEdit(true);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            finishTextEdit(false);
+          }
+        }}
+      ></textarea>
+    {/if}
     {#if continuable}
       <div class="hint">Click an end to continue this line</div>
     {:else if editor.tool === "angle" && (joining || toolHover)}
@@ -2343,6 +2425,20 @@
     stroke: var(--snap);
     stroke-width: 2.5;
     pointer-events: none;
+  }
+  .text-edit {
+    position: absolute;
+    z-index: 2;
+    padding: 2px 3px;
+    font-family: "Libertinus Serif", "New Computer Modern", serif;
+    line-height: 1.2;
+    color: var(--text);
+    background: var(--bg);
+    border: 1.5px solid var(--accent);
+    border-radius: 3px;
+    outline: none;
+    resize: none;
+    field-sizing: content;
   }
   .guide {
     stroke: var(--snap);

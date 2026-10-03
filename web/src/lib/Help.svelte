@@ -32,6 +32,10 @@
     </section>
 
     <section>
+      <h3>Text</h3>
+      <p>Double-click text to edit it where it is; <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. New text from <kbd>T</kbd> opens ready to type.</p>
+    </section>
+    <section>
       <h3>Smart guides</h3>
       <p>
         Moving, resizing or drawing lines shapes up with the others: edges and centres within a few pixels snap together, and
