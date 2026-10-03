@@ -5,7 +5,7 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, type Call, type Edit } from "./scene";
+  import { allCalls, baseName, parseScene, type Call, type Edit } from "./scene";
   import { num } from "./format";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
@@ -22,10 +22,10 @@
   type Point = [number, number];
   /**
    * Somewhere a drag can snap to: another shape's anchor (`target` +
-   * `anchor`, written as `"name.anchor"`), or a named point (`named`,
-   * written as `ref`).
+   * `anchor`, written as `"name.anchor"`), a named point (`named`,
+   * written as `ref`), or a line's literal vertex (`vertex`, named on use).
    */
-  type Snap = { point: Point; target?: number; anchor?: string; named?: number; ref?: string };
+  type Snap = { point: Point; target?: number; anchor?: string; named?: number; ref?: string; vertex?: { call: number; arg: number } };
   type Drag =
     | { kind: "pan"; start: Point; pan: Point }
     | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean }
@@ -294,6 +294,21 @@
     }),
   );
 
+  /** Literal vertices of top-level lines, which the join tool shares by naming them. */
+  const vertexTargets = $derived(
+    editor.scene.canvases.flatMap((canvas) =>
+      canvas.calls.flatMap((call) => {
+        const probe = probeOf.get(call.id);
+        if (!probe || call.parent !== null || call.in_loop || baseName(call.callee) !== "line") return [];
+        return call.args.flatMap((arg, i) =>
+          arg.key === null && arg.point === null && arg.value.type === "coord"
+            ? [{ vertex: { call: call.id, arg: i }, point: localToPage(probe, [arg.value.x, arg.value.y]) }]
+            : [],
+        );
+      }),
+    ),
+  );
+
   /** How code names a point: `"A"` for an anchor, else its variable path. */
   function refText(id: number): string | undefined {
     const p = editor.pointById.get(id);
@@ -314,12 +329,18 @@
   /**
    * The nearest snap target within reach. `exclude` skips anchors of those
    * shapes; `points: false` skips named points, `anchors: false` shape
-   * anchors. Named points win near-ties, since they're what you usually mean.
+   * anchors, and `vertices` adds lines' literal vertices. Named points win
+   * near-ties, since they're what you usually mean, then vertices.
    */
   function findSnap(
     p: Point,
     exclude?: number | Set<number>,
-    { points = true, anchors = true, excludePoint }: { points?: boolean; anchors?: boolean; excludePoint?: number } = {},
+    {
+      points = true,
+      anchors = true,
+      vertices = false,
+      excludePoint,
+    }: { points?: boolean; anchors?: boolean; vertices?: boolean; excludePoint?: number } = {},
   ): Snap | undefined {
     if (mods.free) return undefined;
     const radius = 8 / editor.zoom;
@@ -333,6 +354,7 @@
       }
     };
     if (points) for (const t of pointTargets) if (t.named !== excludePoint) consider(t, 0.75);
+    if (vertices) for (const t of vertexTargets) consider(t, 0.85);
     if (anchors) {
       for (const t of snapTargets) {
         if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
@@ -408,9 +430,15 @@
 
   /**
    * A path being joined point by point: each step's source text and page
-   * position, plus anchors of unnamed shapes to connect once it exists.
+   * position, plus anchors of unnamed shapes to connect once it exists and
+   * other lines' vertices to share with it (as named points).
    */
-  type Joining = { refs: string[]; pages: Point[]; connects: { arg: number; target: number; anchor: string }[] };
+  type Joining = {
+    refs: string[];
+    pages: Point[];
+    connects: { arg: number; target: number; anchor: string }[];
+    shares: { arg: number; call: number; callArg: number }[];
+  };
   let joining = $state<Joining>();
 
   // Leaving the join tool abandons a half-made path.
@@ -421,14 +449,14 @@
 
   /**
    * Where the point/join tools put their next point: with Shift, on a 15°
-   * ray from the previous one; else on a named point or (join only) a shape
-   * anchor; else the grid. ⌘ skips all snapping.
+   * ray from the previous one; else on a named point or (join only) a line
+   * vertex or shape anchor; else the grid. ⌘ skips all snapping.
    */
   function toolTarget(p: Point, join: boolean): { page: Point; local: Point; snap?: Snap } {
     const { frame, transform } = creationFrame();
     const last = joining?.pages[joining.pages.length - 1];
     if (join && mods.angle && last) return angled(frame, transform, last, p);
-    const snap = join ? findSnap(p) : undefined;
+    const snap = join ? findSnap(p, undefined, { vertices: true }) : undefined;
     if (snap) return { page: snap.point, local: pageToLocal(frame, transform, snap.point), snap };
     const local = snapPoint(frame, transform, p);
     return { page: editor.toPage(frame, transformPoint(transform, local)), local };
@@ -446,7 +474,7 @@
   }
 
   function joinAt(p: Point, double: boolean) {
-    const path = joining ?? { refs: [], pages: [], connects: [] };
+    const path = joining ?? { refs: [], pages: [], connects: [], shares: [] };
     // Closing on the first point is checked against the raw pointer, so an
     // angle-locked ray doesn't stop you landing on it.
     const near = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]) * editor.zoom < 8;
@@ -464,7 +492,8 @@
       if (name) ref = JSON.stringify(`${name}.${snap.anchor}`);
       else connects.push({ arg: path.refs.length, target: snap.target, anchor: snap.anchor });
     }
-    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page], connects };
+    const shares = snap?.vertex ? [...path.shares, { arg: path.refs.length, call: snap.vertex.call, callArg: snap.vertex.arg }] : path.shares;
+    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page], connects, shares };
   }
 
   function finishJoin(path: Joining, closed: boolean) {
@@ -474,6 +503,19 @@
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
     for (const { arg, target, anchor } of path.connects) {
       steps.push(({ created, map }) => ({ kind: "connect", call: created[0], arg, target: map(target), anchor }));
+    }
+    // A vertex shared with another line becomes a named point both use.
+    for (const { arg, call, callArg } of path.shares) {
+      const vertex = (source: string, map: (id: number) => number) =>
+        allCalls(parseScene(source)).find((c) => c.id === map(call))?.args[callArg];
+      // Once per vertex: the path may visit it twice.
+      steps.push(({ source, map }) =>
+        vertex(source, map)?.point === null ? { kind: "extract-point", call: map(call), arg: callArg, name: null } : undefined,
+      );
+      steps.push(({ source, created, map }) => {
+        const named = vertex(source, map);
+        return named && named.point !== null ? { kind: "set-arg-text", call: created[0], arg, text: named.text } : undefined;
+      });
     }
     if (editor.chain(steps)) editor.tool = "select";
   }
@@ -1026,7 +1068,7 @@
         {/if}
 
         {#if activeSnap}
-          <circle class="snap" class:named={activeSnap.named !== undefined} cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
+          <circle class="snap" class:named={activeSnap.named !== undefined || activeSnap.vertex !== undefined} cx={activeSnap.point[0]} cy={activeSnap.point[1]} r={6 / editor.zoom} />
         {/if}
       </g>
     </svg>
