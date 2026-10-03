@@ -77,8 +77,12 @@ a Share button turns a literal coordinate into a shared `anchor(...)`. With
 nothing selected, it lists every point. Hover a point to highlight the shapes
 using it, and click its marker to select them.
 
-The inspector edits coordinates, text, the name and any named argument
-(`stroke`, `fill`, `mark`, ...) as Typst expressions. With nothing selected,
+The inspector edits coordinates, text, the name and any named argument.
+Common values get fields: text size, color, bold and italic for
+`text(5pt)[...]`, `strong[...]` and the like; color, thickness and dash for
+`stroke`; start and end marks; swatches for colors such as `luma(90%)` or
+`orange.lighten(85%)`. Anything else, or any field after clicking `</>`, is
+edited as a Typst expression. With nothing selected,
 it lists every draw call. Your last session is restored on reload, and you can
 drop a `.typ` file on the window to open it. Hover the file name to see whether
 Save writes back to the opened file. Browsers only reveal a picked file's name,
