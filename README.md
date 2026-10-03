@@ -86,7 +86,13 @@ point to a dictionary an anchor loop names (`pts = (…, I: (3, 5.75))`), or
 inserts `anchor("P1", (x, y))` before the first shape, and opens its name for
 editing. Double-click a point's name in the outline to rename it everywhere
 it's used by that name. The join tool (**J**) builds a path from points:
-`line("A", "B", "G", close: true)`.
+`line("A", "B", "G", close: true)`, snapping to named points and to other
+shapes' anchors (an unnamed shape gets a name in the same undo step).
+
+**Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
+15° steps (lengths still snap to the grid along horizontal and vertical ones).
+Hold **⌘** (Ctrl elsewhere) to place without any snapping: no grid, points or
+anchors. It works for every drawing tool, handle and move.
 
 **Outline.** With nothing selected, the right panel shows the document:
 **Variables** (every `let`; point variables and dictionaries of points are
