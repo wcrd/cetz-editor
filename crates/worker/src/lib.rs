@@ -22,6 +22,8 @@ pub struct CompileOutput {
     pub missing_packages: Vec<String>,
     /// JSON array of per-draw-call geometry recorded by the CeTZ probe.
     pub probes: Option<String>,
+    /// Height of each page in points; pages are stacked in `svg`.
+    pub page_heights: Vec<f64>,
 }
 
 /// A Typst compiler holding one main source and any added packages.
@@ -69,6 +71,7 @@ impl Compiler {
                 .collect(),
             missing_packages: out.missing_packages,
             probes: out.probes,
+            page_heights: out.page_heights,
         }
     }
 }

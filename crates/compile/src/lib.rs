@@ -29,6 +29,8 @@ pub struct Output {
     /// Geometry recorded by the probe for each draw call, as a JSON array.
     /// Only set for sources added with [`EditorWorld::set_main_probed`].
     pub probes: Option<String>,
+    /// Height of each page in points; pages are stacked top to bottom in `svg`.
+    pub page_heights: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +169,7 @@ impl EditorWorld {
         match output {
             Ok(doc) => {
                 out.svg = Some(typst_svg::svg_merged(&doc, &Default::default(), Abs::zero()));
+                out.page_heights = doc.pages().iter().map(|p| p.frame.height().to_pt()).collect();
                 if self.probe.is_some() {
                     out.probes = Some(probes_json(&doc));
                 }

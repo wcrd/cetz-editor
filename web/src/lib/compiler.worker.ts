@@ -3,6 +3,7 @@
 import init, { Compiler, type CompileOutput } from "./wasm/cetz_worker";
 import { loadPackage } from "./packages";
 import type { Diagnostic, WorkerMessage, WorkerRequest } from "./compiler";
+import type { Probe } from "./probe";
 
 const compiler = init().then(() => new Compiler());
 const inflight = new Map<string, Promise<void>>();
@@ -87,12 +88,13 @@ async function run({ id, source }: WorkerRequest) {
     out = compile();
   }
 
-  const result = {
-    svg: out.svg,
-    diagnostics: out.diagnostics.map(toPlain),
-    probes: out.probes ? JSON.parse(out.probes) : undefined,
-    ms,
-  };
+  // Probe positions are per page; shift them onto the stacked SVG.
+  const offsets = [0];
+  for (const h of out.page_heights) offsets.push(offsets[offsets.length - 1] + h);
+  const probes: Probe[] | undefined = out.probes ? JSON.parse(out.probes) : undefined;
+  for (const p of probes ?? []) p.origin.y += offsets[p.origin.page - 1] ?? 0;
+  const pageHeights = [...out.page_heights];
+  const result = { svg: out.svg, diagnostics: out.diagnostics.map(toPlain), probes, pageHeights, ms };
   out.free();
   post({ id, kind: "done", ...result });
 }

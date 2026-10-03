@@ -56,9 +56,9 @@
     editor.viewport = { fit, zoomBy: (f: number) => zoomAt(f, [width / 2, height / 2]) };
     return () => (editor.viewport = undefined);
   });
-  // Refit when a different file is opened.
+  // Refit when a document is loaded.
   $effect(() => {
-    void editor.fileName;
+    void editor.loads;
     fitted = false;
   });
 
@@ -495,6 +495,10 @@
     <svg class="overlay" width={width} height={height}>
       <g transform="translate({editor.pan[0]} {editor.pan[1]}) scale({editor.zoom})">
         {#if grid}<path class="grid" d={grid} />{/if}
+        {#each editor.pageHeights.slice(0, -1) as _, i}
+          {@const y = editor.pageHeights.slice(0, i + 1).reduce((a, b) => a + b, 0)}
+          <rect class="page-gap" x="0" y={y - 0.5 / editor.zoom} width={pageSize.w} height={6 / editor.zoom} />
+        {/each}
 
         {#each shapes as s, i (i)}
           {#if s.target !== undefined && editor.tool === "select"}
@@ -603,6 +607,10 @@
     stroke: var(--grid);
     stroke-width: 1;
     fill: none;
+    pointer-events: none;
+  }
+  .page-gap {
+    fill: var(--canvas-bg);
     pointer-events: none;
   }
   .hit {

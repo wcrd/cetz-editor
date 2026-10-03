@@ -4,9 +4,46 @@
   import CodeEditor from "./lib/CodeEditor.svelte";
   import Inspector from "./lib/Inspector.svelte";
   import { Editor, type Tool } from "./lib/editor.svelte";
+  import { loadSession, newDocument, openDropped, openFile, save, saveSession } from "./lib/files";
 
-  const editor = new Editor(fixture);
+  // Restore the last session in this browser; otherwise start on the sample.
+  const session = loadSession();
+  const editor = new Editor(session?.source ?? fixture);
+  if (session) {
+    editor.fileName = session.fileName;
+    editor.savedSource = session.savedSource;
+  } else {
+    editor.fileName = "zone_diagram.typ";
+  }
   $effect(() => () => editor.dispose());
+
+  $effect(() => {
+    void editor.source;
+    void editor.fileName;
+    void editor.savedSource;
+    const timer = setTimeout(() => saveSession(editor), 400);
+    return () => clearTimeout(timer);
+  });
+
+  function onbeforeunload(e: BeforeUnloadEvent) {
+    saveSession(editor);
+    if (editor.dirty) e.preventDefault();
+  }
+
+  let dropping = $state(false);
+  function ondragover(e: DragEvent) {
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+      dropping = true;
+    }
+  }
+  function ondrop(e: DragEvent) {
+    dropping = false;
+    const file = e.dataTransfer?.files[0];
+    if (!file) return;
+    e.preventDefault();
+    void openDropped(editor, file);
+  }
   // Handy for poking at state from the console during development.
   if (import.meta.env.DEV) (window as unknown as { editor: Editor }).editor = editor;
 
@@ -39,6 +76,16 @@
     const mod = e.metaKey || e.ctrlKey;
     const typing = isEditingText(e.target);
 
+    if (mod && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      void save(editor, e.shiftKey);
+      return;
+    }
+    if (mod && e.key.toLowerCase() === "o") {
+      e.preventDefault();
+      void openFile(editor);
+      return;
+    }
     if (mod && e.key.toLowerCase() === "z" && !typing) {
       e.preventDefault();
       if (e.shiftKey) editor.code?.redo();
@@ -124,10 +171,22 @@
   });
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
 <div class="app">
   <header class="toolbar">
+    <div class="group">
+      <button title="New" aria-label="New file" onclick={() => newDocument(editor)}>
+        <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6" /></svg>
+      </button>
+      <button title="Open (⌘O)" aria-label="Open file" onclick={() => openFile(editor)}>
+        <svg viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v12H3zM3 9h18" /></svg>
+      </button>
+      <button title="Save (⌘S)" aria-label="Save file" onclick={() => save(editor)}>
+        <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7" /></svg>
+      </button>
+    </div>
+
     <div class="title">
       <span class="file">{editor.fileName}</span>{#if editor.dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
     </div>
@@ -187,6 +246,7 @@
         </ul>
       {/if}
       {#if editor.notice}<div class="notice" role="status">{editor.notice}</div>{/if}
+      {#if dropping}<div class="drop">Drop a .typ file to open it</div>{/if}
     </section>
     <aside class="side">
       <div class="panel inspector"><Inspector {editor} /></div>
@@ -388,6 +448,18 @@
     font-family: ui-monospace, monospace;
     margin-right: 8px;
     color: var(--muted);
+  }
+  .drop {
+    position: absolute;
+    inset: 12px;
+    display: grid;
+    place-items: center;
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--accent);
+    font-weight: 600;
+    pointer-events: none;
   }
   .notice {
     position: absolute;

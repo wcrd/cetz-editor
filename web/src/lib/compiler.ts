@@ -17,6 +17,8 @@ export interface CompileResult {
   diagnostics: Diagnostic[];
   /** CeTZ geometry per draw call, when the compile succeeded. */
   probes?: Probe[];
+  /** Page heights in points; pages are stacked top to bottom in `svg`. */
+  pageHeights?: number[];
   /** Wall-clock compile time, excluding package fetches. */
   ms: number;
 }

@@ -435,7 +435,8 @@ mod tests {
             }
             let src = std::fs::read_to_string(&path).unwrap();
             let scene = crate::parse(&src);
-            let total = scene.canvases[0].calls.len();
+            let count = |s: &Scene| s.canvases.iter().map(|c| c.calls.len()).sum::<usize>();
+            let total = count(&scene);
             for call in scene.canvases.iter().flat_map(|c| &c.calls) {
                 let edits = [
                     Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5 },
@@ -447,7 +448,7 @@ mod tests {
                     let out = apply(&src, &edit).unwrap();
                     let summary = crate::summarize(&out.source);
                     assert!(summary.errors.is_empty(), "{edit:?} on {}: {:?}\n{}", call.callee, summary.errors, out.source);
-                    let after = crate::parse(&out.source).canvases[0].calls.len();
+                    let after = count(&crate::parse(&out.source));
                     match edit {
                         Edit::Delete { .. } => assert!(after < total),
                         Edit::Duplicate { .. } => assert!(after > total),

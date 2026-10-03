@@ -96,6 +96,7 @@ export class Editor {
 
   svg = $state<string>();
   probes = $state<Probe[]>([]);
+  pageHeights = $state<number[]>([]);
   status = $state<CompilerStatus>({ kind: "loading" });
   diagnostics = $derived<Diagnostic[]>(this.status.kind === "done" ? this.status.diagnostics : []);
   hasErrors = $derived(this.diagnostics.some((d) => d.error));
@@ -103,6 +104,8 @@ export class Editor {
   notice = $state<string>();
 
   fileName = $state("untitled.typ");
+  /** Bumped whenever a document is loaded, so views can reset (e.g. refit). */
+  loads = $state(0);
   savedSource = $state("");
   dirty = $derived(this.source !== this.savedSource);
 
@@ -154,6 +157,7 @@ export class Editor {
     if (!status.svg || !request || request.source !== this.source) return;
 
     this.svg = status.svg;
+    this.pageHeights = status.pageHeights ?? [];
     const probes = status.probes ?? [];
     if (request.draft) {
       // Ids are offsets in the draft text; map them back to the source.
@@ -230,6 +234,7 @@ export class Editor {
     this.svg = undefined;
     this.fileName = fileName;
     this.savedSource = source;
+    this.loads++;
     if (this.code) this.code.replaceAll(source, true);
     else this.source = source;
   }
