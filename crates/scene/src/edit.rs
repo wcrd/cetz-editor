@@ -87,14 +87,22 @@ pub enum Edit {
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
-    /// Wrap a call in `scope({ rotate(<angle>deg, origin: (x, y)) ... })`, so
-    /// it turns `angle` degrees about `(x, y)` in its own frame. Unlike a
-    /// group, a scope lets the names inside it be used outside, so nothing
-    /// that refers to the call changes. `created` holds the scope.
+    /// Turn a call `angle` degrees about `(x, y)` in its own frame: wrap it
+    /// in `scope({ rotate(<angle>deg, origin: (x, y)) ... })`, or set or add
+    /// the `rotate` of the scope it's already wrapped in (`call` may be that
+    /// scope). Unlike a group, a scope lets the names inside it be used
+    /// outside, so nothing that refers to the call changes. `created` holds
+    /// the scope when it's new.
     Rotate { call: usize, angle: f64, x: f64, y: f64 },
-    /// Undo `Rotate`: replace `scope({ rotate(..); shape })` (`call`) with its
-    /// shape, as the rotation handle does at 0°. `created` holds the shape.
+    /// Undo `Rotate`: drop the `rotate` from the scope `call` wraps its shape
+    /// in (or is), and the scope too when nothing else is left in it, as the
+    /// rotation handle does at 0°. `created` holds the shape when unwrapped.
     Unrotate { call: usize },
+    /// Scale a call by `factor` about `(x, y)` in its own frame, through the
+    /// same `scope({ rotate(..); scale(..); shape })` as `Rotate`: the
+    /// scope's `scale` changes, or one is added (wrapping the call the first
+    /// time). A factor of 1 drops it, and the scope when nothing's left.
+    Scale { call: usize, factor: f64, x: f64, y: f64 },
     /// Wrap the calls in a named `group(name: "group", { ... })` where the
     /// first of them is. They must sit in the same block; later ones move up
     /// to join it. References from outside to their names become
@@ -433,44 +441,14 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             group(source, &scene, calls, &mut patches, &mut created)?;
         }
         Edit::Rotate { call, angle, x, y } => {
-            let call = find_call(&scene, *call)?;
-            if call.in_loop {
-                return Err("can't rotate a shape inside a loop".into());
-            }
-            let rotate = format!("rotate({}deg, origin: ({}, {}))", num(*angle), num(*x), num(*y));
-            let indent = indent_at(source, call.range.start);
-            let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
-            let text = &source[call.range.clone()];
-            let text = if source[line_start..call.range.start].trim().is_empty() {
-                format!("scope({{\n{indent}  {rotate}\n{indent}  {}\n{indent}}})", text.replace('\n', "\n  "))
-            } else {
-                format!("scope({{ {rotate}; {text} }})")
-            };
-            created.push((patches.len(), 0));
-            patches.push(patch(call.range.clone(), text));
+            set_transform(source, &scene, *call, "rotate", Some(format!("{}deg", num(*angle))), (*x, *y), &mut patches, &mut created)?;
         }
         Edit::Unrotate { call } => {
-            let scope = find_call(&scene, *call)?;
-            let shape = scene
-                .canvases
-                .iter()
-                .flat_map(|c| &c.calls)
-                .find(|c| c.parent == Some(scope.id) && base_name(&c.callee) != "rotate")
-                .filter(|shape| rotated_scope(&scene, shape).is_some_and(|(s, _)| s.id == scope.id))
-                .ok_or("only a scope holding just a rotate and one shape can be unrotated")?;
-            // Anything else in its body (a comment) would be lost.
-            let root = typst_syntax::parse(source);
-            let root = LinkedNode::new(&root);
-            let block = find_node(&root, &scope.range, SyntaxKind::FuncCall)
-                .and_then(|node| walk::args(&node))
-                .and_then(|args| args.children().find(|c| c.kind() == SyntaxKind::CodeBlock))
-                .and_then(|block| walk::block_code(&block).map(|code| code.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Semicolon)).count()));
-            if block != Some(2) {
-                return Err("can't unrotate: the scope holds more than its rotate and shape".into());
-            }
-            let text = source[shape.range.clone()].replace(&format!("\n{}", indent_at(source, shape.range.start)), &format!("\n{}", indent_at(source, scope.range.start)));
-            created.push((patches.len(), 0));
-            patches.push(patch(scope.range.clone(), text));
+            set_transform(source, &scene, *call, "rotate", None, (0.0, 0.0), &mut patches, &mut created)?;
+        }
+        Edit::Scale { call, factor, x, y } => {
+            let value = ((factor - 1.0).abs() > 1e-9).then(|| num(*factor));
+            set_transform(source, &scene, *call, "scale", value, (*x, *y), &mut patches, &mut created)?;
         }
         Edit::Ungroup { calls } => {
             let mut names = Vec::new();
@@ -594,9 +572,9 @@ fn base_name(callee: &str) -> &str {
 /// Moves the calls' own literal coordinates and the shared points they use.
 fn move_calls(scene: &Scene, calls: &[&Call], dx: f64, dy: f64, detach: bool, patches: &mut Vec<Patch>) {
     let mut points = std::collections::BTreeSet::new();
-    // A rotation's literal `origin:` moves with what it turns, so the turned
-    // shapes move by the same amount instead of along the rotated axes.
-    for call in calls.iter().filter(|c| base_name(&c.callee) == "rotate") {
+    // A rotation's or scaling's literal `origin:` moves with what it turns,
+    // so the shapes move by the same amount, not along the turned axes.
+    for call in calls.iter().filter(|c| matches!(base_name(&c.callee), "rotate" | "scale")) {
         for arg in call.args.iter().filter(|a| a.key.as_deref() == Some("origin") && a.point.is_none()) {
             if let Value::Coord { x, y, x_range, y_range } = &arg.value {
                 patches.push(patch(x_range.clone(), num(x + dx)));
@@ -1226,15 +1204,15 @@ fn ungroup(
         }
     }
 
-    if let Some((scope, rotate)) = rotated_scope(scene, group) {
-        // A group turned by the rotation handle: each statement gets its own
+    if let Some((scope, transforms, _)) = wrapper_of(scene, group) {
+        // A group turned by the transform handles: each statement gets its own
         // copy of the scope, so its shapes come apart and stay turned. A
         // `let` or a style would stop reaching the statements after it.
         let plain = stmts.iter().all(|s| matches!(s.kind(), SyntaxKind::FuncCall | SyntaxKind::LineComment | SyntaxKind::BlockComment));
         if plain && !children.iter().any(|c| changes_state(c)) && stmts.iter().any(|s| s.kind() == SyntaxKind::FuncCall) {
             let indent = indent_at(source, scope.range.start);
             let child_indent = stmts.first().map_or("", |s| indent_at(source, s.offset()));
-            let rotate = &source[rotate.range.clone()];
+            let rotate = transforms.iter().map(|t| &source[t.range.clone()]).collect::<Vec<_>>().join(&format!("\n{indent}  "));
             let mut text = String::new();
             for s in &stmts {
                 if !text.is_empty() {
@@ -1274,16 +1252,93 @@ fn ungroup(
     Ok(())
 }
 
-/// The `scope({ rotate(..); call })` the rotation handle wraps a call in,
-/// and its `rotate`, when the call is alone in one.
-fn rotated_scope<'a>(scene: &'a Scene, call: &Call) -> Option<(&'a Call, &'a Call)> {
-    let scope = scene.call(call.parent?).filter(|s| base_name(&s.callee) == "scope" && !s.in_loop)?;
+/// A `scope({ rotate(..); scale(..); shape })` the transform handles wrap a
+/// shape in (either transform may be missing, not both): the scope, its
+/// transforms in order, and the shape.
+fn wrapped<'a>(scene: &'a Scene, scope: &Call) -> Option<(&'a Call, Vec<&'a Call>, &'a Call)> {
+    let scope = scene.call(scope.id).filter(|s| base_name(&s.callee) == "scope" && !s.in_loop)?;
     let mut children: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent == Some(scope.id)).collect();
     children.sort_by_key(|c| c.id);
-    match children[..] {
-        [rotate, only] if base_name(&rotate.callee) == "rotate" && only.id == call.id => Some((scope, rotate)),
-        _ => None,
+    let (&shape, transforms) = children.split_last()?;
+    let kinds: Vec<&str> = transforms.iter().map(|t| base_name(&t.callee)).collect();
+    let ok = matches!(kinds[..], ["rotate"] | ["scale"] | ["rotate", "scale"]) && !changes_state(shape);
+    ok.then(|| (scope, transforms.to_vec(), shape))
+}
+
+/// The wrapper scope `call` is the shape of, if it's in one.
+fn wrapper_of<'a>(scene: &'a Scene, call: &Call) -> Option<(&'a Call, Vec<&'a Call>, &'a Call)> {
+    wrapped(scene, scene.call(call.parent?)?).filter(|(_, _, shape)| shape.id == call.id)
+}
+
+/// Sets the `kind` transform (`"rotate"` or `"scale"`) of a call to `value`
+/// (`30deg`, `1.5`), or with `None` removes it, in the call's wrapper scope,
+/// which it creates or unwraps as needed. `call` is the shape or its scope.
+#[allow(clippy::too_many_arguments)]
+fn set_transform(
+    source: &str,
+    scene: &Scene,
+    call: usize,
+    kind: &str,
+    value: Option<String>,
+    (x, y): (f64, f64),
+    patches: &mut Vec<Patch>,
+    created: &mut Vec<(usize, usize)>,
+) -> Result<(), String> {
+    let call = find_call(scene, call)?;
+    let wrapper = wrapped(scene, call).or_else(|| wrapper_of(scene, call));
+    let statement = |value: &str| format!("{kind}({value}, origin: ({}, {}))", num(x), num(y));
+    match (wrapper, value) {
+        (None, None) => {}
+        (None, Some(value)) => {
+            if call.in_loop {
+                return Err(format!("can't {kind} a shape inside a loop"));
+            }
+            let indent = indent_at(source, call.range.start);
+            let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+            let text = &source[call.range.clone()];
+            let text = if source[line_start..call.range.start].trim().is_empty() {
+                format!("scope({{\n{indent}  {}\n{indent}  {}\n{indent}}})", statement(&value), text.replace('\n', "\n  "))
+            } else {
+                format!("scope({{ {}; {text} }})", statement(&value))
+            };
+            created.push((patches.len(), 0));
+            patches.push(patch(call.range.clone(), text));
+        }
+        (Some((scope, transforms, shape)), value) => {
+            let existing = transforms.iter().find(|t| base_name(&t.callee) == kind);
+            match (existing, value) {
+                (Some(t), Some(value)) => {
+                    let arg = t.args.iter().find(|a| a.key.is_none()).ok_or(format!("its {kind}(..) has no amount to change"))?;
+                    patches.push(patch(arg.value_range.clone(), value));
+                }
+                (None, Some(value)) => {
+                    // A rotate goes first; a scale after any rotate.
+                    let next = if kind == "rotate" { transforms[0] } else { transforms.iter().find(|t| base_name(&t.callee) != "rotate").copied().unwrap_or(shape) };
+                    let sep = if source[..next.range.start].ends_with(['{', ' ', ';']) && !indent_at(source, next.range.start).is_empty() { format!("\n{}", indent_at(source, next.range.start)) } else { "; ".into() };
+                    patches.push(patch(next.range.start..next.range.start, format!("{}{sep}", statement(&value))));
+                }
+                (Some(t), None) if transforms.len() > 1 => patches.push(patch(statement_range(source, &t.range), String::new())),
+                (Some(_), None) => {
+                    // The last transform: the shape takes the scope's place.
+                    // Anything else in its body (a comment) would be lost.
+                    let root = typst_syntax::parse(source);
+                    let root = LinkedNode::new(&root);
+                    let count = find_node(&root, &scope.range, SyntaxKind::FuncCall)
+                        .and_then(|node| walk::args(&node))
+                        .and_then(|args| args.children().find(|c| c.kind() == SyntaxKind::CodeBlock))
+                        .and_then(|block| walk::block_code(&block).map(|code| code.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Semicolon)).count()));
+                    if count != Some(2) {
+                        return Err("can't unwrap: the scope holds more than its transform and shape".into());
+                    }
+                    let text = source[shape.range.clone()].replace(&format!("\n{}", indent_at(source, shape.range.start)), &format!("\n{}", indent_at(source, scope.range.start)));
+                    created.push((patches.len(), 0));
+                    patches.push(patch(scope.range.clone(), text));
+                }
+                (None, None) => {}
+            }
+        }
     }
+    Ok(())
 }
 
 /// Calls that draw nothing, so passing them doesn't change what's in front.
@@ -1754,10 +1809,28 @@ mod tests {
     }
 
     #[test]
+    fn scale_shares_the_rotation_scope() {
+        let rotated = run(Edit::Rotate { call: id("content"), angle: 30.0, x: 2.0, y: 3.0 }).source;
+        let scope = rotated.find("scope(").unwrap();
+        let scaled = apply(&rotated, &Edit::Scale { call: scope, factor: 2.0, x: 2.0, y: 3.0 }).unwrap().source;
+        assert!(scaled.contains("  scope({\n    rotate(30deg, origin: (2, 3))\n    scale(2, origin: (2, 3))\n    content((2, 3), [Hi])\n  })"), "{scaled}");
+        let again = apply(&scaled, &Edit::Scale { call: scope, factor: 1.5, x: 2.0, y: 3.0 }).unwrap().source;
+        assert!(again.contains("scale(1.5, origin: (2, 3))"), "{again}");
+        // Turning back to 0° keeps the scale, and scale 1 then unwraps.
+        let unturned = apply(&again, &Edit::Unrotate { call: scope }).unwrap().source;
+        assert!(unturned.contains("  scope({\n    scale(1.5, origin: (2, 3))\n    content((2, 3), [Hi])\n  })"), "{unturned}");
+        let plain = apply(&unturned, &Edit::Scale { call: scope, factor: 1.0, x: 2.0, y: 3.0 }).unwrap();
+        assert_eq!(plain.source, SRC);
+        // A rotation added to a scaled shape goes first.
+        let both = apply(&unturned, &Edit::Rotate { call: scope, angle: 45.0, x: 2.0, y: 3.0 }).unwrap().source;
+        assert!(both.contains("  scope({\n    rotate(45deg, origin: (2, 3))\n    scale(1.5, origin: (2, 3))\n"), "{both}");
+    }
+
+    #[test]
     fn move_carries_a_rotation_origin() {
-        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  scope({\n    rotate(30deg, origin: (1, 1))\n    rect((0, 0), (2, 2))\n  })\n})";
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  scope({\n    rotate(30deg, origin: (1, 1))\n    scale(2, origin: (1, 1))\n    rect((0, 0), (2, 2))\n  })\n})";
         let out = apply(src, &Edit::Move { calls: vec![src.find("scope(").unwrap()], dx: 1.0, dy: 0.5, detach: false }).unwrap();
-        assert!(out.source.contains("rotate(30deg, origin: (2, 1.5))"), "{}", out.source);
+        assert!(out.source.contains("rotate(30deg, origin: (2, 1.5))") && out.source.contains("scale(2, origin: (2, 1.5))"), "{}", out.source);
         assert!(out.source.contains("rect((1, 0.5), (3, 2.5))"), "{}", out.source);
     }
 

@@ -19,7 +19,7 @@
   });
 
   // A rotated shape's scope shows the shape.
-  const call = $derived(editor.selected.length === 1 ? (editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0])) : undefined);
+  const call = $derived(editor.selected.length === 1 ? (editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0])) : undefined);
 
   const ALIGN: { how: Parameters<Editor["alignSelection"]>[0]; title: string; icon: string }[] = [
     { how: "left", title: "Align left edges", icon: "M4 3v18M8 7h10v4H8zM8 14h6v4H8z" },
@@ -246,7 +246,7 @@
       {/each}
     </section>
     <!-- Rotated shapes' scopes edit as their shapes. -->
-    {@const shapes = ids.map((id) => editor.rotatedShape(id)?.id ?? id)}
+    {@const shapes = ids.map((id) => editor.wrappedShape(id)?.id ?? id)}
     {@const calls = shapes.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
     {@const opts = sharedOptions(calls)}
     {#if opts.groups.length === 0 && opts.other.length === 0}<p class="note">These shapes have no options in common.</p>{/if}

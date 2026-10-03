@@ -51,6 +51,7 @@
     | { kind: "radius"; reach: Reach; r: number; edit?: Edit }
     | { kind: "reshape"; reshape: Reshape; edit?: Edit }
     | { kind: "sweep"; end: ArcEnd; sweep: number; angle?: number; edit?: Edit }
+    | { kind: "grow"; grow: Grow; from: number; factor: number; edit?: Edit }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -287,7 +288,7 @@
   const handles = $derived.by((): Handle[] => {
     if (editor.selected.length !== 1 || drag?.kind === "move") return [];
     // A rotated shape's scope gets the shape's handles, in its turned frame.
-    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop) return [];
     return call.args.flatMap((_, i) => argHandle(call, probe, i) ?? []);
@@ -357,15 +358,14 @@
     }
 
     // A scope or group that starts with a rotation turns by it; so does a
-    // shape that's alone in such a scope (when you've entered it).
+    // shape in a wrapper scope with one (when you've entered it).
     const turner = (c: Call) => {
       const children = editor.calls.filter((k) => k.parent === c.id).sort((a, b) => a.id - b.id);
       const kind = baseName(c.callee);
       return (kind === "scope" || kind === "group") && children[0] && baseName(children[0].callee) === "rotate" ? children : undefined;
     };
-    const parent = call.parent !== null ? editor.callById.get(call.parent) : undefined;
-    const inParent = parent && baseName(parent.callee) === "scope" ? turner(parent) : undefined;
-    const owner = turner(call) ? call : inParent?.length === 2 ? parent : undefined;
+    const wrap = editor.wrapper(call.id);
+    const owner = turner(call) ? call : wrap && baseName(wrap.transforms[0].callee) === "rotate" ? wrap.scope : undefined;
     const ownerProbe = owner && probeOf.get(owner.id);
     if (owner && ownerProbe) {
       const first = turner(owner)![0];
@@ -375,7 +375,7 @@
       if (angle === undefined || (origin && origin.type !== "coord")) return undefined;
       const pivot = localToPage(ownerProbe, origin?.type === "coord" ? [origin.x, origin.y] : [0, 0]);
       // Back at 0°, a scope that only turned one shape goes away.
-      const unwrap = editor.rotatedShape(owner.id) !== undefined;
+      const unwrap = editor.wrappedShape(owner.id) !== undefined;
       return {
         pivot,
         angle,
@@ -390,6 +390,60 @@
     const [x, y] = pageToLocal(frameOf(probe), probe.transform, pivot);
     return { pivot, angle: 0, sign, edit: (a) => (a ? { kind: "rotate", call: call.id, angle: a, x, y } : undefined) };
   });
+
+  // --- Scale --------------------------------------------------------------
+
+  /**
+   * How the selected shape scales: about `pivot` (page) from `factor`, with
+   * the edit for a new factor. It goes in the shape's wrapper scope beside
+   * any rotation, about the rotation's pivot so the two don't fight.
+   */
+  type Grow = { pivot: Point; factor: number; edit: (factor: number) => Edit };
+
+  const grow = $derived.by((): Grow | undefined => {
+    if (!spin) return undefined;
+    const call = editor.callById.get(editor.selected[0]);
+    const probe = call && probeOf.get(call.id);
+    if (!call || !probe) return undefined;
+    const wrap = editor.wrapper(call.id);
+    const outer = wrap && probeOf.get(wrap.scope.id);
+    const rotate = wrap?.transforms.find((t) => baseName(t.callee) === "rotate");
+    const scale = wrap?.transforms.find((t) => baseName(t.callee) === "scale");
+    const originOf = (t: Call | undefined) => {
+      const v = t?.args.find((a) => a.key === "origin")?.value;
+      return v?.type === "coord" ? ([v.x, v.y] as Point) : undefined;
+    };
+    const edit = (x: number, y: number) => (factor: number): Edit => ({ kind: "scale", call: call.id, factor, x, y });
+    if (wrap && outer && scale) {
+      const amount = scale.args.find((a) => a.key === null)?.value;
+      const o = originOf(scale);
+      if (amount?.type !== "number" || !o || scale.args.some((a) => a.key !== null && a.key !== "origin")) return undefined;
+      // The scale's origin is in the rotated frame; the rotation's pivot is where the two agree.
+      const r = originOf(rotate);
+      const angle = rotate ? degrees(rotate.args.find((a) => a.key === null)?.text ?? "") : 0;
+      if (angle === undefined || (rotate && !r)) return undefined;
+      const turned: Point = r ? [r[0] + Math.cos((angle * Math.PI) / 180) * (o[0] - r[0]) - Math.sin((angle * Math.PI) / 180) * (o[1] - r[1]), r[1] + Math.sin((angle * Math.PI) / 180) * (o[0] - r[0]) + Math.cos((angle * Math.PI) / 180) * (o[1] - r[1])] : o;
+      return { pivot: localToPage(outer, turned), factor: amount.value, edit: edit(o[0], o[1]) };
+    }
+    const r = originOf(rotate);
+    if (wrap && outer && r) return { pivot: localToPage(outer, r), factor: 1, edit: edit(r[0], r[1]) };
+    const [x, y] = pageToLocal(frameOf(probe), probe.transform, spin.pivot);
+    return { pivot: spin.pivot, factor: 1, edit: edit(x, y) };
+  });
+
+  /** The scale handle: a knob off the selection's bottom-right corner. */
+  const growKnob = $derived.by((): { knob: Point; stem: Point } | undefined => {
+    if (!grow || !selectionBox || editor.tool !== "select" || (drag && drag.kind !== "grow")) return undefined;
+    const stem: Point = [selectionBox.x1, selectionBox.y1];
+    const off = 14 / editor.zoom;
+    return { stem, knob: [stem[0] + off, stem[1] + off] };
+  });
+
+  let nearGrow = $state(false);
+
+  function overGrow(p: Point): boolean {
+    return !!growKnob && Math.hypot(p[0] - growKnob.knob[0], p[1] - growKnob.knob[1]) * editor.zoom < 9;
+  }
 
   /** The rotation handle: a knob above the selection. */
   const spinHandle = $derived.by((): { knob: Point; stem: Point } | undefined => {
@@ -415,7 +469,7 @@
 
   const reshapes = $derived.by((): Reshape[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
-    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
     const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
@@ -466,7 +520,7 @@
 
   const reaches = $derived.by((): Reach[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "radius")) return [];
-    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     const base = call && baseName(call.callee);
     const names = base && RADIUS_ANCHORS[base];
@@ -511,7 +565,7 @@
 
   const arcEnds = $derived.by((): ArcEnd[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "sweep")) return [];
-    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
+    const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop || baseName(call.callee) !== "arc") return [];
     const value = (key: string) => {
@@ -1162,6 +1216,10 @@
       drag = { kind: "radius", reach, r: reach.r };
       return;
     }
+    if (grow && growKnob && overGrow(p)) {
+      drag = { kind: "grow", grow, from: Math.hypot(p[0] - grow.pivot[0], p[1] - grow.pivot[1]), factor: grow.factor };
+      return;
+    }
     if (spin && overSpin(p)) {
       drag = { kind: "rotate", spin, from: pageAngle(spin.pivot, p), angle: spin.angle };
       return;
@@ -1245,8 +1303,9 @@
       nearReshape = editor.tool === "select" && !spaceHeld && !nearArcEnd && reshapeAt(p) !== undefined;
       nearReach = editor.tool === "select" && !spaceHeld && !nearReshape && reachAt(p) !== undefined;
       nearSpin = editor.tool === "select" && !spaceHeld && !nearReach && overSpin(p);
-      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearReach && !nearReshape && !nearArcEnd ? grabAt(p) : undefined;
-      const hit = nearGrab || nearSpin || nearReach || nearReshape || nearArcEnd ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      nearGrow = editor.tool === "select" && !spaceHeld && !nearReach && !nearSpin && overGrow(p);
+      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin && !nearGrow && !nearReach && !nearReshape && !nearArcEnd ? grabAt(p) : undefined;
+      const hit = nearGrab || nearSpin || nearGrow || nearReach || nearReshape || nearArcEnd ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
@@ -1356,6 +1415,17 @@
         else editor.endDrag();
         break;
       }
+      case "grow": {
+        const { grow } = drag;
+        const ratio = Math.hypot(p[0] - grow.pivot[0], p[1] - grow.pivot[1]) / (drag.from || 1);
+        // Steps of 0.05, ⇧ quarters, ⌘ free.
+        const step = mods.free ? 1e-3 : mods.angle ? 0.25 : 0.05;
+        drag.factor = Math.max(step, Math.round((grow.factor * ratio) / step) * step);
+        drag.edit = drag.factor === grow.factor ? undefined : grow.edit(Number(drag.factor.toFixed(4)));
+        if (drag.edit) editor.previewEdit(drag.edit);
+        else editor.endDrag();
+        break;
+      }
       case "sweep": {
         const next = sweepTo(drag.end, p, drag.sweep);
         drag.sweep = next.sweep;
@@ -1428,6 +1498,7 @@
       case "radius":
       case "reshape":
       case "sweep":
+      case "grow":
         editor.endDrag(d.edit);
         break;
       case "create":
@@ -1777,7 +1848,7 @@
   const cursor = $derived(
     drag?.kind === "rotate"
       ? "grabbing"
-      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearReach || nearReshape || nearArcEnd
+      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearGrow || nearReach || nearReshape || nearArcEnd
       ? "grab"
       : editor.tool !== "select"
         ? "crosshair"
@@ -1872,6 +1943,14 @@
           {/if}
         </g>
 
+        {#if growKnob && drag?.kind !== "grow"}
+          <line class="spin-stem" x1={growKnob.stem[0]} y1={growKnob.stem[1]} x2={growKnob.knob[0]} y2={growKnob.knob[1]} />
+          <circle class="handle spin" class:near={nearGrow} cx={growKnob.knob[0]} cy={growKnob.knob[1]} r={4.5 / editor.zoom} />
+        {/if}
+        {#if drag?.kind === "grow"}
+          {@const pivot = drag.grow.pivot}
+          <path class="spin-guide" d="M{pivot[0] - 5 / editor.zoom},{pivot[1]} h{10 / editor.zoom} M{pivot[0]},{pivot[1] - 5 / editor.zoom} v{10 / editor.zoom}" />
+        {/if}
         {#if drag?.kind === "rotate"}
           {@const pivot = drag.spin.pivot}
           <path class="spin-guide" d="M{pivot[0] - 5 / editor.zoom},{pivot[1]} h{10 / editor.zoom} M{pivot[0]},{pivot[1] - 5 / editor.zoom} v{10 / editor.zoom}" />
@@ -2017,6 +2096,8 @@
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "grow"}
+      <div class="hint">×{num(drag.factor)} · ⇧ quarter steps · {isMac ? "⌘" : "Ctrl"} free</div>
     {:else if drag?.kind === "sweep"}
       <div class="hint">{drag.end.end} {num(drag.angle ?? drag.end[drag.end.end])}° · ⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no rounding</div>
     {:else if drag?.kind === "radius"}

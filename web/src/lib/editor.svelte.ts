@@ -16,6 +16,7 @@ import {
   baseName,
   mapOffset,
   parseScene,
+  STATE_CALLS,
   utf8Length,
   type Call,
   type Edit,
@@ -521,7 +522,7 @@ export class Editor {
   /** Replaces each selected group with its children, which become the selection. */
   ungroupSelection() {
     // A rotated group's shapes stay in its scope, so they stay turned.
-    const groups = this.selected.map((id) => this.rotatedShape(id)?.id ?? id).filter((id) => this.isGroup(id));
+    const groups = this.selected.map((id) => this.wrappedShape(id)?.id ?? id).filter((id) => this.isGroup(id));
     if (groups.length) this.edit({ kind: "ungroup", calls: groups });
   }
 
@@ -553,17 +554,33 @@ export class Editor {
   }
 
   isGroup(id: number): boolean {
-    return baseName((this.rotatedShape(id) ?? this.callById.get(id))?.callee ?? "") === "group";
+    return baseName((this.wrappedShape(id) ?? this.callById.get(id))?.callee ?? "") === "group";
   }
 
   /**
-   * The one shape in a `scope({ rotate(..); shape })`, which is how the
-   * rotation handle turns a shape, so the scope can be edited as that shape.
+   * A `scope({ rotate(..); scale(..); shape })` the transform handles wrap
+   * a shape in (either transform may be missing, not both), given the scope
+   * or its shape.
    */
-  rotatedShape(id: number): Call | undefined {
-    if (baseName(this.callById.get(id)?.callee ?? "") !== "scope") return undefined;
-    const children = this.calls.filter((c) => c.parent === id).sort((a, b) => a.id - b.id);
-    return children.length === 2 && baseName(children[0].callee) === "rotate" ? children[1] : undefined;
+  wrapper(id: number): { scope: Call; transforms: Call[]; shape: Call } | undefined {
+    const of = (scopeId: number) => {
+      const scope = this.callById.get(scopeId);
+      if (!scope || baseName(scope.callee) !== "scope" || scope.in_loop) return undefined;
+      const children = this.calls.filter((c) => c.parent === scopeId).sort((a, b) => a.id - b.id);
+      const shape = children.pop();
+      const kinds = children.map((c) => baseName(c.callee)).join(",");
+      if (!shape || !["rotate", "scale", "rotate,scale"].includes(kinds) || STATE_CALLS.has(baseName(shape.callee))) return undefined;
+      return { scope, transforms: children, shape };
+    };
+    const call = this.callById.get(id);
+    const parent = call?.parent;
+    return of(id) ?? (parent !== null && parent !== undefined ? of(parent) : undefined);
+  }
+
+  /** The shape of a wrapper scope (see `wrapper`), so the scope can be edited as that shape. */
+  wrappedShape(id: number): Call | undefined {
+    const w = this.wrapper(id);
+    return w && w.scope.id === id ? w.shape : undefined;
   }
 
   flash(message: string) {
