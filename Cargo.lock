@@ -170,7 +170,9 @@ dependencies = [
 name = "cetz-compile"
 version = "0.1.0"
 dependencies = [
+ "cetz-scene",
  "flate2",
+ "serde_json",
  "tar",
  "typst",
  "typst-assets",

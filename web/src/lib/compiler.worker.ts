@@ -71,7 +71,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     out = run();
   }
 
-  const result = { svg: out.svg, diagnostics: out.diagnostics.map(toPlain), ms };
+  const result = {
+    svg: out.svg,
+    diagnostics: out.diagnostics.map(toPlain),
+    probes: out.probes ? JSON.parse(out.probes) : undefined,
+    ms,
+  };
   out.free();
   post({ id, kind: "done", ...result });
 };

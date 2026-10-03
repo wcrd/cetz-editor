@@ -2,6 +2,12 @@
 
 use wasm_bindgen::prelude::*;
 
+/// The end offset of the function call starting at `offset`, if there is one.
+#[wasm_bindgen]
+pub fn call_end(source: &str, offset: usize) -> Option<usize> {
+    cetz_scene::call_range(source, offset).map(|r| r.end)
+}
+
 #[wasm_bindgen(getter_with_clone)]
 pub struct ParseSummary {
     pub nodes: u32,

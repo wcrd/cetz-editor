@@ -1,5 +1,7 @@
 // Main-thread handle on the Typst compiler running in a Web Worker.
 
+import type { Probe } from "./probe";
+
 export interface Diagnostic {
   error: boolean;
   message: string;
@@ -13,6 +15,8 @@ export interface Diagnostic {
 export interface CompileResult {
   svg?: string;
   diagnostics: Diagnostic[];
+  /** CeTZ geometry per draw call, when the compile succeeded. */
+  probes?: Probe[];
   /** Wall-clock compile time, excluding package fetches. */
   ms: number;
 }

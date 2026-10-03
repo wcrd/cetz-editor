@@ -1,12 +1,20 @@
 <script lang="ts">
   import fixture from "../../fixtures/zone_diagram.typ?raw";
-  import { summarize } from "./lib/core";
+  import { call_end, summarize } from "./lib/core";
   import { TypstCompiler, type CompilerStatus } from "./lib/compiler";
+  import type { Probe } from "./lib/probe";
+  import ProbeOverlay from "./lib/ProbeOverlay.svelte";
 
   let source = $state(fixture);
   let status = $state<CompilerStatus>({ kind: "loading" });
   // Keep showing the last good render while recompiling or on errors.
   let svg = $state<string>();
+  let probes = $state<Probe[]>([]);
+  let showGeometry = $state(true);
+  let hovered = $state<number>();
+  let textarea: HTMLTextAreaElement;
+
+  let viewBox = $derived(svg && /viewBox="([^"]+)"/.exec(svg)?.[1]);
 
   let summary = $derived.by(() => {
     const s = summarize(source);
@@ -17,7 +25,10 @@
 
   const compiler = new TypstCompiler((next) => {
     status = next;
-    if (next.kind === "done" && next.svg) svg = next.svg;
+    if (next.kind === "done" && next.svg) {
+      svg = next.svg;
+      probes = next.probes ?? [];
+    }
   });
 
   $effect(() => {
@@ -30,6 +41,31 @@
   });
 
   $effect(() => () => compiler.dispose());
+
+  // Probe ids are UTF-8 byte offsets; the textarea counts UTF-16 units.
+  function utf16Index(text: string, byteOffset: number): number {
+    return new TextDecoder().decode(new TextEncoder().encode(text).slice(0, byteOffset)).length;
+  }
+
+  /** Selects the draw call that produced a shape in the source pane. */
+  function selectCall(id: number) {
+    const end = call_end(source, id) ?? id;
+    textarea.focus();
+    textarea.setSelectionRange(utf16Index(source, id), utf16Index(source, end));
+    // Scroll the selection into view.
+    const line = source.slice(0, utf16Index(source, id)).split("\n").length - 1;
+    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
+    textarea.scrollTop = Math.max(0, line * lineHeight - textarea.clientHeight / 3);
+  }
+
+  let hoveredLabel = $derived.by(() => {
+    if (hovered === undefined) return undefined;
+    const probe = probes.find((p) => p.id === hovered);
+    const prefix = source.slice(0, utf16Index(source, hovered));
+    const line = prefix.split("\n").length;
+    const call = source.slice(utf16Index(source, hovered)).match(/^[\w.-]+/)?.[0];
+    return `${call}(…) at line ${line}${probe?.name ? ` · name: "${probe.name}"` : ""}`;
+  });
 
   function plural(n: number, word: string) {
     return `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -62,12 +98,25 @@
       {summary.lossless ? "lossless round-trip" : "round-trip mismatch"} ·
       <span class="compile" class:failed={diagnostics.some((d) => d.error)}>{compileLabel}</span>
     </p>
+    <label class="toggle"><input type="checkbox" bind:checked={showGeometry} /> Show CeTZ geometry</label>
   </header>
   <div class="panes">
-    <textarea bind:value={source} spellcheck="false"></textarea>
+    <textarea bind:this={textarea} bind:value={source} spellcheck="false"></textarea>
     <section class="preview" class:stale={diagnostics.some((d) => d.error)}>
+      {#if hoveredLabel}<span class="hovered">{hoveredLabel}</span>{/if}
       {#if svg}
-        {@html svg}
+        <div class="canvas">
+          {@html svg}
+          {#if showGeometry && viewBox}
+            <ProbeOverlay
+              {probes}
+              {viewBox}
+              {hovered}
+              onhover={(id) => (hovered = id)}
+              onselect={selectCall}
+            />
+          {/if}
+        </div>
       {/if}
     </section>
   </div>
@@ -108,14 +157,39 @@
   h1 {
     font-size: 1.1rem;
     margin: 0;
+    white-space: nowrap;
   }
   .status {
     margin: 0;
     color: #666;
     font-size: 0.9rem;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .compile.failed {
     color: #b00020;
+  }
+  .toggle {
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .hovered {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 1;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.75);
+    color: white;
+    font: 12px ui-monospace, monospace;
+    pointer-events: none;
   }
   .panes {
     flex: 1;
@@ -136,6 +210,7 @@
     resize: none;
   }
   .preview {
+    position: relative;
     overflow: auto;
     padding: 16px;
     display: flex;
@@ -145,7 +220,12 @@
   .preview.stale {
     opacity: 0.5;
   }
-  .preview :global(svg) {
+  .canvas {
+    position: relative;
+    max-width: 100%;
+  }
+  .canvas > :global(svg:first-child) {
+    display: block;
     max-width: 100%;
     height: auto;
   }

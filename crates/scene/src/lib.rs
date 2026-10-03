@@ -1,6 +1,12 @@
 //! Parses CeTZ source into a scene the editor can manipulate.
 
-use typst_syntax::SyntaxNode;
+mod instrument;
+
+pub use instrument::{Instrumented, PROBE_PATH, instrument};
+
+use std::ops::Range;
+
+use typst_syntax::{LinkedNode, Side, SyntaxKind, SyntaxNode};
 
 /// Basic facts about a parsed source file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +26,20 @@ pub fn summarize(source: &str) -> Summary {
         errors: root.errors_and_warnings().0.into_iter().map(|e| e.message.to_string()).collect(),
         lossless: root.full_text() == source,
     }
+}
+
+/// The byte range of the function call that starts exactly at `offset`.
+pub fn call_range(source: &str, offset: usize) -> Option<Range<usize>> {
+    let root = typst_syntax::parse(source);
+    let leaf = LinkedNode::new(&root).leaf_at(offset, Side::After)?;
+    let mut node = Some(&leaf);
+    while let Some(n) = node {
+        if n.kind() == SyntaxKind::FuncCall && n.offset() == offset {
+            return Some(n.range());
+        }
+        node = n.parent();
+    }
+    None
 }
 
 fn count(node: &SyntaxNode) -> usize {
@@ -45,6 +65,14 @@ mod tests {
             }
         }
         assert!(seen > 0, "no .typ fixtures found");
+    }
+
+    #[test]
+    fn finds_call_ranges() {
+        let src = "#canvas({ line((0, 0), (1, 1)) })";
+        let at = src.find("line").unwrap();
+        assert_eq!(call_range(src, at), Some(at..src.len() - 3));
+        assert_eq!(call_range(src, at + 1), None);
     }
 
     #[test]

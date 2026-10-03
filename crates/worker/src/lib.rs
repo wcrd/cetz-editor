@@ -20,6 +20,8 @@ pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,
     /// Packages to fetch and add before compiling again, as `@ns/name:version`.
     pub missing_packages: Vec<String>,
+    /// JSON array of per-draw-call geometry recorded by the CeTZ probe.
+    pub probes: Option<String>,
 }
 
 /// A Typst compiler holding one main source and any added packages.
@@ -35,8 +37,10 @@ impl Compiler {
         Compiler { world: cetz_compile::EditorWorld::new() }
     }
 
+    /// Set the source to compile. It is compiled instrumented, so the output
+    /// includes CeTZ geometry per draw call; the render is unchanged.
     pub fn set_main(&mut self, source: &str) {
-        self.world.set_main(source);
+        self.world.set_main_probed(source);
     }
 
     pub fn has_package(&self, spec: &str) -> bool {
@@ -64,6 +68,7 @@ impl Compiler {
                 })
                 .collect(),
             missing_packages: out.missing_packages,
+            probes: out.probes,
         }
     }
 }
