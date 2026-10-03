@@ -80,6 +80,22 @@
     }
   }
 
+  // Rulers, on unless turned off in this browser.
+  const RULERS_KEY = "cetz-editor:rulers";
+  try {
+    tabs.prefs.showRulers = localStorage.getItem(RULERS_KEY) !== "false";
+  } catch {
+    // Default view.
+  }
+  function toggleRulers() {
+    editor.showRulers = !editor.showRulers;
+    try {
+      localStorage.setItem(RULERS_KEY, String(editor.showRulers));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+
   let dropping = $state(false);
   function ondragover(e: DragEvent) {
     if (e.dataTransfer?.types.includes("Files")) {
@@ -206,6 +222,11 @@
       editor.edit({ kind: "move", calls: editor.selected, dx: dx * step, dy: dy * step });
       return;
     }
+    // Before the tools: plain R is the rectangle.
+    if (e.key === "R" && e.shiftKey) {
+      toggleRulers();
+      return;
+    }
     const tool = tools.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
     if (tool) {
       editor.tool = tool.id;
@@ -312,6 +333,15 @@
           onclick={toggleInfinite}
         >
           <svg viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" /></svg>
+        </button>
+        <button
+          class:active={editor.showRulers}
+          title="Rulers (⇧R)"
+          aria-label="Rulers"
+          aria-pressed={editor.showRulers}
+          onclick={toggleRulers}
+        >
+          <svg viewBox="0 0 24 24"><path d="M3 8h18v8H3zM7 8v3M11 8v4M15 8v3M19 8v4" /></svg>
         </button>
         <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
         <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>

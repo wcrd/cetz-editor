@@ -7,6 +7,7 @@
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, type Call, type Edit } from "./scene";
   import { num } from "./format";
+  import Rulers from "./Rulers.svelte";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -14,6 +15,8 @@
   let width = $state(0);
   let height = $state(0);
   let spaceHeld = $state(false);
+  /** The pointer over the canvas, in screen pixels. */
+  let pointer = $state<Point>();
 
   type Point = [number, number];
   /**
@@ -404,6 +407,8 @@
 
   function onpointermove(e: PointerEvent) {
     const p = pagePoint(e);
+    const r = viewport.getBoundingClientRect();
+    pointer = [e.clientX - r.left, e.clientY - r.top];
     if (!drag) {
       const el = e.target as Element;
       const hit = el.closest("[data-id]")?.getAttribute("data-id");
@@ -800,6 +805,20 @@
         {/if}
       </g>
     </svg>
+    {#if editor.showRulers}
+      <Rulers
+        {editor}
+        {width}
+        {height}
+        cursor={pointer}
+        band={selectionBox && {
+          x0: selectionBox.x0 + moveShift[0],
+          x1: selectionBox.x1 + moveShift[0],
+          y0: selectionBox.y0 + moveShift[1],
+          y1: selectionBox.y1 + moveShift[1],
+        }}
+      />
+    {/if}
     {#if sharing}
       <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>
     {/if}

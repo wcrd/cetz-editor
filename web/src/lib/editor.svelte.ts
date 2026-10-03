@@ -80,6 +80,8 @@ export class Prefs {
   showPoints = $state(false);
   /** View the page as an endless sheet: no page edge, grid everywhere. */
   infinite = $state(false);
+  /** Rulers in canvas units along the canvas's top and left edges. */
+  showRulers = $state(true);
 }
 
 interface Draft {
@@ -132,6 +134,8 @@ export class Editor {
   set showPoints(v) { this.prefs.showPoints = v; }
   get infinite() { return this.prefs.infinite; }
   set infinite(v) { this.prefs.infinite = v; }
+  get showRulers() { return this.prefs.showRulers; }
+  set showRulers(v) { this.prefs.showRulers = v; }
   hoveredPoint = $state<number>();
   /** Where the current hover came from: the canvas shows panel hovers more strongly. */
   hoverSource = $state<"canvas" | "panel">("canvas");
