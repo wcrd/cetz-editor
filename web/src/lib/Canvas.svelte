@@ -144,7 +144,7 @@
 
   // --- Coordinates ---------------------------------------------------------
 
-  function pagePoint(e: PointerEvent): Point {
+  function pagePoint(e: MouseEvent): Point {
     const r = viewport.getBoundingClientRect();
     return [(e.clientX - r.left - editor.pan[0]) / editor.zoom, (e.clientY - r.top - editor.pan[1]) / editor.zoom];
   }
@@ -244,6 +244,31 @@
       .filter((id) => !withHandles.has(id) && placed.get(id))
       .map((id) => ({ id, page: placed.get(id)!.page, selected: selected.has(id) }));
   });
+
+  /** Something a press in select mode picks up: a selected shape's handle, or a shared point. */
+  type Grab = { handle: Handle } | { point: number };
+
+  /**
+   * The nearest handle or shared point within reach of `p`, shown or not:
+   * nearness beats drawing order, so a crowded spot picks what's closest.
+   * Handles win ties, as they carry which use of a shared point you meant.
+   */
+  function grabAt(p: Point): Grab | undefined {
+    const dist = (q: Point) => Math.hypot(q[0] - p[0], q[1] - p[1]);
+    let best: Grab | undefined;
+    let bestDist = 10 / editor.zoom;
+    for (const h of handles) {
+      if (dist(h.point) < bestDist) [best, bestDist] = [{ handle: h }, dist(h.point)];
+    }
+    for (const [id, where] of placed) {
+      if (where && dist(where.page) < bestDist) [best, bestDist] = [{ point: id }, dist(where.page)];
+    }
+    return best;
+  }
+
+  /** What the pointer would grab, while hovering in select mode. */
+  let nearGrab = $state<Grab>();
+  const nearHandle = $derived(nearGrab && "handle" in nearGrab ? nearGrab.handle.arg : undefined);
 
   /** True while a drag would move shared points (so Alt would detach). */
   const sharing = $derived(
@@ -551,9 +576,9 @@
     }
 
     const target = e.target as Element;
-    const handle = target.closest("[data-handle]")?.getAttribute("data-handle");
-    if (handle) {
-      const [call, arg] = handle.split(":").map(Number);
+    const grab = grabAt(p);
+    if (grab && "handle" in grab) {
+      const { call, arg } = grab.handle;
       const probe = probeOf.get(call);
       const point = editor.callById.get(call)?.args[arg]?.point ?? null;
       const where = point !== null ? placed.get(point) : undefined;
@@ -565,9 +590,8 @@
       return;
     }
 
-    const marker = target.closest("[data-point]")?.getAttribute("data-point");
-    if (marker) {
-      const point = Number(marker);
+    if (grab && "point" in grab) {
+      const { point } = grab;
       const picked = editor.selectedPoints.includes(point);
       if (e.shiftKey) {
         editor.pointSelection = picked ? editor.selectedPoints.filter((id) => id !== point) : [...editor.selectedPoints, point];
@@ -615,12 +639,12 @@
       return;
     }
     if (!drag) {
-      const el = e.target as Element;
-      const hit = el.closest("[data-id]")?.getAttribute("data-id");
+      // A point in reach takes the pointer from the shape under it.
+      nearGrab = editor.tool === "select" && !spaceHeld ? grabAt(p) : undefined;
+      const hit = nearGrab ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
-      const point = el.closest("[data-point]")?.getAttribute("data-point") ?? el.closest("[data-shared]")?.getAttribute("data-shared");
-      editor.hoveredPoint = point ? Number(point) : undefined;
+      editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
       return;
     }
     switch (drag.kind) {
@@ -760,11 +784,11 @@
   }
 
   function ondblclick(e: MouseEvent) {
-    // Double-clicking a point marker selects the shapes that use it. (Pointer
-    // capture sends the event to the viewport, so look under the pointer.)
-    const marker = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-point]")?.getAttribute("data-point");
-    if (marker) {
-      const users = (editor.pointUsers.get(Number(marker)) ?? []).map((id) => editor.selectableFor(id));
+    // Double-clicking a shared point selects the shapes that use it.
+    const grab = grabAt(pagePoint(e));
+    const marker = grab && ("point" in grab ? grab.point : grab.handle.shared);
+    if (marker !== undefined) {
+      const users = (editor.pointUsers.get(marker) ?? []).map((id) => editor.selectableFor(id));
       editor.pointSelection = [];
       editor.selection = [...new Set(users.filter((id) => id !== undefined))];
       return;
@@ -922,7 +946,13 @@
   }
 
   const cursor = $derived(
-    drag?.kind === "pan" || spaceHeld ? "grab" : editor.tool !== "select" ? "crosshair" : editor.hovered !== undefined ? "move" : "default",
+    drag?.kind === "pan" || spaceHeld || nearGrab
+      ? "grab"
+      : editor.tool !== "select"
+        ? "crosshair"
+        : editor.hovered !== undefined
+          ? "move"
+          : "default",
   );
 </script>
 
@@ -942,6 +972,7 @@
   {ondblclick}
   onpointerleave={() => {
     editor.hovered = undefined;
+    nearGrab = undefined;
     pointer = undefined;
   }}
   role="application"
@@ -1025,6 +1056,7 @@
           {:else if h.linked}
             <rect
               class="handle linked"
+              class:near={nearHandle === h.arg}
               data-handle="{h.call}:{h.arg}"
               x={h.point[0] - r}
               y={h.point[1] - r}
@@ -1033,7 +1065,7 @@
               transform="rotate(45 {h.point[0]} {h.point[1]})"
             />
           {:else}
-            <circle class="handle" data-handle="{h.call}:{h.arg}" cx={h.point[0]} cy={h.point[1]} {r} />
+            <circle class="handle" class:near={nearHandle === h.arg} data-handle="{h.call}:{h.arg}" cx={h.point[0]} cy={h.point[1]} {r} />
           {/if}
         {/each}
 
@@ -1213,6 +1245,9 @@
   }
   .handle.linked {
     fill: var(--accent);
+  }
+  .handle.near {
+    stroke-width: 3;
   }
   .point circle {
     fill: var(--point);
