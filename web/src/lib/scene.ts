@@ -108,6 +108,7 @@ export type Edit =
   | { kind: "insert"; canvas: number | null; text: string }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
+  | { kind: "rotate"; call: number; angle: number; x: number; y: number }
   | { kind: "group"; calls: number[] }
   | { kind: "ungroup"; calls: number[] }
   | { kind: "arrange"; calls: number[]; to: Layer }

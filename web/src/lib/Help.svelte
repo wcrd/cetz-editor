@@ -61,6 +61,14 @@
       </p>
     </section>
     <section>
+      <h3>Rotating</h3>
+      <p>
+        Drag the knob above a selected shape. Polygons, stars and text set their <code>angle</code>; anything else is wrapped in
+        a <code>scope</code> that starts with a <code>rotate</code>, which keeps its name usable outside, and later turns edit
+        that rotation.
+      </p>
+    </section>
+    <section>
       <h3>Modifiers</h3>
       <dl>
         <dt><kbd>{cmd}</kbd></dt>

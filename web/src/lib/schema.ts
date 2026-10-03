@@ -147,6 +147,8 @@ const SCHEMA: Record<string, Group[]> = {
     style(fill, stroke),
   ],
   group: [shape("Layout", [anchor(), { key: "padding", kind: "number", step: 0.1, default: "0", help: "Space around the bounds" }]), style(fill, stroke)],
+  // Keeps transforms and styles inside its body; it takes no options.
+  scope: [],
   "merge-path": [
     shape("Shape", [
       close,

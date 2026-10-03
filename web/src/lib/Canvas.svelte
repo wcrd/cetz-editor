@@ -5,7 +5,7 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, type Call, type Edit } from "./scene";
+  import { baseName, STATE_CALLS, type Call, type Edit } from "./scene";
   import { num } from "./format";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
@@ -47,6 +47,7 @@
         edit?: Edit;
       }
     | { kind: "marquee"; start: Point; end: Point; base: number[]; basePoints: number[] }
+    | { kind: "rotate"; spin: Spin; from: number; angle: number; edit?: Edit }
     | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
   let drag = $state<Drag>();
 
@@ -306,6 +307,102 @@
     const probe = editor.probes.find((p) => p.name === name.split(".").pop());
     const value = probe?.anchors[anchor] ?? (anchor === "default" ? probe?.anchors["center"] : undefined);
     return probe && isVec(value) ? editor.toPage(frameOf(probe), value) : undefined;
+  }
+
+  // --- Rotation -------------------------------------------------------------
+
+  /**
+   * How the selected shape turns: by its own `angle:` (polygons, stars,
+   * text), by the `rotate(..)` its scope or group starts with, or by
+   * wrapping it in `scope({ rotate(..) .. })` the first time. `pivot` is on
+   * the page, `angle` is the current one in degrees, and `sign` is -1 when
+   * the frame is mirrored, so CeTZ's counter-clockwise is clockwise on screen.
+   */
+  type Spin = { pivot: Point; angle: number; sign: number; edit: (angle: number) => Edit | undefined };
+
+  /** Degrees from an angle's source text (`30deg`, `0.5rad`), or undefined. */
+  function degrees(text: string): number | undefined {
+    const m = /^\s*(-?[\d.]+)\s*(deg|rad)\s*$/.exec(text);
+    if (!m) return undefined;
+    return m[2] === "deg" ? Number(m[1]) : (Number(m[1]) * 180) / Math.PI;
+  }
+
+  const OWN_ANGLE = new Set(["polygon", "n-star", "content"]);
+
+  /** -1 when a transform mirrors (so angles turn the other way on the page), else 1. */
+  function handedness(m: number[][] | undefined): number {
+    return m && m[0][0] * m[1][1] - m[0][1] * m[1][0] < 0 ? -1 : 1;
+  }
+
+  const spin = $derived.by((): Spin | undefined => {
+    if (editor.selected.length !== 1) return undefined;
+    const call = editor.callById.get(editor.selected[0]);
+    const probe = call && probeOf.get(call.id);
+    const base = call && baseName(call.callee);
+    if (!call || !probe || !base || call.in_loop || STATE_CALLS.has(base) || probe.drawables.length === 0) return undefined;
+    const sign = handedness(probe.transform);
+    const center = isVec(probe.anchors.center) ? editor.toPage(frameOf(probe), probe.anchors.center) : undefined;
+
+    if (OWN_ANGLE.has(base)) {
+      const arg = call.args.find((a) => a.key === "angle");
+      const angle = arg ? degrees(arg.text) : 0;
+      const at = call.args.findIndex((a) => a.key === null);
+      const pivot = (at >= 0 ? argHandle(call, probe, at)?.point : undefined) ?? center;
+      if (angle === undefined || !pivot) return undefined;
+      return { pivot, angle, sign, edit: (a) => ({ kind: "set-named", call: call.id, key: "angle", text: a ? `${num(a)}deg` : null }) };
+    }
+
+    // A scope or group that starts with a rotation turns by it; so does a
+    // shape that's alone in such a scope (when you've entered it).
+    const turner = (c: Call) => {
+      const children = editor.calls.filter((k) => k.parent === c.id).sort((a, b) => a.id - b.id);
+      const kind = baseName(c.callee);
+      return (kind === "scope" || kind === "group") && children[0] && baseName(children[0].callee) === "rotate" ? children : undefined;
+    };
+    const parent = call.parent !== null ? editor.callById.get(call.parent) : undefined;
+    const inParent = parent && baseName(parent.callee) === "scope" ? turner(parent) : undefined;
+    const owner = turner(call) ? call : inParent?.length === 2 ? parent : undefined;
+    const ownerProbe = owner && probeOf.get(owner.id);
+    if (owner && ownerProbe) {
+      const first = turner(owner)![0];
+      const at = first.args.findIndex((a) => a.key === null);
+      const angle = at >= 0 ? degrees(first.args[at].text) : undefined;
+      const origin = first.args.find((a) => a.key === "origin")?.value;
+      if (angle === undefined || (origin && origin.type !== "coord")) return undefined;
+      const pivot = localToPage(ownerProbe, origin?.type === "coord" ? [origin.x, origin.y] : [0, 0]);
+      return { pivot, angle, sign: handedness(ownerProbe.transform), edit: (a) => ({ kind: "set-arg-text", call: first.id, arg: at, text: `${num(a)}deg` }) };
+    }
+
+    const b = probeBounds(probe);
+    const pivot = center ?? (b && editor.toPage(frameOf(probe), [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]));
+    if (!pivot) return undefined;
+    const [x, y] = pageToLocal(frameOf(probe), probe.transform, pivot);
+    return { pivot, angle: 0, sign, edit: (a) => (a ? { kind: "rotate", call: call.id, angle: a, x, y } : undefined) };
+  });
+
+  /** The rotation handle: a knob above the selection. */
+  const spinHandle = $derived.by((): { knob: Point; stem: Point } | undefined => {
+    if (!spin || !selectionBox || editor.tool !== "select" || (drag && drag.kind !== "rotate")) return undefined;
+    const x = (selectionBox.x0 + selectionBox.x1) / 2;
+    return { stem: [x, selectionBox.y0], knob: [x, selectionBox.y0 - 22 / editor.zoom] };
+  });
+
+  /** The pointer is over the rotation handle. */
+  let nearSpin = $state(false);
+
+  function overSpin(p: Point): boolean {
+    return !!spinHandle && Math.hypot(p[0] - spinHandle.knob[0], p[1] - spinHandle.knob[1]) * editor.zoom < 9;
+  }
+
+  /** Counter-clockwise degrees of `p` around `c`, on the page. */
+  function pageAngle(c: Point, p: Point): number {
+    return (Math.atan2(c[1] - p[1], p[0] - c[0]) * 180) / Math.PI;
+  }
+
+  /** Degrees in (-180, 180]. */
+  function wrapAngle(a: number): number {
+    const w = ((a % 360) + 360) % 360;
+    return w > 180 ? w - 360 : w;
   }
 
   /** Anchors you can snap to: top-level shapes outside loops. */
@@ -810,6 +907,11 @@
       return;
     }
 
+    if (spin && overSpin(p)) {
+      drag = { kind: "rotate", spin, from: pageAngle(spin.pivot, p), angle: spin.angle };
+      return;
+    }
+
     const target = e.target as Element;
     const grab = grabAt(p);
     if (grab && "handle" in grab) {
@@ -884,8 +986,9 @@
     }
     if (!drag) {
       // A point in reach takes the pointer from the shape under it.
-      nearGrab = editor.tool === "select" && !spaceHeld ? grabAt(p) : undefined;
-      const hit = nearGrab ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
+      nearSpin = editor.tool === "select" && !spaceHeld && overSpin(p);
+      nearGrab = editor.tool === "select" && !spaceHeld && !nearSpin ? grabAt(p) : undefined;
+      const hit = nearGrab || nearSpin ? null : (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
       editor.hoverSource = "canvas";
       editor.hovered = hit ? Number(hit) : undefined;
       editor.hoveredPoint = nearGrab ? ("point" in nearGrab ? nearGrab.point : nearGrab.handle.shared) : undefined;
@@ -978,6 +1081,16 @@
         }
         break;
       }
+      case "rotate": {
+        const { spin } = drag;
+        let angle = wrapAngle(spin.angle + spin.sign * (pageAngle(spin.pivot, p) - drag.from));
+        if (!mods.free) angle = wrapAngle(Math.round(angle / 15) * 15);
+        drag.angle = angle;
+        drag.edit = angle === spin.angle ? undefined : spin.edit(angle);
+        if (drag.edit) editor.previewEdit(drag.edit);
+        else editor.endDrag();
+        break;
+      }
       case "create": {
         if (mods.angle && isLineTool()) {
           const from = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -1024,6 +1137,7 @@
         else if (d.group?.length) editor.pointSelection = [d.point];
         break;
       case "handle":
+      case "rotate":
         editor.endDrag(d.edit);
         break;
       case "create":
@@ -1356,7 +1470,9 @@
   }
 
   const cursor = $derived(
-    drag?.kind === "pan" || spaceHeld || nearGrab
+    drag?.kind === "rotate"
+      ? "grabbing"
+      : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin
       ? "grab"
       : editor.tool !== "select"
         ? "crosshair"
@@ -1450,6 +1566,14 @@
             />
           {/if}
         </g>
+
+        {#if drag?.kind === "rotate"}
+          {@const pivot = drag.spin.pivot}
+          <path class="spin-guide" d="M{pivot[0] - 5 / editor.zoom},{pivot[1]} h{10 / editor.zoom} M{pivot[0]},{pivot[1] - 5 / editor.zoom} v{10 / editor.zoom}" />
+        {:else if spinHandle}
+          <line class="spin-stem" x1={spinHandle.stem[0]} y1={spinHandle.stem[1]} x2={spinHandle.knob[0]} y2={spinHandle.knob[1]} />
+          <circle class="handle spin" class:near={nearSpin} cx={spinHandle.knob[0]} cy={spinHandle.knob[1]} r={4.5 / editor.zoom} />
+        {/if}
 
         {#each markers as m (m.id)}
           <g class="point" class:hovered={editor.hoveredPoint === m.id} class:picked={m.selected} data-point={m.id}>
@@ -1687,6 +1811,18 @@
     fill: color-mix(in srgb, var(--snap) 12%, transparent);
     stroke: var(--snap);
     stroke-width: 2.5;
+    pointer-events: none;
+  }
+  .spin-stem {
+    stroke: var(--accent);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+  .spin-guide {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
     pointer-events: none;
   }
   .selection-box {

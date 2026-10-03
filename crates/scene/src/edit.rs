@@ -70,6 +70,11 @@ pub enum Edit {
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
+    /// Wrap a call in `scope({ rotate(<angle>deg, origin: (x, y)) ... })`, so
+    /// it turns `angle` degrees about `(x, y)` in its own frame. Unlike a
+    /// group, a scope lets the names inside it be used outside, so nothing
+    /// that refers to the call changes. `created` holds the scope.
+    Rotate { call: usize, angle: f64, x: f64, y: f64 },
     /// Wrap the calls in a named `group(name: "group", { ... })` where the
     /// first of them is. They must sit in the same block; later ones move up
     /// to join it. References from outside to their names become
@@ -355,6 +360,23 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
         Edit::Group { calls } => {
             group(source, &scene, calls, &mut patches, &mut created)?;
         }
+        Edit::Rotate { call, angle, x, y } => {
+            let call = find_call(&scene, *call)?;
+            if call.in_loop {
+                return Err("can't rotate a shape inside a loop".into());
+            }
+            let rotate = format!("rotate({}deg, origin: ({}, {}))", num(*angle), num(*x), num(*y));
+            let indent = indent_at(source, call.range.start);
+            let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+            let text = &source[call.range.clone()];
+            let text = if source[line_start..call.range.start].trim().is_empty() {
+                format!("scope({{\n{indent}  {rotate}\n{indent}  {}\n{indent}}})", text.replace('\n', "\n  "))
+            } else {
+                format!("scope({{ {rotate}; {text} }})")
+            };
+            created.push((patches.len(), 0));
+            patches.push(patch(call.range.clone(), text));
+        }
         Edit::Ungroup { calls } => {
             let mut names = Vec::new();
             for group in outermost(&scene, calls)? {
@@ -477,6 +499,16 @@ fn base_name(callee: &str) -> &str {
 /// Moves the calls' own literal coordinates and the shared points they use.
 fn move_calls(scene: &Scene, calls: &[&Call], dx: f64, dy: f64, detach: bool, patches: &mut Vec<Patch>) {
     let mut points = std::collections::BTreeSet::new();
+    // A rotation's literal `origin:` moves with what it turns, so the turned
+    // shapes move by the same amount instead of along the rotated axes.
+    for call in calls.iter().filter(|c| base_name(&c.callee) == "rotate") {
+        for arg in call.args.iter().filter(|a| a.key.as_deref() == Some("origin") && a.point.is_none()) {
+            if let Value::Coord { x, y, x_range, y_range } = &arg.value {
+                patches.push(patch(x_range.clone(), num(x + dx)));
+                patches.push(patch(y_range.clone(), num(y + dy)));
+            }
+        }
+    }
     for call in calls.iter().filter(|c| !TRANSFORMS.contains(&base_name(&c.callee))) {
         for arg in call.args.iter().filter(|a| a.key.is_none()) {
             match (&arg.value, arg.point) {
@@ -1462,6 +1494,22 @@ mod tests {
         let out = run(Edit::Move { calls: vec![id("group"), id("rect")], dx: 2.0, dy: 0.0, detach: false });
         assert!(out.source.contains("rect((2,0), (3,1))"));
         assert!(out.source.contains("rotate(30deg)"));
+    }
+
+    #[test]
+    fn rotate_wraps_the_call_in_a_scope() {
+        let out = run(Edit::Rotate { call: id("content"), angle: 30.0, x: 2.0, y: 3.0 });
+        assert!(out.source.contains("  scope({\n    rotate(30deg, origin: (2, 3))\n    content((2, 3), [Hi])\n  })"), "{}", out.source);
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 6], "scope(");
+        assert!(apply(SRC, &Edit::Rotate { call: id("circle"), angle: 30.0, x: 0.0, y: 0.0 }).is_err());
+    }
+
+    #[test]
+    fn move_carries_a_rotation_origin() {
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  scope({\n    rotate(30deg, origin: (1, 1))\n    rect((0, 0), (2, 2))\n  })\n})";
+        let out = apply(src, &Edit::Move { calls: vec![src.find("scope(").unwrap()], dx: 1.0, dy: 0.5, detach: false }).unwrap();
+        assert!(out.source.contains("rotate(30deg, origin: (2, 1.5))"), "{}", out.source);
+        assert!(out.source.contains("rect((1, 0.5), (3, 2.5))"), "{}", out.source);
     }
 
     #[test]
