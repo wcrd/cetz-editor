@@ -25,6 +25,14 @@ pub enum Edit {
     },
     /// Move a shared point's definition; every use follows.
     SetPoint { point: usize, x: f64, y: f64 },
+    /// Move several shared points' definitions by `(dx, dy)` canvas units.
+    MovePoints { points: Vec<usize>, dx: f64, dy: f64 },
+    /// Delete shared points' definitions (an `anchor(..)` call, a `let`, or a
+    /// dictionary entry), and any `anchor("A", pts.A)` that only names one.
+    /// Arguments that used them get the point's position as a literal
+    /// coordinate, so the drawing doesn't change. Fails rather than leave a
+    /// reference the editor can't rewrite (say, a name inside a loop's data).
+    DeletePoints { points: Vec<usize> },
     /// Create a named point at `(x, y)`. It joins a points dictionary that an
     /// anchor loop names (`pts = (..., I: (x, y))`) when the canvas has one,
     /// else becomes `anchor("P1", (x, y))` before the first draw call.
@@ -88,6 +96,22 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let p = scene.point(*point).ok_or_else(|| format!("no shared point at offset {point}"))?;
             patches.push(patch(p.x_range.clone(), num(*x)));
             patches.push(patch(p.y_range.clone(), num(*y)));
+        }
+        Edit::MovePoints { points, dx, dy } => {
+            let mut ids = points.clone();
+            ids.sort_unstable();
+            ids.dedup();
+            for id in ids {
+                let p = scene.point(id).ok_or_else(|| format!("no shared point at offset {id}"))?;
+                patches.push(patch(p.x_range.clone(), num(p.x + dx)));
+                patches.push(patch(p.y_range.clone(), num(p.y + dy)));
+            }
+        }
+        Edit::DeletePoints { points } => {
+            delete_points(source, &scene, points, &mut patches)?;
+            let result = finish(source, patches, created)?;
+            check_unreferenced(source, &scene, points, &result)?;
+            return Ok(result);
         }
         Edit::AddPoint { canvas, x, y, name } => {
             let canvas = match canvas {
@@ -352,6 +376,158 @@ fn move_calls(scene: &Scene, calls: &[&Call], dx: f64, dy: f64, detach: bool, pa
         if dy != 0.0 {
             patches.push(patch(p.y_range.clone(), num(p.y + dy)));
         }
+    }
+}
+
+/// Removes the points' definitions and inlines their uses (see `Edit::DeletePoints`).
+fn delete_points(source: &str, scene: &Scene, ids: &[usize], patches: &mut Vec<Patch>) -> Result<(), String> {
+    let doomed: Vec<&crate::Point> =
+        ids.iter().map(|&id| scene.point(id).ok_or_else(|| format!("no shared point at offset {id}"))).collect::<Result<_, _>>()?;
+    let is_doomed = |id: Option<usize>| id.is_some_and(|id| doomed.iter().any(|p| p.id == id));
+    let calls: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).collect();
+    let mut removed: Vec<Range<usize>> = Vec::new();
+
+    // `anchor("A", ..)` calls that define or name a doomed point go entirely.
+    for call in calls.iter().filter(|c| base_name(&c.callee) == "anchor") {
+        if call.args.get(1).is_some_and(|a| is_doomed(a.point) || doomed.iter().any(|p| p.range == a.value_range)) {
+            removed.push(statement_range(source, &call.range));
+        }
+    }
+
+    // Other definitions: a `let`, or entries of a dictionary.
+    let root = typst_syntax::parse(source);
+    let root = LinkedNode::new(&root);
+    let mut dicts: Vec<(LinkedNode, Vec<Range<usize>>)> = Vec::new();
+    for p in &doomed {
+        if removed.iter().any(|r| r.start <= p.range.start && p.range.end <= r.end) {
+            continue;
+        }
+        let parent = find_node(&root, &p.range, SyntaxKind::Array).and_then(|n| n.parent().cloned());
+        match parent.as_ref().map(|n| n.kind()) {
+            Some(SyntaxKind::LetBinding) => {
+                let mut range = parent.unwrap().range();
+                if source[..range.start].ends_with('#') {
+                    range.start -= 1;
+                }
+                removed.push(statement_range(source, &range));
+            }
+            Some(SyntaxKind::Named) => {
+                let entry = parent.unwrap();
+                let dict = entry.parent().cloned().ok_or("dictionary entry outside a dictionary")?;
+                match dicts.iter_mut().find(|(d, _)| d.range() == dict.range()) {
+                    Some((_, entries)) => entries.push(entry.range()),
+                    None => dicts.push((dict, vec![entry.range()])),
+                }
+            }
+            Some(SyntaxKind::Array) => {
+                return Err(format!("can't delete {}: it's an item of an array, and the items after it would shift", p.path));
+            }
+            _ => return Err(format!("can't find where {} is defined", p.path)),
+        }
+    }
+    for (dict, doomed_entries) in &dicts {
+        let entries: Vec<Range<usize>> = dict.children().filter(|c| c.kind() == SyntaxKind::Named).map(|c| c.range()).collect();
+        let gone = |r: &Range<usize>| doomed_entries.contains(r);
+        if entries.iter().all(gone) {
+            removed.push(dict.range().start..dict.range().start);
+            patches.push(patch(dict.range(), "(:)".into()));
+            continue;
+        }
+        // Each run of removed entries takes the separator before it (or, at
+        // the start, the one after it) so the commas stay right.
+        let mut i = 0;
+        while i < entries.len() {
+            if !gone(&entries[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < entries.len() && gone(&entries[i]) {
+                i += 1;
+            }
+            let range = if start > 0 { entries[start - 1].end..entries[i - 1].end } else { entries[start].start..entries[i].start };
+            removed.push(range);
+        }
+    }
+    for range in &removed {
+        if !range.is_empty() {
+            patches.push(patch(range.clone(), String::new()));
+        }
+    }
+
+    // Uses left behind keep the position as a literal.
+    let inside_removed = |r: &Range<usize>| removed.iter().any(|d| d.start <= r.start && r.end <= d.end && !d.is_empty())
+        || dicts.iter().any(|(d, _)| d.range().start <= r.start && r.end <= d.range().end);
+    for arg in calls.iter().flat_map(|c| &c.args) {
+        let Some(p) = doomed.iter().find(|p| Some(p.id) == arg.point) else { continue };
+        if arg.value_range == p.range || inside_removed(&arg.value_range) {
+            continue;
+        }
+        patches.push(patch(arg.value_range.clone(), format!("({}, {})", num(p.x), num(p.y))));
+    }
+    Ok(())
+}
+
+/// Fails if the edited source still refers to a deleted point by name.
+fn check_unreferenced(source: &str, scene: &Scene, ids: &[usize], result: &EditResult) -> Result<(), String> {
+    let doomed: Vec<&crate::Point> = ids.iter().filter_map(|&id| scene.point(id)).collect();
+    let root = typst_syntax::parse(&result.source);
+    let mut found = None;
+    find_reference(&LinkedNode::new(&root), &doomed, &mut found);
+    match found {
+        Some((name, offset)) => {
+            // Report the line in the source as it stands, since the edit won't apply.
+            let mut shift = 0isize;
+            for p in &result.patches {
+                if (p.start as isize + shift) + p.text.len() as isize > offset as isize {
+                    break;
+                }
+                shift += p.text.len() as isize - (p.end - p.start) as isize;
+            }
+            let original = (offset as isize - shift) as usize;
+            let line = source[..original].matches('\n').count() + 1;
+            Err(format!("can't delete {name}: line {line} still refers to it in a way the editor can't rewrite"))
+        }
+        None => Ok(()),
+    }
+}
+
+fn find_reference<'a>(node: &LinkedNode, doomed: &[&'a crate::Point], found: &mut Option<(&'a str, usize)>) {
+    if found.is_some() {
+        return;
+    }
+    let text = node.get().full_text();
+    for p in doomed {
+        let hit = match node.kind() {
+            // An anchor name, alone or with one of its anchors: "A", "A.east".
+            SyntaxKind::Str => node.get().cast::<typst_syntax::ast::Str>().is_some_and(|s| {
+                let s = s.get();
+                p.anchors.iter().any(|a| s == a.as_str() || s.strip_prefix(a.as_str()).is_some_and(|rest| rest.starts_with('.')))
+            }),
+            SyntaxKind::FieldAccess => p.path.contains('.') && text == p.path.as_str(),
+            // A `let` name in use: not a key, a binding, or the field in `x.A`.
+            SyntaxKind::Ident => !p.path.contains('.') && p.anchors.is_empty() && text == p.path.as_str() && !names_something(node),
+            _ => false,
+        };
+        if hit {
+            *found = Some((p.path.as_str(), node.offset()));
+            return;
+        }
+    }
+    for child in node.children() {
+        find_reference(&child, doomed, found);
+    }
+}
+
+/// Whether an identifier is a name being given (a key or a `let` binding) or
+/// a field after a dot, rather than a variable being read.
+fn names_something(ident: &LinkedNode) -> bool {
+    let Some(parent) = ident.parent() else { return false };
+    let first = parent.children().find(|c| c.kind() == SyntaxKind::Ident).is_some_and(|c| c.offset() == ident.offset());
+    match parent.kind() {
+        SyntaxKind::Named | SyntaxKind::LetBinding => first,
+        SyntaxKind::FieldAccess => !first,
+        _ => false,
     }
 }
 
@@ -764,6 +940,58 @@ mod tests {
         let call = shared_id(SHARED, r#"line("A""#);
         let out = apply(SHARED, &Edit::Duplicate { calls: vec![call], dx: 0.5, dy: 0.0 }).unwrap();
         assert!(out.source.contains("line(\"A\", \"B\")\n  line((0.5, 0), (2.5, 0))"), "{}", out.source);
+    }
+
+    fn point_id(src: &str, path: &str) -> usize {
+        crate::parse(src).points.iter().find(|p| p.path == path).unwrap().id
+    }
+
+    #[test]
+    fn delete_points_inlines_anchor_uses() {
+        let src = "#canvas({\n  import draw: *\n  anchor(\"P1\", (1, 2))\n  anchor(\"P2\", (3, 4))\n  line(\"P1\", \"P2\")\n})\n";
+        let out = apply(src, &Edit::DeletePoints { points: vec![point_id(src, "P1")] }).unwrap();
+        assert_eq!(out.source, "#canvas({\n  import draw: *\n  anchor(\"P2\", (3, 4))\n  line((1, 2), \"P2\")\n})\n");
+        // Both at once: no anchors left, both uses literal.
+        let both = vec![point_id(src, "P1"), point_id(src, "P2")];
+        let out = apply(src, &Edit::DeletePoints { points: both }).unwrap();
+        assert_eq!(out.source, "#canvas({\n  import draw: *\n  line((1, 2), (3, 4))\n})\n");
+    }
+
+    #[test]
+    fn delete_points_removes_dictionary_entries() {
+        let src = "#canvas({\n  import draw: *\n  let pts = (A: (0, 0), B: (1, 0), C: (1, 1))\n  for (k, p) in pts { anchor(k, p) }\n  line(\"A\", pts.B, \"C\")\n})\n";
+        let del = |paths: &[&str]| apply(src, &Edit::DeletePoints { points: paths.iter().map(|p| point_id(src, p)).collect() }).unwrap().source;
+        assert!(del(&["pts.B"]).contains("let pts = (A: (0, 0), C: (1, 1))\n"), "{}", del(&["pts.B"]));
+        assert!(del(&["pts.B"]).contains("line(\"A\", (1, 0), \"C\")"));
+        assert!(del(&["pts.A", "pts.B"]).contains("let pts = (C: (1, 1))"), "{}", del(&["pts.A", "pts.B"]));
+        assert!(del(&["pts.A", "pts.B", "pts.C"]).contains("let pts = (:)\n"));
+        assert!(del(&["pts.A", "pts.B", "pts.C"]).contains("line((0, 0), (1, 0), (1, 1))"));
+    }
+
+    #[test]
+    fn delete_points_removes_lets() {
+        let src = "#let O = (0, 0)\n#canvas({\n  import draw: *\n  circle(O)\n})\n";
+        let out = apply(src, &Edit::DeletePoints { points: vec![point_id(src, "O")] }).unwrap();
+        assert_eq!(out.source, "#canvas({\n  import draw: *\n  circle((0, 0))\n})\n");
+    }
+
+    #[test]
+    fn delete_points_refuses_to_leave_dangling_names() {
+        // The loop's data names "A"; the editor can't rewrite that.
+        let src = "#canvas({\n  import draw: *\n  anchor(\"A\", (0, 0))\n  anchor(\"B\", (1, 0))\n  for (a, b) in ((\"A\", \"B\"),) { line(a, b) }\n})\n";
+        let err = apply(src, &Edit::DeletePoints { points: vec![point_id(src, "A")] }).unwrap_err();
+        assert!(err.contains("line 5"), "{err}");
+        // Array items would renumber the rest.
+        let src = "#let ps = ((0, 0), (1, 1))\n#canvas({ import draw: *; line(..ps) })\n";
+        assert!(apply(src, &Edit::DeletePoints { points: vec![point_id(src, "ps[0]")] }).is_err());
+    }
+
+    #[test]
+    fn move_points_shifts_each_once() {
+        let src = "#canvas({\n  import draw: *\n  anchor(\"P1\", (1, 2))\n  anchor(\"P2\", (3, 4))\n})\n";
+        let (p1, p2) = (point_id(src, "P1"), point_id(src, "P2"));
+        let out = apply(src, &Edit::MovePoints { points: vec![p1, p2, p1], dx: 0.5, dy: -1.0 }).unwrap();
+        assert!(out.source.contains("anchor(\"P1\", (1.5, 1))") && out.source.contains("anchor(\"P2\", (3.5, 3))"), "{}", out.source);
     }
 
     #[test]
