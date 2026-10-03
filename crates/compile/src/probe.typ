@@ -38,6 +38,8 @@
       name: element.at("name", default: none),
       drawables: geometry,
       anchors: anchors,
+      // Maps the call's own coordinates to canvas coordinates (4x4, rows).
+      transform: ctx.transform,
       length: ctx.length / 1pt,
     )
     let probe = (

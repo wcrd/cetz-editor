@@ -1,246 +1,418 @@
 <script lang="ts">
   import fixture from "../../fixtures/zone_diagram.typ?raw";
-  import { call_end, summarize } from "./lib/core";
-  import { TypstCompiler, type CompilerStatus } from "./lib/compiler";
-  import type { Probe } from "./lib/probe";
-  import ProbeOverlay from "./lib/ProbeOverlay.svelte";
+  import Canvas from "./lib/Canvas.svelte";
+  import CodeEditor from "./lib/CodeEditor.svelte";
+  import Inspector from "./lib/Inspector.svelte";
+  import { Editor, type Tool } from "./lib/editor.svelte";
 
-  let source = $state(fixture);
-  let status = $state<CompilerStatus>({ kind: "loading" });
-  // Keep showing the last good render while recompiling or on errors.
-  let svg = $state<string>();
-  let probes = $state<Probe[]>([]);
-  let showGeometry = $state(true);
-  let hovered = $state<number>();
-  let textarea: HTMLTextAreaElement;
+  const editor = new Editor(fixture);
+  $effect(() => () => editor.dispose());
+  // Handy for poking at state from the console during development.
+  if (import.meta.env.DEV) (window as unknown as { editor: Editor }).editor = editor;
 
-  let viewBox = $derived(svg && /viewBox="([^"]+)"/.exec(svg)?.[1]);
-
-  let summary = $derived.by(() => {
-    const s = summarize(source);
-    const result = { nodes: s.nodes, errors: s.errors, lossless: s.lossless };
-    s.free();
-    return result;
-  });
-
-  const compiler = new TypstCompiler((next) => {
-    status = next;
-    if (next.kind === "done" && next.svg) {
-      svg = next.svg;
-      probes = next.probes ?? [];
-    }
-  });
-
+  // Compile on every change: immediately while dragging, debounced while typing.
   $effect(() => {
-    const text = source;
-    const timer = setTimeout(() => {
-      if (status.kind === "done") status = { kind: "compiling" };
-      compiler.compile(text);
-    }, 150);
+    void editor.source;
+    if (editor.draft) {
+      editor.compile();
+      return;
+    }
+    const timer = setTimeout(() => editor.compile(), 120);
     return () => clearTimeout(timer);
   });
 
-  $effect(() => () => compiler.dispose());
+  const tools: { id: Tool; label: string; key: string; icon: string }[] = [
+    { id: "select", label: "Select", key: "V", icon: "M5 3l13 8-6 1.5L9 19z" },
+    { id: "line", label: "Line", key: "L", icon: "M5 19L19 5" },
+    { id: "arrow", label: "Arrow", key: "A", icon: "M5 19L19 5M11 5h8v8" },
+    { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
+    { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
+    { id: "text", label: "Text", key: "T", icon: "M5 6V4h14v2M12 4v16M9 20h6" },
+  ];
 
-  // Probe ids are UTF-8 byte offsets; the textarea counts UTF-16 units.
-  function utf16Index(text: string, byteOffset: number): number {
-    return new TextDecoder().decode(new TextEncoder().encode(text).slice(0, byteOffset)).length;
+  function isEditingText(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    return !!el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || !!el.closest?.(".cm-editor"));
   }
 
-  /** Selects the draw call that produced a shape in the source pane. */
-  function selectCall(id: number) {
-    const end = call_end(source, id) ?? id;
-    textarea.focus();
-    textarea.setSelectionRange(utf16Index(source, id), utf16Index(source, end));
-    // Scroll the selection into view.
-    const line = source.slice(0, utf16Index(source, id)).split("\n").length - 1;
-    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
-    textarea.scrollTop = Math.max(0, line * lineHeight - textarea.clientHeight / 3);
+  function onkeydown(e: KeyboardEvent) {
+    const mod = e.metaKey || e.ctrlKey;
+    const typing = isEditingText(e.target);
+
+    if (mod && e.key.toLowerCase() === "z" && !typing) {
+      e.preventDefault();
+      if (e.shiftKey) editor.code?.redo();
+      else editor.code?.undo();
+      return;
+    }
+    if (mod && e.key.toLowerCase() === "y" && !typing) {
+      e.preventDefault();
+      editor.code?.redo();
+      return;
+    }
+    if (mod && (e.key === "=" || e.key === "+")) {
+      e.preventDefault();
+      editor.viewport?.zoomBy(1.25);
+      return;
+    }
+    if (mod && e.key === "-") {
+      e.preventDefault();
+      editor.viewport?.zoomBy(0.8);
+      return;
+    }
+    if (mod && e.key === "0") {
+      e.preventDefault();
+      editor.viewport?.fit();
+      return;
+    }
+    if (typing) return;
+
+    if (mod && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      if (editor.selected.length) editor.edit({ kind: "duplicate", calls: editor.selected, dx: 0.5, dy: -0.5 });
+      return;
+    }
+    if (mod && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      editor.selection = editor.calls.filter((c) => editor.isSelectable(c)).map((c) => c.id);
+      return;
+    }
+    if (mod) return;
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (editor.selected.length) editor.edit({ kind: "delete", calls: editor.selected });
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (editor.draft) editor.endDrag();
+      else if (editor.tool !== "select") editor.tool = "select";
+      else if (editor.selected.length) editor.selection = [];
+      else editor.scope = undefined;
+      return;
+    }
+    const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
+    if (arrows[e.key] && editor.selected.length) {
+      e.preventDefault();
+      const step = e.shiftKey ? 1 : editor.gridStep;
+      const [dx, dy] = arrows[e.key];
+      editor.edit({ kind: "move", calls: editor.selected, dx: dx * step, dy: dy * step });
+      return;
+    }
+    const tool = tools.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+    if (tool) {
+      editor.tool = tool.id;
+      return;
+    }
+    if (e.key === "g") editor.showGrid = !editor.showGrid;
   }
 
-  let hoveredLabel = $derived.by(() => {
-    if (hovered === undefined) return undefined;
-    const probe = probes.find((p) => p.id === hovered);
-    const prefix = source.slice(0, utf16Index(source, hovered));
-    const line = prefix.split("\n").length;
-    const call = source.slice(utf16Index(source, hovered)).match(/^[\w.-]+/)?.[0];
-    return `${call}(…) at line ${line}${probe?.name ? ` · name: "${probe.name}"` : ""}`;
-  });
-
-  function plural(n: number, word: string) {
-    return `${n} ${word}${n === 1 ? "" : "s"}`;
-  }
-
-  let compileLabel = $derived.by(() => {
-    switch (status.kind) {
+  const compileLabel = $derived.by(() => {
+    const s = editor.status;
+    switch (s.kind) {
       case "loading":
-        return "loading compiler…";
+        return "Loading compiler…";
       case "compiling":
-        return "compiling…";
+        return "Compiling…";
       case "fetching":
-        return `fetching ${status.packages.join(", ")}…`;
+        return `Fetching ${s.packages.join(", ")}…`;
       case "done": {
-        const errors = status.diagnostics.filter((d) => d.error).length;
-        return errors ? plural(errors, "compile error") : `compiled in ${status.ms.toFixed(0)} ms`;
+        const errors = s.diagnostics.filter((d) => d.error).length;
+        return errors ? `${errors} error${errors === 1 ? "" : "s"}` : `${s.ms.toFixed(0)} ms`;
       }
     }
   });
-
-  let diagnostics = $derived(status.kind === "done" ? status.diagnostics : []);
 </script>
 
-<main>
-  <header>
-    <h1>CeTZ Editor</h1>
-    <p class="status">
-      {summary.nodes} syntax nodes ·
-      {summary.errors.length === 0 ? "no syntax errors" : plural(summary.errors.length, "syntax error")} ·
-      {summary.lossless ? "lossless round-trip" : "round-trip mismatch"} ·
-      <span class="compile" class:failed={diagnostics.some((d) => d.error)}>{compileLabel}</span>
-    </p>
-    <label class="toggle"><input type="checkbox" bind:checked={showGeometry} /> Show CeTZ geometry</label>
-  </header>
-  <div class="panes">
-    <textarea bind:this={textarea} bind:value={source} spellcheck="false"></textarea>
-    <section class="preview" class:stale={diagnostics.some((d) => d.error)}>
-      {#if hoveredLabel}<span class="hovered">{hoveredLabel}</span>{/if}
-      {#if svg}
-        <div class="canvas">
-          {@html svg}
-          {#if showGeometry && viewBox}
-            <ProbeOverlay
-              {probes}
-              {viewBox}
-              {hovered}
-              onhover={(id) => (hovered = id)}
-              onselect={selectCall}
-            />
-          {/if}
-        </div>
-      {/if}
-    </section>
-  </div>
-  {#if diagnostics.length > 0}
-    <ul class="diagnostics">
-      {#each diagnostics as d}
-        <li class:error={d.error}>
-          {#if d.line !== undefined}<span class="loc"
-              >{d.file ?? "main.typ"}:{d.line + 1}:{(d.column ?? 0) + 1}</span
-            >{/if}
-          {d.message}
-        </li>
+<svelte:window {onkeydown} />
+
+<div class="app">
+  <header class="toolbar">
+    <div class="title">
+      <span class="file">{editor.fileName}</span>{#if editor.dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
+    </div>
+
+    <div class="group tools" role="toolbar" aria-label="Tools">
+      {#each tools as t}
+        <button
+          class="tool"
+          class:active={editor.tool === t.id}
+          title="{t.label} ({t.key})"
+          aria-label={t.label}
+          aria-pressed={editor.tool === t.id}
+          onclick={() => (editor.tool = t.id)}
+        >
+          <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
+        </button>
       {/each}
-    </ul>
-  {/if}
-</main>
+    </div>
+
+    <div class="group">
+      <button title="Undo (⌘Z)" aria-label="Undo" onclick={() => editor.code?.undo()}>
+        <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3" /></svg>
+      </button>
+      <button title="Redo (⇧⌘Z)" aria-label="Redo" onclick={() => editor.code?.redo()}>
+        <svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" /></svg>
+      </button>
+    </div>
+
+    <div class="group toggles">
+      <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
+      <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
+      <select bind:value={editor.gridStep} title="Grid step (canvas units)">
+        {#each [0.1, 0.25, 0.5, 1] as step}<option value={step}>{step}</option>{/each}
+      </select>
+    </div>
+
+    <div class="group zoom">
+      <button title="Zoom out (⌘−)" aria-label="Zoom out" onclick={() => editor.viewport?.zoomBy(0.8)}>−</button>
+      <button class="pct" title="Fit (⌘0)" onclick={() => editor.viewport?.fit()}>{Math.round(editor.zoom * 100)}%</button>
+      <button title="Zoom in (⌘+)" aria-label="Zoom in" onclick={() => editor.viewport?.zoomBy(1.25)}>+</button>
+    </div>
+
+    <div class="status" class:failed={editor.hasErrors}>{compileLabel}</div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <Canvas {editor} />
+      {#if editor.diagnostics.length > 0}
+        <ul class="diagnostics">
+          {#each editor.diagnostics as d}
+            <li class:error={d.error}>
+              {#if d.line !== undefined}<span class="loc">{d.file ?? editor.fileName}:{d.line + 1}:{(d.column ?? 0) + 1}</span>{/if}
+              {d.message}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if editor.notice}<div class="notice" role="status">{editor.notice}</div>{/if}
+    </section>
+    <aside class="side">
+      <div class="panel inspector"><Inspector {editor} /></div>
+      <div class="panel code"><CodeEditor {editor} /></div>
+    </aside>
+  </main>
+</div>
 
 <style>
+  :global(:root) {
+    --bg: #ffffff;
+    --panel: #f7f7f8;
+    --canvas-bg: #ececef;
+    --border: #e1e1e6;
+    --text: #1d1d22;
+    --muted: #6b6b76;
+    --accent: #2f6fed;
+    --snap: #e8590c;
+    --grid: rgba(47, 111, 237, 0.12);
+    --input-bg: #ffffff;
+    --button-bg: #ffffff;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) {
+      --bg: #1c1c20;
+      --panel: #232328;
+      --canvas-bg: #121215;
+      --border: #34343b;
+      --text: #e9e9ee;
+      --muted: #9a9aa6;
+      --accent: #6d9bff;
+      --snap: #ff8a3d;
+      --grid: rgba(109, 155, 255, 0.16);
+      --input-bg: #18181c;
+      --button-bg: #2a2a30;
+      color-scheme: dark;
+    }
+  }
+  :global(:root[data-theme="dark"]) {
+    --bg: #1c1c20;
+    --panel: #232328;
+    --canvas-bg: #121215;
+    --border: #34343b;
+    --text: #e9e9ee;
+    --muted: #9a9aa6;
+    --accent: #6d9bff;
+    --snap: #ff8a3d;
+    --grid: rgba(109, 155, 255, 0.16);
+    --input-bg: #18181c;
+    --button-bg: #2a2a30;
+    color-scheme: dark;
+  }
   :global(body) {
     margin: 0;
-    font-family: system-ui, sans-serif;
-    background: #fafafa;
-    color: #222;
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
   }
-  main {
+
+  .app {
     display: flex;
     flex-direction: column;
     height: 100vh;
-    padding: 16px;
-    box-sizing: border-box;
-    gap: 12px;
   }
-  header {
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-  }
-  h1 {
-    font-size: 1.1rem;
-    margin: 0;
-    white-space: nowrap;
-  }
-  .status {
-    margin: 0;
-    color: #666;
-    font-size: 0.9rem;
-    flex: 1;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .compile.failed {
-    color: #b00020;
-  }
-  .toggle {
-    font-size: 0.9rem;
+  .toolbar {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 14px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 13px;
+    min-height: 34px;
+  }
+  .title {
+    min-width: 0;
+    max-width: 220px;
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .file {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .hovered {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    z-index: 1;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: rgba(0, 0, 0, 0.75);
-    color: white;
-    font: 12px ui-monospace, monospace;
-    pointer-events: none;
+  .dirty {
+    color: var(--accent);
+    font-size: 10px;
   }
-  .panes {
+  .group {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+  }
+  .toolbar button,
+  .toolbar select {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0 6px;
+    cursor: pointer;
+  }
+  .toolbar select {
+    border-color: var(--border);
+    background: var(--input-bg);
+  }
+  .toolbar button:hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+  }
+  .toolbar button.active {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .toolbar svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    display: block;
+    margin: auto;
+  }
+  .toggles label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-right: 6px;
+    color: var(--muted);
+  }
+  .pct {
+    min-width: 52px !important;
+    font-variant-numeric: tabular-nums;
+  }
+  .status {
+    margin-left: auto;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .status.failed {
+    color: #d33;
+  }
+
+  main {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 400px;
   }
-  textarea,
-  .preview {
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: white;
-  }
-  textarea {
-    font: 13px/1.5 ui-monospace, monospace;
-    padding: 12px;
-    resize: none;
-  }
-  .preview {
+  .stage {
     position: relative;
-    overflow: auto;
-    padding: 16px;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
+    min-width: 0;
   }
-  .preview.stale {
-    opacity: 0.5;
+  .side {
+    display: grid;
+    grid-template-rows: minmax(160px, 45%) minmax(0, 1fr);
+    border-left: 1px solid var(--border);
+    background: var(--panel);
+    min-height: 0;
   }
-  .canvas {
-    position: relative;
-    max-width: 100%;
+  .panel {
+    min-height: 0;
+    overflow: hidden;
   }
-  .canvas > :global(svg:first-child) {
-    display: block;
-    max-width: 100%;
-    height: auto;
+  .panel.code {
+    border-top: 1px solid var(--border);
+    background: var(--bg);
   }
+
   .diagnostics {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
     margin: 0;
-    padding-left: 20px;
-    font-size: 0.9rem;
-    max-height: 20vh;
+    padding: 8px 12px 8px 28px;
+    max-height: 30%;
     overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    font-size: 12.5px;
   }
   .diagnostics .error {
-    color: #b00020;
+    color: #d33;
   }
   .loc {
     font-family: ui-monospace, monospace;
     margin-right: 8px;
+    color: var(--muted);
+  }
+  .notice {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: var(--bg);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12.5px;
+  }
+
+  @media (max-width: 760px) {
+    main {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr 45%;
+    }
+    .side {
+      border-left: none;
+      border-top: 1px solid var(--border);
+    }
+    .toggles,
+    .title {
+      display: none;
+    }
   }
 </style>

@@ -37,14 +37,30 @@ function toPlain(d: CompileOutput["diagnostics"][number]): Diagnostic {
   return plain;
 }
 
-self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
-  const { id, source } = e.data;
-  latest = id;
+let pending: WorkerRequest | undefined;
+
+// Requests queue up while a compile runs (e.g. during a drag). Defer to a
+// fresh task so all queued messages land first, then compile only the newest.
+self.onmessage = (e: MessageEvent<WorkerRequest>) => {
+  latest = e.data.id;
+  const first = pending === undefined;
+  pending = e.data;
+  if (first) setTimeout(() => {
+    const request = pending!;
+    pending = undefined;
+    run(request).catch((err) => {
+      // Always answer, or the editor waits on this compile forever.
+      console.error("compile failed", err);
+      post({ id: request.id, kind: "done", diagnostics: [{ error: true, message: `internal compiler error: ${err}` }], ms: 0 });
+    });
+  });
+};
+
+async function run({ id, source }: WorkerRequest) {
   const c = await compiler;
-  if (id !== latest) return;
 
   let ms = 0;
-  const run = () => {
+  const compile = () => {
     c.set_main(source);
     const start = performance.now();
     const out = c.compile();
@@ -52,7 +68,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     return out;
   };
 
-  let out = run();
+  let out = compile();
   const attempted = new Set<string>();
   for (;;) {
     const missing = out.missing_packages.filter((spec) => !attempted.has(spec));
@@ -68,7 +84,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     }
     // A newer request may have arrived while fetching; it takes over.
     if (id !== latest) return;
-    out = run();
+    out = compile();
   }
 
   const result = {
@@ -79,4 +95,4 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   };
   out.free();
   post({ id, kind: "done", ...result });
-};
+}

@@ -33,22 +33,29 @@ export type CompilerStatus =
   | { kind: "fetching"; packages: string[] }
   | ({ kind: "done" } & CompileResult);
 
-/** Compiles sources in a worker; only the latest request's result is reported. */
+/**
+ * Compiles sources in a worker. Requests that arrive while the worker is busy
+ * are coalesced; results are reported in order, never older than one already
+ * reported, tagged with the request id `compile` returned.
+ */
 export class TypstCompiler {
   #worker = new Worker(new URL("./compiler.worker.ts", import.meta.url), { type: "module" });
   #latest = 0;
+  #reported = 0;
 
-  constructor(onStatus: (status: CompilerStatus) => void) {
+  constructor(onStatus: (status: CompilerStatus, request: number) => void) {
     this.#worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
-      if (e.data.id !== this.#latest) return;
-      const { id: _, ...status } = e.data;
-      onStatus(status);
+      const { id, ...status } = e.data;
+      if (id < this.#reported) return;
+      this.#reported = id;
+      onStatus(status, id);
     };
   }
 
-  compile(source: string): void {
+  compile(source: string): number {
     const request: WorkerRequest = { id: ++this.#latest, source };
     this.#worker.postMessage(request);
+    return request.id;
   }
 
   dispose(): void {

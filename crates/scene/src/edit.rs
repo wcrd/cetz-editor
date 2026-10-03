@@ -23,6 +23,9 @@ pub enum Edit {
     Delete { calls: Vec<usize> },
     /// Append a statement to the end of a canvas body (default: the first).
     Insert { canvas: Option<usize>, text: String },
+    /// Point a coordinate argument at another call's anchor
+    /// (`"name.anchor"`), naming that call first if it has no name.
+    Connect { call: usize, arg: usize, target: usize, anchor: String },
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
@@ -94,6 +97,22 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (at, prefix, suffix) = insertion_point(source, canvas);
             created.push((patches.len(), prefix.len()));
             patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
+        }
+        Edit::Connect { call, arg, target, anchor } => {
+            if call == target {
+                return Err("can't connect a call to itself".into());
+            }
+            let arg = find_arg(&scene, *call, *arg)?;
+            let target = find_call(&scene, *target)?;
+            let name = match &target.name {
+                Some(name) => name.clone(),
+                None => {
+                    let name = unique_name(&scene, base_name(&target.callee));
+                    set_named(target, "name", Some(&format!("{name:?}")), &mut patches)?;
+                    name
+                }
+            };
+            patches.push(patch(arg.value_range.clone(), format!("{:?}", format!("{name}.{anchor}"))));
         }
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
@@ -272,6 +291,15 @@ fn insertion_point(source: &str, canvas: &scene::Canvas) -> (usize, String, Stri
     }
 }
 
+/// `base`, `base-2`, `base-3`, ... whichever isn't taken in the scene.
+fn unique_name(scene: &Scene, base: &str) -> String {
+    let taken = |n: &str| scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..).map(|i| format!("{base}-{i}")).find(|n| !taken(n)).unwrap()
+}
+
 /// The call's text with its coordinates shifted and its `name:` removed.
 fn duplicate_text(source: &str, scene: &Scene, call: &Call, dx: f64, dy: f64) -> Result<String, String> {
     let mut patches = Vec::new();
@@ -428,6 +456,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn connect_names_the_target_when_needed() {
+        let out = run(Edit::Connect { call: id("line"), arg: 0, target: id("content"), anchor: "west".into() });
+        assert!(out.source.contains(r#"line("content.west", (1.5,-2)"#), "{}", out.source);
+        assert!(out.source.contains(r#"content((2, 3), [Hi], name: "content")"#));
+        let out = run(Edit::Connect { call: id("content"), arg: 0, target: id("group"), anchor: "north".into() });
+        assert!(out.source.contains(r#"content("g.north", [Hi])"#));
+        assert!(apply(SRC, &Edit::Connect { call: id("line"), arg: 0, target: id("line"), anchor: "end".into() }).is_err());
     }
 
     #[test]
