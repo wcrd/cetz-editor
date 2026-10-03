@@ -9,6 +9,7 @@
     commit,
     code = true,
     title = "Color",
+    placeholder = "none",
     onkeydown,
   }: {
     /** The color expression, or "" when unset. */
@@ -17,6 +18,8 @@
     /** Also show the expression as an editable code box. */
     code?: boolean;
     title?: string;
+    /** Shown in the code box when unset: what CeTZ uses instead. */
+    placeholder?: string;
     onkeydown?: (e: KeyboardEvent) => void;
   } = $props();
 
@@ -33,7 +36,7 @@
     <input
       class="code"
       value={text}
-      placeholder="none"
+      {placeholder}
       onchange={(e) => commit(e.currentTarget.value.trim() || null)}
       {onkeydown}
       spellcheck="false"

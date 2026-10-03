@@ -164,10 +164,14 @@ editable here, other values show a summary and jump to the code) and
 (`line ×4`) and expand into those repetitions, read-only and labelled by the
 points they connect (`A → E`); hover or click one to highlight just it.
 
-The inspector edits coordinates, text, the name and any named argument.
-Common values get fields: text size, color, bold and italic for
-`text(5pt)[...]`, `strong[...]` and the like; color, thickness and dash for
-`stroke`; start and end marks; swatches for colors such as `luma(90%)` or
+The inspector lists every option the selected CeTZ function takes, set or
+not, with CeTZ's default shown when unset (`close` and `mark` for lines,
+`anchor`, `frame` and `padding` for content, `mode` for arcs, ...). Your own
+functions that forward to a CeTZ one, like `let face(..a) = line(..a)`, get
+that function's options. Values get fields: text size, color, bold, italic,
+font and weight for `text(5pt)[...]`, `strong[...]` and the like; color,
+thickness, dash, cap and join for `stroke`; start and end marks and their
+size and placement; swatches for colors such as `luma(90%)` or
 `orange.lighten(85%)`. Anything else, or any field after clicking `</>`, is
 edited as a Typst expression. Your last session is restored on reload, and you can
 drop a `.typ` file on the window to open it. Hover the file name to see whether

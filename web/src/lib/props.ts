@@ -177,8 +177,9 @@ export interface Stroke {
   entries: Entry[];
 }
 
-/** Reads `1pt`, `red`, `1pt + red`, `none` or `(paint: ..., dash: ...)`. */
+/** Reads `1pt`, `red`, `1pt + red`, `none` or `(paint: ..., dash: ...)`; "" is unset. */
 export function parseStroke(text: string): Stroke | null {
+  if (text.trim() === "") return { none: false, entries: [] };
   const n = parseExpr(text);
   if (!n) return null;
   if (n.kind === "none") return { none: true, entries: [] };
@@ -243,8 +244,9 @@ export const MARKS: [string, string][] = [
 
 export type Mark = Entry[];
 
-/** Reads a mark dictionary, `(end: ">", fill: black)`. */
+/** Reads a mark dictionary, `(end: ">", fill: black)`; "" is unset. */
 export function parseMark(text: string): Mark | null {
+  if (text.trim() === "") return [];
   const n = parseExpr(text);
   if (n?.kind !== "dict" || !n.items.every((i) => i.key)) return null;
   const list = entries(text, n.items);
@@ -258,9 +260,11 @@ export function markEnd(m: Mark, end: "start" | "end"): string {
   return e?.node.kind === "str" ? e.node.value : e ? e.text : "";
 }
 
+/** Removing the last end symbol removes the whole mark. */
 export function markSet(m: Mark, key: string, text: string | null): string | null {
   const list = setEntry(m, byKey(key), key, text);
-  return list.some((e) => e.key === "start" || e.key === "end") ? dictText(list) : null;
+  const ends = list.some((e) => e.key === "start" || e.key === "end");
+  return list.length === 0 || (!ends && (key === "start" || key === "end")) ? null : dictText(list);
 }
 
 // --- Styled text -----------------------------------------------------------
@@ -330,7 +334,16 @@ export function withBody(text: string, t: TextStyle, body: string): string {
   return text.slice(0, t.bodyRange.start) + body + text.slice(t.bodyRange.end);
 }
 
-export type TextChange = { size: string | null } | { fill: string | null } | { bold: boolean } | { italic: boolean };
+export type TextChange =
+  | { size: string | null }
+  | { fill: string | null }
+  | { bold: boolean }
+  | { italic: boolean }
+  /** Any other `text(...)` argument, by key. */
+  | { prop: string; text: string | null };
+
+/** A `text(...)` argument by key, if set. */
+export const textProp = (t: TextStyle, key: string) => t.props.find(byKey(key));
 
 /**
  * The argument with one style changed. Styling goes into `text(...)` when
@@ -340,6 +353,12 @@ export function withStyle(t: TextStyle, change: TextChange): string {
   let { props, strong, emph } = t;
   if ("size" in change) props = setEntry(props, isSize, "size", change.size);
   if ("fill" in change) props = setEntry(props, isFill, "fill", change.fill);
+  if ("prop" in change) {
+    props = setEntry(props, byKey(change.prop), change.prop, change.text);
+    // An explicit weight or style replaces strong/emph.
+    if (change.prop === "weight") strong = false;
+    if (change.prop === "style") emph = false;
+  }
   if ("bold" in change) {
     props = setEntry(props, isWeight, "weight", null);
     strong = change.bold && props.length === 0;
@@ -364,34 +383,14 @@ export function withStyle(t: TextStyle, change: TextChange): string {
 
 // --- Choices ---------------------------------------------------------------
 
-export const FRAMES = ["rect", "circle"];
+/** Source text in a comparable form: strings re-quoted, other text trimmed. */
+export function canonical(text: string): string {
+  const n = parseExpr(text);
+  return n?.kind === "str" ? JSON.stringify(n.value) : text.trim();
+}
 
-export const ANCHORS = [
-  "center",
-  "north",
-  "south",
-  "east",
-  "west",
-  "north-east",
-  "north-west",
-  "south-east",
-  "south-west",
-  "mid",
-  "mid-east",
-  "mid-west",
-  "base",
-  "base-east",
-  "base-west",
-];
-
-/** What a newly added property starts as. */
-export const DEFAULTS: Record<string, string> = {
-  stroke: "1pt + black",
-  fill: "rgb(\"#dddddd\")",
-  mark: '(end: ">")',
-  frame: '"rect"',
-  padding: "0.2",
-  radius: "0.5",
-  anchor: '"center"',
-  angle: "0deg",
-};
+/** A choice's label: the string without quotes. */
+export function choiceLabel(text: string): string {
+  const n = parseExpr(text);
+  return n?.kind === "str" ? n.value : text;
+}

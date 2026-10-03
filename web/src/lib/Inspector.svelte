@@ -4,8 +4,9 @@
   import { tick } from "svelte";
   import type { Editor } from "./editor.svelte";
   import { num } from "./format";
-  import PropField from "./PropField.svelte";
-  import { DEFAULTS, parseText } from "./props";
+  import PropRow from "./PropRow.svelte";
+  import { parseText } from "./props";
+  import { optFor, optionsFor, wrappedOptions } from "./schema";
   import TextField from "./TextField.svelte";
   import { baseName, STATE_CALLS, type Arg, type Call } from "./scene";
 
@@ -86,12 +87,24 @@
   let newValue = $state("");
   function addNamed(ids: number[]) {
     const key = newKey.trim();
-    const value = newValue.trim() || DEFAULTS[key];
+    const value = newValue.trim();
     if (!/^[a-zA-Z][\w-]*$/.test(key) || !value) return;
     setNamed(ids, key, value);
     newKey = "";
     newValue = "";
   }
+
+  /** The options this call takes, and any other named arguments it has. */
+  function options(call: Call) {
+    const base = baseName(call.callee);
+    const fn = editor.scene.variables.find((v) => v.kind === "function" && v.name === call.callee);
+    const groups = (fn && wrappedOptions(editor.index.slice(fn.value_range.start, fn.value_range.end))) ?? optionsFor(base, STATE_CALLS.has(base));
+    const known = new Set(groups.flatMap((g) => g.opts.map((o) => o.key)));
+    const other = call.args.filter((a) => a.key !== null && a.key !== "name" && !known.has(a.key)).map((a) => optFor(a.key!));
+    return { groups, other };
+  }
+
+  const valueOf = (call: Call, key: string) => call.args.find((a) => a.key === key)?.text ?? "";
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement && e.shiftKey)) {
@@ -104,7 +117,7 @@
 
 <div class="inspector">
   {#if call}
-    {@const named = call.args.map((a, i) => [a, i] as const).filter(([a]) => a.key !== null && a.key !== "name")}
+    {@const opts = options(call)}
     <header>
       <span class="callee">{call.callee}</span>
       <input
@@ -159,33 +172,24 @@
       {/each}
     </section>
 
+    {#each opts.groups as group (group.title)}
+      <section>
+        <h3>{group.title}</h3>
+        {#each group.opts as opt (opt.key)}
+          <PropRow {opt} text={valueOf(call, opt.key)} commit={(t) => setNamed([call.id], opt.key, t)} onkeydown={onKey} />
+        {/each}
+      </section>
+    {/each}
     <section>
-      <h3>Properties</h3>
-      {#each named as [arg] (arg.key)}
-        {@const key = arg.key!}
-        <div class="row">
-          <span class="label">{key}</span>
-          <div class="value">
-            <PropField {key} text={arg.text} commit={(t) => setNamed([call.id], key, t)} onkeydown={onKey} />
-            <button class="icon" title="Remove {key}" onclick={() => setNamed([call.id], key, null)}>×</button>
-          </div>
-        </div>
+      {#if opts.other.length > 0 || opts.groups.length === 0}<h3>Other</h3>{/if}
+      {#each opts.other as opt (opt.key)}
+        <PropRow {opt} text={valueOf(call, opt.key)} commit={(t) => setNamed([call.id], opt.key, t)} onkeydown={onKey} />
       {/each}
       <div class="row add">
         <input class="code key" placeholder="property" list="cetz-keys" bind:value={newKey} onkeydown={(e) => e.key === "Enter" && addNamed([call.id])} spellcheck="false" />
         <input class="code" placeholder="value" bind:value={newValue} onkeydown={(e) => e.key === "Enter" && addNamed([call.id])} spellcheck="false" />
         <button onclick={() => addNamed([call.id])}>Add</button>
       </div>
-      {#if !STATE_CALLS.has(baseName(call.callee))}
-        <div class="quick">
-          {#if !call.args.some((a) => a.key === "fill")}
-            <label>Fill <input type="color" value="#ffffff" onchange={(e) => setNamed([call.id], "fill", `rgb("${e.currentTarget.value}")`)} /></label>
-          {/if}
-          {#if !call.args.some((a) => a.key === "stroke")}
-            <label>Stroke <input type="color" value="#000000" onchange={(e) => setNamed([call.id], "stroke", `rgb("${e.currentTarget.value}")`)} /></label>
-          {/if}
-        </div>
-      {/if}
     </section>
   {:else if editor.selected.length > 1}
     {@const ids = editor.selected}
@@ -251,6 +255,13 @@
     gap: 6px;
     margin-bottom: 6px;
   }
+  /* Text fields are tall; keep their label at the top. */
+  .row:has(:global(.text)) {
+    align-items: start;
+  }
+  .row:has(:global(.text)) .label {
+    padding-top: 4px;
+  }
   .row.add {
     grid-template-columns: 92px minmax(0, 1fr) auto;
   }
@@ -310,12 +321,6 @@
     font-size: 11.5px;
     margin-left: auto;
   }
-  .value {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    min-width: 0;
-  }
   .inspector :global(input),
   .inspector :global(textarea) {
     font: inherit;
@@ -364,9 +369,5 @@
     border-radius: 4px;
     padding: 3px 8px;
     cursor: pointer;
-  }
-  button.icon {
-    padding: 0 6px;
-    line-height: 20px;
   }
 </style>

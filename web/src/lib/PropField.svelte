@@ -1,70 +1,65 @@
 <script lang="ts">
-  // The value of one named argument. Known keys whose value we can read get
-  // fields (stroke: color/thickness/dash, mark: start/end, frame, ...); the
-  // </> button, or a value we can't read, shows the plain code instead.
+  // The value of one option, set or not: a widget for its kind (stroke,
+  // mark, choice, number, ...) with CeTZ's default as the placeholder. A
+  // value the widget can't read, or the </> button, shows the plain code.
   import ColorInput from "./ColorInput.svelte";
   import { num } from "./format";
-  import {
-    ANCHORS,
-    DASHES,
-    FRAMES,
-    MARKS,
-    lengthText,
-    markEnd,
-    markSet,
-    parseExpr,
-    parseMark,
-    parseStroke,
-    strokeGet,
-    strokeSet,
-  } from "./props";
+  import { canonical, choiceLabel, DASHES, lengthText, MARKS, markEnd, markSet, parseExpr, parseMark, parseStroke, strokeGet, strokeSet } from "./props";
+  import type { Opt } from "./schema";
 
   let {
-    key,
+    opt,
     text,
     commit,
     onkeydown,
   }: {
-    key: string;
+    opt: Opt;
+    /** The value's source, or "" when the option isn't given. */
     text: string;
     commit: (text: string | null) => void;
     onkeydown: (e: KeyboardEvent) => void;
   } = $props();
 
-  /** Keys whose value is a color. */
-  const COLOR_KEYS = new Set(["fill", "paint", "color"]);
-  /** Keys whose value is a plain number, and the step for each. */
-  const NUMBER_KEYS: Record<string, number> = { padding: 0.1, radius: 0.1, angle: 15, scale: 0.1, "line-spacing": 0.1 };
-
   let raw = $state(false);
-  const node = $derived(parseExpr(text));
-  const stroke = $derived(key === "stroke" ? parseStroke(text) : null);
-  const mark = $derived(key === "mark" ? parseMark(text) : null);
+  const node = $derived(text ? parseExpr(text) : null);
+  const stroke = $derived(opt.kind === "stroke" ? parseStroke(text) : null);
+  const mark = $derived(opt.kind === "mark" ? parseMark(text) : null);
+  const unset = $derived(text === "");
 
-  const view = $derived.by(() => {
-    if (COLOR_KEYS.has(key)) return "color";
-    if (raw || !node) return "code";
-    if (stroke) return "stroke";
-    if (mark) return "mark";
-    if (key === "frame" && ((node.kind === "str" && FRAMES.includes(node.value)) || node.kind === "none")) return "frame";
-    if (key === "anchor" && node.kind === "str") return "anchor";
-    if (key in NUMBER_KEYS && (node.kind === "number" || node.kind === "numeric")) return "number";
-    if (node.kind === "bool") return "bool";
-    return "code";
+  /** Whether the widget for this kind can show the current value. */
+  const readable = $derived.by(() => {
+    if (unset) return true;
+    switch (opt.kind) {
+      case "stroke":
+        return stroke !== null;
+      case "mark":
+        return mark !== null;
+      case "choice":
+        return opt.options.includes(canonical(text)) || canonical(text) === canonical(opt.default);
+      case "number":
+        return node?.kind === "number" || (node?.kind === "numeric" && (!opt.unit || node.unit === opt.unit));
+      case "bool":
+        return node?.kind === "bool";
+      default:
+        return true;
+    }
   });
+  const view = $derived(raw || !readable ? "code" : opt.kind);
 
   const str = (s: string) => JSON.stringify(s);
 
   function setNumber(value: string) {
+    if (value.trim() === "") return commit(null);
     const n = Number(value);
-    if (!Number.isFinite(n) || value.trim() === "") return;
-    commit(node?.kind === "numeric" ? `${num(n)}${node.unit}` : num(n));
+    if (!Number.isFinite(n)) return;
+    const unit = node?.kind === "numeric" ? node.unit : (opt.kind === "number" && opt.unit) || "";
+    commit(`${num(n)}${unit}`);
   }
 </script>
 
-<div class="field">
+<div class="field" class:unset>
   {#if view === "color"}
-    <ColorInput {text} {commit} {onkeydown} title={key} />
+    <ColorInput {text} {commit} {onkeydown} title={opt.key} placeholder={opt.default} />
   {:else if view === "stroke" && stroke}
     {@const paint = strokeGet(stroke, "paint")}
     {@const dash = strokeGet(stroke, "dash")}
@@ -73,7 +68,7 @@
     <input
       class="code length"
       title="Thickness"
-      placeholder={stroke.none ? "none" : "auto"}
+      placeholder={stroke.none ? "none" : "1pt"}
       value={strokeGet(stroke, "thickness")?.text ?? ""}
       onchange={(e) => commit(strokeSet(stroke, "thickness", lengthText(e.currentTarget.value)))}
       {onkeydown}
@@ -95,25 +90,31 @@
       </select>
     {/each}
     <ColorInput text={fill?.text ?? ""} code={false} title="Mark fill" commit={(t) => commit(markSet(mark, "fill", t))} />
-  {:else if view === "frame" && node}
-    <select onchange={(e) => commit(e.currentTarget.value ? str(e.currentTarget.value) : null)}>
-      <option value="" selected={node.kind === "none"}>none</option>
-      {#each FRAMES as f}<option value={f} selected={node.kind === "str" && node.value === f}>{f}</option>{/each}
+  {:else if view === "choice" && opt.kind === "choice"}
+    {@const current = unset ? "" : canonical(text)}
+    <select onchange={(e) => commit(e.currentTarget.value || null)}>
+      <option value="" selected={current === ""}>{choiceLabel(opt.default)}</option>
+      {#each opt.options.filter((o) => o !== canonical(opt.default)) as o}<option value={o} selected={current === o}>{choiceLabel(o)}</option>{/each}
     </select>
-  {:else if view === "anchor" && node?.kind === "str"}
-    <select onchange={(e) => commit(str(e.currentTarget.value))}>
-      {#each ANCHORS as a}<option value={a} selected={node.value === a}>{a}</option>{/each}
-      {#if !ANCHORS.includes(node.value)}<option value={node.value} selected>{node.value}</option>{/if}
-    </select>
-  {:else if view === "number" && (node?.kind === "number" || node?.kind === "numeric")}
-    <input class="number" type="number" step={NUMBER_KEYS[key]} value={num(node.value)} onchange={(e) => setNumber(e.currentTarget.value)} {onkeydown} />
-    {#if node.kind === "numeric"}<span class="unit">{node.unit}</span>{/if}
-  {:else if view === "bool" && node?.kind === "bool"}
-    <input type="checkbox" checked={node.value} onchange={(e) => commit(String(e.currentTarget.checked))} />
+  {:else if view === "number" && opt.kind === "number"}
+    <input
+      class="number"
+      type="number"
+      step={opt.step}
+      placeholder={opt.default.replace(opt.unit ?? "", "")}
+      value={node?.kind === "number" || node?.kind === "numeric" ? num(node.value) : ""}
+      onchange={(e) => setNumber(e.currentTarget.value)}
+      {onkeydown}
+    />
+    {#if opt.unit || node?.kind === "numeric"}<span class="unit">{node?.kind === "numeric" ? node.unit : opt.unit}</span>{/if}
+  {:else if view === "bool"}
+    <input type="checkbox" checked={node?.kind === "bool" ? node.value : opt.default === "true"} onchange={(e) => commit(String(e.currentTarget.checked))} />
+  {:else if view === "length"}
+    <input class="code" value={text} placeholder={opt.default} onchange={(e) => commit(lengthText(e.currentTarget.value))} {onkeydown} spellcheck="false" />
   {:else}
-    <input class="code" value={text} onchange={(e) => commit(e.currentTarget.value)} {onkeydown} spellcheck="false" />
+    <input class="code" value={text} placeholder={opt.default} onchange={(e) => commit(e.currentTarget.value.trim() || null)} {onkeydown} spellcheck="false" />
   {/if}
-  {#if view !== "color" && (raw || (node && view !== "code"))}
+  {#if !unset && opt.kind !== "code" && opt.kind !== "length" && opt.kind !== "color" && (raw || readable)}
     <button class="icon toggle" class:on={raw} title={raw ? "Show fields" : "Edit as code"} onclick={() => (raw = !raw)}>&lt;/&gt;</button>
   {/if}
 </div>
@@ -144,6 +145,9 @@
     padding: 2px 2px;
     height: 22px;
   }
+  .unset select {
+    color: var(--muted);
+  }
   .number {
     flex: 1;
     min-width: 0;
@@ -151,7 +155,7 @@
   .unit {
     color: var(--muted);
   }
-  .toggle {
+  .field .toggle {
     flex: none;
     margin-left: auto;
     font: 10px ui-monospace, "SF Mono", Menlo, monospace;

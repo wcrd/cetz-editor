@@ -3,7 +3,9 @@
   // the text only touches what's between the brackets; styling rewrites the
   // `text(...)` / `strong` / `emph` around it.
   import ColorInput from "./ColorInput.svelte";
-  import { isBold, isItalic, lengthText, textFill, textSize, withBody, withStyle, type TextChange, type TextStyle } from "./props";
+  import PropRow from "./PropRow.svelte";
+  import { isBold, isItalic, lengthText, textFill, textProp, textSize, withBody, withStyle, type TextChange, type TextStyle } from "./props";
+  import { TEXT_MORE } from "./schema";
 
   let {
     text,
@@ -30,6 +32,8 @@
     if (next !== text) commit(next);
   }
 
+  let open = $state(false);
+  const setCount = $derived(TEXT_MORE.filter((o) => textProp(style, o.key)).length);
   const bold = $derived(isBold(style));
   const italic = $derived(isItalic(style));
 </script>
@@ -49,7 +53,17 @@
     <ColorInput text={textFill(style)?.text ?? ""} code={false} title="Text color" commit={(t) => set({ fill: t })} />
     <button class="toggle bold" class:on={bold} aria-pressed={bold} title="Bold" onclick={() => set({ bold: !bold })}>B</button>
     <button class="toggle italic" class:on={italic} aria-pressed={italic} title="Italic" onclick={() => set({ italic: !italic })}>I</button>
+    <button class="more" class:open aria-expanded={open} title="{open ? 'Hide' : 'Show'} font, weight and spacing" onclick={() => (open = !open)}>
+      <span class="caret">▸</span> more{#if setCount > 0 && !open}<span class="count"> +{setCount}</span>{/if}
+    </button>
   </div>
+  {#if open}
+    <div class="props">
+      {#each TEXT_MORE as opt (opt.key)}
+        <PropRow {opt} text={textProp(style, opt.key)?.text ?? ""} commit={(t) => set({ prop: opt.key, text: t })} {onkeydown} />
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -67,7 +81,7 @@
   .size {
     width: 64px;
   }
-  .toggle {
+  .style .toggle {
     width: 24px;
     height: 22px;
     padding: 0;
@@ -78,6 +92,29 @@
   .toggle.italic {
     font-style: italic;
     font-family: Georgia, serif;
+  }
+  .style .more {
+    margin-left: auto;
+    border: none;
+    background: none;
+    padding: 0 2px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .more .caret {
+    display: inline-block;
+    font-size: 10px;
+    transition: transform 0.1s;
+  }
+  .more.open .caret {
+    transform: rotate(90deg);
+  }
+  .count {
+    font-size: 10.5px;
+  }
+  .props {
+    --label-width: 64px;
+    margin-top: 4px;
   }
   .toggle.on {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
