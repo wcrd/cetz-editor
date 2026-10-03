@@ -79,15 +79,19 @@ loop). Dragging a shared corner, or a shape that uses one, edits the definition,
 so every shape using it follows. Hold ⌥ while dragging to detach just that use
 into its own coordinate (dropping it on another anchor reconnects it). The
 inspector shows each corner's point (`→ A (pts.A)`) with a Detach button, and
-a Share button turns a literal coordinate into a shared `anchor(...)`. Hover a
-point to highlight the shapes using it, and click its marker to select them.
+a Share button turns a literal coordinate into a shared `anchor(...)`. New
+anchors go at the top of the shape's block, after the anchors already there
+(below any `rotate` or other transform the shape is under, since the
+coordinate is in its frame), so every shape can use them and they don't pin
+the shape's place in the stacking order. Hover a point to highlight the
+shapes using it, and click its marker to select them.
 
 **Drawing with named points.** While a drawing tool is active every named
 point shows, and the start or end of a line, rect, circle or label snaps to
 one and writes its name (`line("A", "G")`, `rect("E", "C")`) instead of
 numbers. Handles snap to them the same way. The point tool (**.**) adds a
 point to a dictionary an anchor loop names (`pts = (…, I: (3, 5.75))`), or
-inserts `anchor("P1", (x, y))` before the first shape, and opens its name for
+inserts `anchor("P1", (x, y))` with the other anchors at the top, and opens its name for
 editing. Double-click a point's name in the outline to rename it everywhere
 it's used by that name. The join tool (**J**) builds a path from points:
 `line("A", "B", "G", close: true)`, snapping to named points and to other
@@ -115,7 +119,8 @@ first), drag a row to move it among the shapes in its block. A comment on the
 lines above a shape, or after it on its line, moves with it. Nothing moves
 past an `import`, a `set-style` or transform (that would change what it
 applies to), or a shape it uses by name or that uses it (`"box.east"` must
-come after `box`); the edit stops there, or refuses with a message.
+come after `box`); the edit stops there, or refuses with a message. An anchor
+or `let` it depends on, which draws nothing, comes along instead.
 
 **Groups.** ⌘G (or Group in the inspector) wraps the selected shapes in
 `group(name: "group", { ... })` where the first of them was, and anything

@@ -180,17 +180,16 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                     None => unique_point_name(&scene),
                 };
                 let definition = format!("anchor({name:?}, ");
-                match canvas.calls.iter().find(|c| c.parent.is_none()) {
-                    Some(first) => {
-                        let line_start = source[..first.range.start].rfind('\n').map_or(0, |i| i + 1);
-                        let indent = &source[line_start..first.range.start];
-                        if indent.trim().is_empty() {
-                            created.push((patches.len(), indent.len() + definition.len()));
-                            patches.push(patch(line_start..line_start, format!("{indent}{definition}{value})\n")));
-                        } else {
-                            created.push((patches.len(), definition.len()));
-                            patches.push(patch(first.range.start..first.range.start, format!("{definition}{value}); ")));
-                        }
+                let root = typst_syntax::parse(source);
+                let root = LinkedNode::new(&root);
+                let slot = find_node(&root, &canvas.body, SyntaxKind::CodeBlock)
+                    .and_then(|block| walk::block_code(&block))
+                    .and_then(|code| anchor_slot(source, &scene, &code, None));
+                match slot {
+                    Some(before) => {
+                        let (insert, at) = insert_statement(source, before.offset(), &format!("{definition}{value})"));
+                        created.push((patches.len(), at + definition.len()));
+                        patches.push(insert);
                     }
                     None => {
                         let (at, prefix, suffix) = insertion_point(source, canvas);
@@ -236,7 +235,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 Some(_) => return Err("a point name can't be empty or contain '.'".into()),
                 None => unique_point_name(&scene),
             };
-            extract_point(source, find_call(&scene, *call)?, *arg, &name, &mut patches)?;
+            extract_point(source, &scene, find_call(&scene, *call)?, *arg, &name, &mut patches)?;
         }
         Edit::SharePoint { call, arg, from, from_arg } => {
             if (call, arg) == (from, from_arg) {
@@ -249,7 +248,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 source_arg.text.clone()
             } else {
                 let name = unique_point_name(&scene);
-                extract_point(source, from_call, *from_arg, &name, &mut patches)?;
+                extract_point(source, &scene, from_call, *from_arg, &name, &mut patches)?;
                 format!("{name:?}")
             };
             patches.push(patch(target.value_range.clone(), text));
@@ -689,21 +688,51 @@ fn valid_new_name(scene: &Scene, name: &str) -> Result<String, String> {
 
 /// Turns a literal coordinate argument into `anchor("name", (x, y))` before
 /// its call, used as `"name"`.
-fn extract_point(source: &str, call: &Call, arg: usize, name: &str, patches: &mut Vec<Patch>) -> Result<(), String> {
+fn extract_point(source: &str, scene: &Scene, call: &Call, arg: usize, name: &str, patches: &mut Vec<Patch>) -> Result<(), String> {
     let arg = call.args.get(arg).ok_or("no such argument")?;
     if !matches!(arg.value, Value::Coord { .. }) || arg.point.is_some() {
         return Err("only a literal coordinate can become a shared point".into());
     }
-    let definition = format!("anchor({:?}, {})", name, arg.text);
-    let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
-    if source[line_start..call.range.start].trim().is_empty() {
-        let indent = &source[line_start..call.range.start];
-        patches.push(patch(line_start..line_start, format!("{indent}{definition}\n")));
-    } else {
-        patches.push(patch(call.range.start..call.range.start, format!("{definition}; ")));
-    }
+    let root = typst_syntax::parse(source);
+    let root = LinkedNode::new(&root);
+    let node = find_node(&root, &call.range, SyntaxKind::FuncCall);
+    let before = node
+        .as_ref()
+        .and_then(|node| node.parent().filter(|p| p.kind() == SyntaxKind::Code))
+        .and_then(|code| anchor_slot(source, scene, code, Some(call.range.start)))
+        .map_or(call.range.start, |s| s.offset());
+    patches.push(insert_statement(source, before, &format!("anchor({:?}, {})", name, arg.text)).0);
     patches.push(patch(arg.value_range.clone(), format!("{name:?}")));
     Ok(())
+}
+
+/// The statement a new anchor goes before, so anchors gather at the top of a
+/// block where every shape can use them: before the first statement that
+/// draws, or for the coordinate of `call` (an offset), before that call and
+/// after any transform above it, since the coordinate is in its frame. `None`
+/// to append.
+fn anchor_slot<'a>(source: &str, scene: &Scene, code: &LinkedNode<'a>, call: Option<usize>) -> Option<LinkedNode<'a>> {
+    let stmts: Vec<Stmt> = code.children().filter(|c| !is_trivia(c.kind())).map(|n| stmt(source, scene, n, false, code.offset())).collect();
+    let at = match call {
+        Some(id) => stmts.iter().position(|s| s.node.offset() == id)?,
+        None => stmts.len(),
+    };
+    let first = stmts[..at].iter().position(|s| s.draws || (call.is_none() && s.state)).unwrap_or(at);
+    let after_state = if call.is_some() { stmts[..at].iter().rposition(|s| s.state).map_or(0, |i| i + 1) } else { 0 };
+    stmts.get(first.max(after_state)).map(|s| s.node.clone())
+}
+
+/// A patch putting a statement before the one at `before`: on a line of its
+/// own when that one has its own line, else followed by `; `. Also returns
+/// where the statement starts in the patch text.
+fn insert_statement(source: &str, before: usize, text: &str) -> (Patch, usize) {
+    let line_start = source[..before].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &source[line_start..before];
+    if indent.trim().is_empty() {
+        (patch(line_start..line_start, format!("{indent}{text}\n")), indent.len())
+    } else {
+        (patch(before..before, format!("{text}; ")), 0)
+    }
 }
 
 /// `P1`, `P2`, ... whichever isn't already an anchor or element name.
@@ -1051,22 +1080,25 @@ fn stmt<'a>(source: &str, scene: &Scene, node: LinkedNode<'a>, own_lines: bool, 
     let calls = top_calls(scene, &range);
     let call = calls.iter().find(|c| c.range == range);
     let label = match (kind, call) {
-        (SyntaxKind::FuncCall, Some(c)) => match &c.name {
-            Some(name) => format!("{}(name: {name:?})", base_name(&c.callee)),
-            None => format!("{}(..)", base_name(&c.callee)),
+        (SyntaxKind::FuncCall, Some(c)) => match (base_name(&c.callee), element_name(c)) {
+            ("anchor", Some(name)) => format!("anchor({name:?})"),
+            (base, Some(name)) => format!("{base}(name: {name:?})"),
+            (base, None) => format!("{base}(..)"),
         },
         (SyntaxKind::ForLoop | SyntaxKind::WhileLoop, _) => "the loop".into(),
         (SyntaxKind::Conditional, _) => "the if".into(),
         _ => source[range.clone()].split(['(', '=', '{', '\n']).next().unwrap_or_default().trim().to_string(),
     };
+    let fixed = matches!(kind, SyntaxKind::ModuleImport | SyntaxKind::ModuleInclude | SyntaxKind::SetRule | SyntaxKind::ShowRule);
     Stmt {
         text,
         label,
         names: if is_let { vec![] } else { calls.iter().filter_map(|c| element_name(c)).collect() },
         vars: if is_let { let_names(&node) } else { vec![] },
-        fixed: matches!(kind, SyntaxKind::ModuleImport | SyntaxKind::ModuleInclude | SyntaxKind::SetRule | SyntaxKind::ShowRule),
+        fixed,
         state: !is_let && calls.iter().any(|c| changes_state(c)),
-        draws: !is_let && !call.is_some_and(|c| INVISIBLE.contains(&base_name(&c.callee)) || changes_state(c)),
+        // A loop of `anchor(k, p)` draws nothing either.
+        draws: !is_let && !fixed && (calls.is_empty() || calls.iter().any(|c| !INVISIBLE.contains(&base_name(&c.callee)) && !changes_state(c))),
         is_let,
         node,
     }
@@ -1104,26 +1136,42 @@ fn arrange(stmts: &[Stmt], selected: &[usize], to: Layer) -> Result<Vec<usize>, 
     let (mut moved, mut blocked) = (false, None);
     for s in moving {
         let at = order.iter().position(|&o| o == s).unwrap();
-        let (mut dest, mut k) = (at, at);
+        // What moves is a run `trial[lo..=hi]`: the statement, plus anything
+        // drawing nothing that it's tied to (an anchor it uses), carried along.
+        let mut trial = order.clone();
+        let (mut lo, mut hi) = (at, at);
+        let mut best = None;
         loop {
-            let next = if forward { k + 1 } else { k.wrapping_sub(1) };
-            let Some(&other) = order.get(next).filter(|o| !selected.contains(o)) else { break };
-            if let Some(why) = conflict(&stmts[s], &stmts[other]) {
-                blocked.get_or_insert(why);
-                break;
-            }
-            k = next;
-            // Only passing something drawn changes what's in front.
-            if stmts[other].draws {
-                dest = k;
-                if one_step {
+            let next = if forward { hi + 1 } else { lo.wrapping_sub(1) };
+            let Some(&other) = trial.get(next).filter(|o| !selected.contains(o)) else { break };
+            match trial[lo..=hi].iter().find_map(|&m| conflict(&stmts[m], &stmts[other])) {
+                None => {
+                    trial.remove(next);
+                    trial.insert(if forward { lo } else { hi }, other);
+                    (lo, hi) = if forward { (lo + 1, hi + 1) } else { (lo - 1, hi - 1) };
+                    // Only passing something drawn changes what's in front.
+                    if stmts[other].draws {
+                        best = Some(trial.clone());
+                        if one_step {
+                            break;
+                        }
+                    }
+                }
+                Some(_) if !stmts[other].draws && !stmts[other].fixed && !stmts[other].state => {
+                    (lo, hi) = if forward { (lo, hi + 1) } else { (lo - 1, hi) };
+                }
+                Some(why) => {
+                    // With nothing drawn beyond it, it's as far as it can show.
+                    let beyond = if forward { &trial[next..] } else { &trial[..=next] };
+                    if beyond.iter().any(|&o| stmts[o].draws) {
+                        blocked.get_or_insert(why);
+                    }
                     break;
                 }
             }
         }
-        if dest != at {
-            order.remove(at);
-            order.insert(dest, s);
+        if let Some(best) = best {
+            order = best;
             moved = true;
         }
     }
@@ -1510,12 +1558,31 @@ mod tests {
     fn extract_point_inserts_an_anchor() {
         let call = shared_id(SHARED, "rect(");
         let out = apply(SHARED, &Edit::ExtractPoint { call, arg: 1, name: None }).unwrap();
-        assert!(out.source.contains("  anchor(\"P1\", (1, 2))\n  rect((0, 1), \"P1\")"), "{}", out.source);
+        // With the other anchors at the top, not just above the rect.
+        assert!(out.source.contains("{ anchor(k, p) }\n  anchor(\"P1\", (1, 2))\n  line(\"A\", \"B\")"), "{}", out.source);
+        assert!(out.source.contains("  rect((0, 1), \"P1\")"), "{}", out.source);
         let scene = crate::parse(&out.source);
         let rect = scene.canvases[0].calls.iter().find(|c| c.callee == "rect").unwrap();
         assert_eq!(scene.point(rect.args[1].point.unwrap()).unwrap().path, "P1");
         // Already shared or not a literal: refused.
         assert!(apply(SHARED, &Edit::ExtractPoint { call: shared_id(SHARED, r#"line("A""#), arg: 0, name: None }).is_err());
+    }
+
+    #[test]
+    fn new_anchors_stay_in_their_shape_frame_and_block() {
+        // Below a transform the shape is drawn under.
+        let src = "#canvas({\n  import draw: *\n  circle((0, 0))\n  rotate(30deg)\n  rect((0, 0), (1, 1))\n})\n";
+        let out = apply(src, &Edit::ExtractPoint { call: shared_id(src, "rect("), arg: 1, name: None }).unwrap();
+        assert!(out.source.contains("rotate(30deg)\n  anchor(\"P1\", (1, 1))\n  rect((0, 0), \"P1\")"), "{}", out.source);
+        // Inside the shape's group, at its top.
+        let src = "#canvas({\n  import draw: *\n  circle((0, 0))\n  group({\n    circle((1, 1))\n    rect((0, 0), (1, 1))\n  })\n})\n";
+        let out = apply(src, &Edit::ExtractPoint { call: shared_id(src, "rect("), arg: 1, name: None }).unwrap();
+        assert!(out.source.contains("group({\n    anchor(\"P1\", (1, 1))\n    circle((1, 1))"), "{}", out.source);
+        // The point tool adds after the anchors already at the top.
+        let src = "#canvas({\n  import draw: *\n  anchor(\"P1\", (0, 0))\n  rect((0, 0), \"P1\")\n})\n";
+        let out = apply(src, &Edit::AddPoint { canvas: None, x: 2.0, y: 1.0, name: None }).unwrap();
+        assert!(out.source.contains("anchor(\"P1\", (0, 0))\n  anchor(\"P2\", (2, 1))\n  rect("), "{}", out.source);
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 6], "(2, 1)");
     }
 
     #[test]
@@ -1670,8 +1737,22 @@ mod tests {
     fn arrange_to_the_back_stops_at_the_import_and_reports_the_edges() {
         let out = arranged(STACK, "circle(", Layer::Back).unwrap();
         assert!(out.starts_with("#canvas({\n  import draw: *\n  circle((1, 1)) // dot\n  // the box"), "{out}");
-        assert!(arranged(&out, "circle(", Layer::Back).unwrap_err().contains("past import"));
+        assert!(arranged(&out, "circle(", Layer::Back).unwrap_err().contains("already at the back"));
         assert!(arranged(STACK, "content(", Layer::Forward).unwrap_err().contains("already at the front"));
+    }
+
+    #[test]
+    fn arrange_carries_the_anchors_a_shape_uses() {
+        let src = "#canvas({\n  import draw: *\n  rect((0, 0), (1, 1))\n  anchor(\"P8\", (2, 2))\n  line(\"P8\", (0, 0))\n  anchor(\"Q\", \"l.end\")\n})\n";
+        let out = arranged(src, "line(", Layer::Back).unwrap();
+        assert!(out.contains("draw: *\n  anchor(\"P8\", (2, 2))\n  line(\"P8\", (0, 0))\n  rect((0, 0), (1, 1))\n"), "{out}");
+        // Behind only the anchor it uses, it's already at the back.
+        assert_eq!(arranged(&out, "line(", Layer::Back).unwrap_err(), "already at the back");
+        assert_eq!(arranged(&out, "line(", Layer::Backward).unwrap_err(), "already at the back");
+        // An anchor that uses what's passed stops the carry.
+        let src = "#canvas({\n  import draw: *\n  rect((0, 0), (1, 1), name: \"r\")\n  anchor(\"P\", \"r.east\")\n  line(\"P\", (0, 0))\n})\n";
+        let err = arranged(src, "line(", Layer::Back).unwrap_err();
+        assert_eq!(err, "can't move anchor(\"P\") past rect(name: \"r\"): anchor(\"P\") uses r");
     }
 
     #[test]
