@@ -29,7 +29,19 @@
   type Drag =
     | { kind: "pan"; start: Point; pan: Point }
     | { kind: "move"; start: Point; moved: boolean; delta: Point; detach: boolean; box?: Box }
-    | { kind: "handle"; call: number; arg: number; probe: Probe; snap?: Snap; edit?: Edit }
+    | {
+        kind: "handle";
+        call: number;
+        arg: number;
+        probe: Probe;
+        snap?: Snap;
+        edit?: Edit;
+        /** Where the handle started and is now (page). */
+        from: Point;
+        at?: Point;
+        /** The shape's only point, so dragging it moves the whole shape. */
+        solo: boolean;
+      }
     | {
         kind: "point";
         point: number;
@@ -119,20 +131,54 @@
     });
   });
 
-  /** Keeps an in-progress drag's page-space points in step with a page shift. */
+  /**
+   * Keeps an in-progress drag's page-space points, frames and probes in step
+   * with a page shift, so it doesn't work against the old layout and chase
+   * the pointer.
+   */
   function shiftDrag(dx: number, dy: number) {
+    // Other shapes' bounds for guides are on the old page too.
+    guideCache = undefined;
     if (!drag) return;
     const shift = (p: Point): Point => [p[0] + dx, p[1] + dy];
+    const frame = (f: Frame): Frame => ({ ...f, origin: { ...f.origin, x: f.origin.x + dx, y: f.origin.y + dy } });
+    const probe = (p: Probe): Probe => ({ ...p, origin: { ...p.origin, x: p.origin.x + dx, y: p.origin.y + dy } });
     switch (drag.kind) {
       case "move":
         drag.start = shift(drag.start);
+        if (drag.box) drag.box = shiftBox(drag.box, [dx, dy]);
         break;
       case "marquee":
         drag.start = shift(drag.start);
         drag.end = shift(drag.end);
         break;
       case "create":
-        drag.frame = { ...drag.frame, origin: { x: drag.frame.origin.x + dx, y: drag.frame.origin.y + dy } };
+        drag.frame = frame(drag.frame);
+        break;
+      case "handle":
+        drag.probe = probe(drag.probe);
+        drag.from = shift(drag.from);
+        if (drag.at) drag.at = shift(drag.at);
+        break;
+      case "point":
+        drag.start = shift(drag.start);
+        drag.frame = frame(drag.frame);
+        if (drag.use) drag.use = { ...drag.use, probe: probe(drag.use.probe) };
+        break;
+      case "reshape":
+        drag.reshape = { ...drag.reshape, probe: probe(drag.reshape.probe), point: shift(drag.reshape.point) };
+        break;
+      case "radius":
+        drag.reach = { ...drag.reach, probe: probe(drag.reach.probe), point: shift(drag.reach.point), center: shift(drag.reach.center) };
+        break;
+      case "sweep":
+        drag.end = { ...drag.end, probe: probe(drag.end.probe), point: shift(drag.end.point), center: shift(drag.end.center) };
+        break;
+      case "rotate":
+        drag.spin = { ...drag.spin, pivot: shift(drag.spin.pivot) };
+        break;
+      case "grow":
+        drag.grow = { ...drag.grow, pivot: shift(drag.grow.pivot) };
         break;
     }
   }
@@ -291,7 +337,11 @@
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop) return [];
-    return call.args.flatMap((_, i) => argHandle(call, probe, i) ?? []);
+    // The handle being dragged shows where it's going; the source catches up on release.
+    const dragged = drag?.kind === "handle" ? drag : undefined;
+    return call.args
+      .flatMap((_, i) => argHandle(call, probe, i) ?? [])
+      .map((h) => (dragged?.at && dragged.call === h.call && dragged.arg === h.arg ? { ...h, point: dragged.at } : h));
   });
 
   /** Where a positional coordinate argument is on the page, as a handle. */
@@ -1349,7 +1399,8 @@
       if (probe && point !== null && where) {
         drag = { kind: "point", point, start: p, moved: false, frame: where.frame, transform: where.transform, use: { call, arg, probe }, detach: e.altKey };
       } else if (probe) {
-        drag = { kind: "handle", call, arg, probe };
+        const points = editor.callById.get(call)?.args.filter((a) => a.key === null && (a.value.type === "coord" || a.value.type === "str" || a.point !== null));
+        drag = { kind: "handle", call, arg, probe, from: grab.handle.point, solo: points?.length === 1 };
       }
       return;
     }
@@ -1490,18 +1541,28 @@
         break;
       }
       case "handle": {
-        const snap = findSnap(p, drag.call, { vertices: true, at: editor.callById.get(drag.call)?.range.start, later: true });
-        const edit = snap && snapEdit(drag.call, drag.arg, snap);
+        const d = drag;
+        // A shape's only point moves the shape: show it there at once, as a
+        // move does, rather than waiting for each compile.
+        const shift = (to: Point): [number, number] => {
+          const sel = probeOf.get(editor.selected[0]);
+          if (!d.solo || !sel) return [0, 0];
+          return untransformDelta(sel.transform, [(to[0] - d.from[0]) / sel.length, -(to[1] - d.from[1]) / sel.length]);
+        };
+        const snap = findSnap(p, d.call, { vertices: true, at: editor.callById.get(d.call)?.range.start, later: true });
+        const edit = snap && snapEdit(d.call, d.arg, snap);
         // A snap the edit refuses (a vertex it can't share this early) falls back to the grid.
-        if (edit && editor.previewEdit(edit)) {
-          drag.snap = snap;
-          drag.edit = edit;
+        if (snap && edit && editor.previewEdit(edit, ...shift(snap.point))) {
+          d.snap = snap;
+          d.edit = edit;
+          d.at = snap.point;
           guides = [];
         } else {
-          const [x, y] = snapPointGuided(frameOf(drag.probe), drag.probe.transform, p, [drag.call]);
-          drag.snap = undefined;
-          drag.edit = { kind: "set-coord", call: drag.call, arg: drag.arg, x, y };
-          editor.previewEdit(drag.edit);
+          const [x, y] = snapPointGuided(frameOf(d.probe), d.probe.transform, p, [d.call]);
+          d.snap = undefined;
+          d.edit = { kind: "set-coord", call: d.call, arg: d.arg, x, y };
+          d.at = editor.toPage(frameOf(d.probe), transformPoint(d.probe.transform, [x, y]));
+          editor.previewEdit(d.edit, ...shift(d.at));
         }
         break;
       }

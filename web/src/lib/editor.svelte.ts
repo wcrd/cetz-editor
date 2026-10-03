@@ -625,7 +625,8 @@ export class Editor {
     const draft = this.draft;
     this.draft = undefined;
     if (!edit || !draft) return;
-    if (edit.kind === "move") this.pendingMove = { dx: draft.dx, dy: draft.dy };
+    // Any drag previewed with a shift (a move, a shape's only handle) keeps it until the result compiles.
+    if (edit.kind === "move" || draft.dx || draft.dy) this.pendingMove = { dx: draft.dx, dy: draft.dy };
     if (!this.edit(edit)) this.pendingMove = undefined;
   }
 
