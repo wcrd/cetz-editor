@@ -59,6 +59,7 @@ cached in the browser (see [todos/bundle-packages-vs-cdn.md](todos/bundle-packag
 | Double-click a group | Enter it to select its children (Esc to leave) |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
 | ⌘D / Delete | Duplicate / delete |
+| ⌘G / ⇧⌘G | Group the selection / ungroup the selected groups |
 | ⌘Z / ⇧⌘Z | Undo / redo, for canvas and code edits alike |
 | ⌘O / ⌘S / ⇧⌘S | Open / save / save as. Saving writes back to the opened file in Chromium; other browsers download it |
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
@@ -88,6 +89,17 @@ editing. Double-click a point's name in the outline to rename it everywhere
 it's used by that name. The join tool (**J**) builds a path from points:
 `line("A", "B", "G", close: true)`, snapping to named points and to other
 shapes' anchors (an unnamed shape gets a name in the same undo step).
+
+**Groups.** ⌘G (or Group in the inspector) wraps the selected shapes in
+`group(name: "group", { ... })` where the first of them was, and anything
+outside that used their names now goes through the group (`"box.east"` becomes
+`"group.box.east"`). The shapes must be in the same block. A shape that's
+further down moves up to join the group, unless it uses something defined in
+between. ⇧⌘G puts a group's shapes back in its place and turns `"g.box.east"`
+back into `"box.east"`. Either command refuses with a message, rather than
+change the drawing, when a transform would stop or start applying to other
+shapes, when something uses the group's own anchors (`"g.north"`), or when
+names would clash.
 
 **Grid step.** Type any size into the toolbar's grid field (`0.3`), a
 fraction (`1/3`), or pick a preset. Snapping, the grid and the rulers all

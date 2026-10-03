@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use typst_syntax::{LinkedNode, SyntaxKind};
 
 use crate::scene::{self, Call, Scene, Value};
+use crate::walk;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -63,6 +64,16 @@ pub enum Edit {
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
+    /// Wrap the calls in a named `group(name: "group", { ... })` where the
+    /// first of them is. They must sit in the same block; later ones move up
+    /// to join it. References from outside to their names become
+    /// `"group.name"`. `created` holds the group.
+    Group { calls: Vec<usize> },
+    /// Replace groups with their bodies, turning references like
+    /// `"g.r.east"` into `"r.east"`. Fails where that would change the
+    /// drawing: a group's own anchors in use, a transform that would leak, a
+    /// name clash. `created` holds the calls that were their statements.
+    Ungroup { calls: Vec<usize> },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +95,12 @@ pub struct Patch {
 /// Calls whose geometry is a transform, not a shape: moving a selection must
 /// not shift them.
 const TRANSFORMS: &[&str] = &["translate", "rotate", "scale", "set-origin", "set-transform", "set-viewport"];
+
+/// Calls that change how everything after them in their block is drawn.
+fn changes_state(call: &Call) -> bool {
+    let base = base_name(&call.callee);
+    TRANSFORMS.contains(&base) || base == "set-style" || base == "set-ctx"
+}
 
 pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
     let scene = scene::parse(source);
@@ -273,6 +290,15 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 };
                 created.push((patches.len(), sep.len()));
                 patches.push(patch(at..at, format!("{sep}{copy}")));
+            }
+        }
+        Edit::Group { calls } => {
+            group(source, &scene, calls, &mut patches, &mut created)?;
+        }
+        Edit::Ungroup { calls } => {
+            let mut names = Vec::new();
+            for group in outermost(&scene, calls)? {
+                ungroup(source, &scene, group, &mut names, &mut patches, &mut created)?;
             }
         }
     }
@@ -720,6 +746,246 @@ fn duplicate_text(source: &str, scene: &Scene, call: &Call, dx: f64, dy: f64) ->
     Ok(finish(text, local, vec![])?.source)
 }
 
+/// Wraps the calls in a named group (see `Edit::Group`).
+fn group(source: &str, scene: &Scene, ids: &[usize], patches: &mut Vec<Patch>, created: &mut Vec<(usize, usize)>) -> Result<(), String> {
+    let calls = outermost(scene, ids)?;
+    let Some(&first) = calls.first() else {
+        return Err("nothing to group".into());
+    };
+    if calls.iter().any(|c| c.in_loop) {
+        return Err("can't group shapes inside a loop".into());
+    }
+    let root = typst_syntax::parse(source);
+    let root = LinkedNode::new(&root);
+    let blocks: Vec<Option<Range<usize>>> =
+        calls.iter().map(|c| find_node(&root, &c.range, SyntaxKind::FuncCall).and_then(|n| n.parent().map(|p| p.range()))).collect();
+    let code = match &blocks[0] {
+        Some(block) if blocks.iter().all(|b| b == &blocks[0]) => find_node(&root, block, SyntaxKind::Code),
+        _ => None,
+    }
+    .ok_or("can only group shapes in the same block")?;
+    let selected = |r: &Range<usize>| calls.iter().any(|c| c.range == *r);
+    let siblings: Vec<LinkedNode> = code.children().filter(|c| !is_trivia(c.kind())).collect();
+
+    // A transform or style moved into the group would stop applying to the
+    // shapes after it that stay outside.
+    for c in calls.iter().filter(|c| changes_state(c)) {
+        if siblings.iter().any(|s| s.offset() > c.range.start && !selected(&s.range()) && s.kind() != SyntaxKind::LetBinding) {
+            return Err(format!("can't group {}(..): it would stop applying to the shapes after it", base_name(&c.callee)));
+        }
+    }
+    // Later calls move up past the statements between them: they mustn't use
+    // anything those define.
+    for c in &calls[1..] {
+        let (mut names, mut vars) = (Vec::new(), Vec::new());
+        for s in siblings.iter().filter(|s| s.offset() > first.range.start && s.offset() < c.range.start && !selected(&s.range())) {
+            if s.kind() == SyntaxKind::LetBinding {
+                vars.extend(let_names(s));
+            } else {
+                names.extend(defined_names(scene, &s.range()));
+            }
+        }
+        let node = find_node(&root, &c.range, SyntaxKind::FuncCall).ok_or("can't find a shape to group")?;
+        if let Some(used) = uses_any(&node, &names, &vars) {
+            return Err(format!("can't group: {}(..) uses {used}, which comes between the shapes", base_name(&c.callee)));
+        }
+    }
+
+    let name = std::iter::once("group".to_string()).chain((2..).map(|i| format!("group-{i}"))).find(|n| !name_taken(scene, n)).unwrap();
+    // References to the grouped shapes from outside now go through the group.
+    let moved: Vec<String> = calls.iter().filter_map(|c| element_name(c)).collect();
+    let inside = |r: &Range<usize>| calls.iter().any(|c| c.range.start <= r.start && r.end <= c.range.end);
+    let canvas = scene.canvas_of(first.id).ok_or("shapes outside a canvas")?;
+    let mut strs = Vec::new();
+    if let Some(body) = find_node(&root, &canvas.body, SyntaxKind::CodeBlock) {
+        strings(&body, &mut strs);
+    }
+    for (range, value) in strs {
+        if range.start <= first.range.start || inside(&range) {
+            continue;
+        }
+        let Some(prefix) = path_from(scene, first.parent, &range) else { continue };
+        if let Some(rest) = value.strip_prefix(prefix.as_str()).filter(|rest| moved.iter().any(|n| refers(rest, n))) {
+            patches.push(patch(range, format!("{:?}", format!("{prefix}{name}.{rest}"))));
+        }
+    }
+
+    let indent = indent_at(source, first.range.start);
+    let line_start = source[..first.range.start].rfind('\n').map_or(0, |i| i + 1);
+    let texts = calls.iter().map(|c| &source[c.range.clone()]);
+    let text = if source[line_start..first.range.start].trim().is_empty() {
+        let body: String = texts.map(|t| format!("\n{indent}  {}", t.replace('\n', "\n  "))).collect();
+        format!("group(name: {name:?}, {{{body}\n{indent}}})")
+    } else {
+        format!("group(name: {name:?}, {{ {} }})", texts.collect::<Vec<_>>().join("; "))
+    };
+    created.push((patches.len(), 0));
+    patches.push(patch(first.range.clone(), text));
+    for c in &calls[1..] {
+        patches.push(patch(statement_range(source, &c.range), String::new()));
+    }
+    Ok(())
+}
+
+/// Replaces a group with its body (see `Edit::Ungroup`). `released` holds
+/// the names earlier groups in the same edit let out, and gains this one's.
+fn ungroup(
+    source: &str,
+    scene: &Scene,
+    group: &Call,
+    released: &mut Vec<String>,
+    patches: &mut Vec<Patch>,
+    created: &mut Vec<(usize, usize)>,
+) -> Result<(), String> {
+    if base_name(&group.callee) != "group" {
+        return Err("only a group can be ungrouped".into());
+    }
+    if let Some(key) = group.args.iter().filter_map(|a| a.key.as_deref()).find(|k| !matches!(*k, "name" | "padding")) {
+        return Err(format!("can't ungroup: its {key}: argument would be lost"));
+    }
+    let root = typst_syntax::parse(source);
+    let root = LinkedNode::new(&root);
+    let node = find_node(&root, &group.range, SyntaxKind::FuncCall).ok_or("can't find the group")?;
+    let block = walk::args(&node)
+        .and_then(|a| a.children().filter(|c| c.kind() == SyntaxKind::CodeBlock).last())
+        .ok_or("this group has no { } body to unwrap")?;
+    let stmts: Vec<LinkedNode> =
+        walk::block_code(&block).map(|code| code.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Semicolon)).collect()).unwrap_or_default();
+    let children: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent == Some(group.id)).collect();
+
+    let after = node.parent().is_some_and(|code| code.children().any(|s| s.offset() > group.range.start && !is_trivia(s.kind()) && s.kind() != SyntaxKind::LetBinding));
+    if let Some(c) = children.iter().find(|c| changes_state(c)).filter(|_| after) {
+        return Err(format!("can't ungroup: its {}(..) would apply to the shapes after the group", base_name(&c.callee)));
+    }
+    let names: Vec<String> = children.iter().filter_map(|c| element_name(c)).collect();
+    let canvas = scene.canvas_of(group.id).ok_or("group is outside a canvas")?;
+    let outside = canvas.calls.iter().filter(|c| c.parent == group.parent && c.id != group.id).filter_map(|c| element_name(c));
+    if let Some(clash) = outside.chain(released.iter().cloned()).find(|n| names.contains(n)) {
+        return Err(format!("can't ungroup: another shape is already named \"{clash}\""));
+    }
+    released.extend(names.iter().cloned());
+    // `"g.r.east"` becomes `"r.east"`; the group's own anchors have no stand-in.
+    if let Some(g) = &group.name {
+        let within = |r: &Range<usize>| group.range.start <= r.start && r.end <= group.range.end;
+        let mut strs = Vec::new();
+        if let Some(body) = find_node(&root, &canvas.body, SyntaxKind::CodeBlock) {
+            strings(&body, &mut strs);
+        }
+        for (range, value) in strs.into_iter().filter(|(r, _)| !within(r)) {
+            let Some(prefix) = path_from(scene, group.parent, &range) else { continue };
+            let Some(rest) = value.strip_prefix(prefix.as_str()).filter(|rest| refers(rest, g)) else { continue };
+            match rest[g.len()..].strip_prefix('.').filter(|child| names.iter().any(|n| refers(child, n))) {
+                Some(child) => patches.push(patch(range, format!("{:?}", format!("{prefix}{child}")))),
+                None => return Err(format!("can't ungroup: \"{value}\" uses the group's own anchors")),
+            }
+        }
+    }
+
+    let (Some(first), Some(last)) = (stmts.first(), stmts.last()) else {
+        patches.push(patch(statement_range(source, &group.range), String::new()));
+        return Ok(());
+    };
+    let line_start = source[..first.offset()].rfind('\n').map_or(0, |i| i + 1);
+    let own_line = line_start > block.offset() && source[line_start..first.offset()].trim().is_empty();
+    let (child_indent, group_indent) = (indent_at(source, first.offset()), indent_at(source, group.range.start));
+    let dedent = |t: &str| if own_line { t.replace(&format!("\n{child_indent}"), &format!("\n{group_indent}")) } else { t.to_string() };
+    let mut text = dedent(&source[first.offset()..last.range().end]);
+    // A trailing `// comment` mustn't swallow what follows the group on its line.
+    let rest_of_line = source[group.range.end..].split('\n').next().unwrap_or_default();
+    if last.kind() == SyntaxKind::LineComment && !rest_of_line.trim().is_empty() {
+        text.push_str(&format!("\n{group_indent}"));
+    }
+    for s in stmts.iter().filter(|s| s.kind() == SyntaxKind::FuncCall) {
+        created.push((patches.len(), dedent(&source[first.offset()..s.offset()]).len()));
+    }
+    patches.push(patch(group.range.clone(), text));
+    Ok(())
+}
+
+fn is_trivia(kind: SyntaxKind) -> bool {
+    matches!(kind, SyntaxKind::Space | SyntaxKind::Semicolon | SyntaxKind::LineComment | SyntaxKind::BlockComment)
+}
+
+/// The name other calls use for the element a call draws: its `name:`, or
+/// the name an `anchor("A", ..)` defines.
+fn element_name(call: &Call) -> Option<String> {
+    match (base_name(&call.callee), call.args.first().map(|a| &a.value)) {
+        ("anchor", Some(Value::Str { value })) => Some(value.clone()),
+        _ => call.name.clone(),
+    }
+}
+
+/// Names of the elements drawn by the statement at `range` (not those nested
+/// in its groups, which are reached through the group's name).
+fn defined_names(scene: &Scene, range: &Range<usize>) -> Vec<String> {
+    let calls: Vec<&Call> =
+        scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| range.start <= c.range.start && c.range.end <= range.end).collect();
+    calls.iter().filter(|c| !c.parent.is_some_and(|p| calls.iter().any(|o| o.id == p))).filter_map(|c| element_name(c)).collect()
+}
+
+/// The variables a `let` binds.
+fn let_names(binding: &LinkedNode) -> Vec<String> {
+    fn idents(node: &LinkedNode, out: &mut Vec<String>) {
+        if node.kind() == SyntaxKind::Ident {
+            out.push(node.get().leaf_text().to_string());
+        }
+        for child in node.children() {
+            idents(&child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for child in binding.children() {
+        match child.kind() {
+            SyntaxKind::Eq => break,
+            // `let f(x) = ..`: just the function's name.
+            SyntaxKind::Closure => out.extend(child.children().find(|c| c.kind() == SyntaxKind::Ident).map(|c| c.get().leaf_text().to_string())),
+            _ => idents(&child, &mut out),
+        }
+    }
+    out
+}
+
+/// The first of the element names or variables the node uses, if any.
+fn uses_any(node: &LinkedNode, names: &[String], vars: &[String]) -> Option<String> {
+    let hit = match node.kind() {
+        SyntaxKind::Str => node.get().cast::<typst_syntax::ast::Str>().and_then(|s| names.iter().find(|n| refers(&s.get(), n)).cloned()),
+        SyntaxKind::Ident if !names_something(node) => vars.iter().find(|v| node.get().leaf_text() == v.as_str()).cloned(),
+        _ => None,
+    };
+    hit.or_else(|| node.children().find_map(|c| uses_any(&c, names, vars)))
+}
+
+/// Whether an anchor reference like `"a.east"` points into the element `name`.
+fn refers(value: &str, name: &str) -> bool {
+    value.strip_prefix(name).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// Every string literal in the node, with its value.
+fn strings(node: &LinkedNode, out: &mut Vec<(Range<usize>, String)>) {
+    if let Some(s) = node.get().cast::<typst_syntax::ast::Str>() {
+        out.push((node.range(), s.get().to_string()));
+    }
+    for child in node.children() {
+        strings(&child, out);
+    }
+}
+
+/// How code at `at` reaches the elements in `parent`'s body: through the
+/// names of the groups around them that `at` is outside of (`"g."`), or
+/// `None` if one of those groups has no name.
+fn path_from(scene: &Scene, parent: Option<usize>, at: &Range<usize>) -> Option<String> {
+    let mut path = Vec::new();
+    let mut next = parent.and_then(|id| scene.call(id));
+    while let Some(call) = next {
+        if call.range.start <= at.start && at.end <= call.range.end {
+            break;
+        }
+        path.push(call.name.clone()?);
+        next = call.parent.and_then(|id| scene.call(id));
+    }
+    Some(path.iter().rev().map(|n| format!("{n}.")).collect())
+}
+
 /// Formats a number for source: at most 4 decimals, no trailing zeros.
 pub fn num(value: f64) -> String {
     let rounded = (value * 1e4).round() / 1e4;
@@ -855,6 +1121,13 @@ mod tests {
                         Edit::Delete { .. } => assert!(after < total),
                         Edit::Duplicate { .. } => assert!(after > total),
                         _ => assert_eq!(after, total),
+                    }
+                }
+                // These may refuse; when they apply, the file stays valid.
+                for edit in [Edit::Group { calls: vec![call.id] }, Edit::Ungroup { calls: vec![call.id] }] {
+                    if let Ok(out) = apply(&src, &edit) {
+                        let summary = crate::summarize(&out.source);
+                        assert!(summary.errors.is_empty(), "{edit:?} on {}: {:?}\n{}", call.callee, summary.errors, out.source);
                     }
                 }
             }
@@ -1032,6 +1305,99 @@ mod tests {
         let (p1, p2) = (point_id(src, "P1"), point_id(src, "P2"));
         let out = apply(src, &Edit::MovePoints { points: vec![p1, p2, p1], dx: 0.5, dy: -1.0 }).unwrap();
         assert!(out.source.contains("anchor(\"P1\", (1.5, 1))") && out.source.contains("anchor(\"P2\", (3.5, 3))"), "{}", out.source);
+    }
+
+    #[test]
+    fn group_wraps_calls_and_redirects_references() {
+        let src = "#canvas({\n  import draw: *\n  rect((0, 0), (4, 2), name: \"box\")\n  content(\"box.center\", [Hi])\n  line(\"box.east\", (6, 1))\n})\n";
+        let calls = vec![shared_id(src, "rect("), shared_id(src, "content(")];
+        let out = apply(src, &Edit::Group { calls }).unwrap();
+        assert_eq!(
+            out.source,
+            "#canvas({\n  import draw: *\n  group(name: \"group\", {\n    rect((0, 0), (4, 2), name: \"box\")\n    content(\"box.center\", [Hi])\n  })\n  line(\"group.box.east\", (6, 1))\n})\n"
+        );
+        let scene = crate::parse(&out.source);
+        assert_eq!(scene.call(out.created[0]).unwrap().callee, "group");
+        assert_eq!(scene.canvases[0].calls.iter().filter(|c| c.parent == Some(out.created[0])).count(), 2);
+    }
+
+    #[test]
+    fn group_moves_later_calls_up_unless_they_depend_on_what_they_pass() {
+        let src = "#canvas({\n  import draw: *\n  circle((0, 0))\n  rect((1, 1), (2, 2), name: \"r\")\n  line((0, 0), \"r.east\")\n})\n";
+        let out = apply(src, &Edit::Group { calls: vec![shared_id(src, "circle("), shared_id(src, "line(")] });
+        assert!(out.unwrap_err().contains("uses r"));
+        let out = apply(src, &Edit::Group { calls: vec![shared_id(src, "circle("), shared_id(src, "rect(")] }).unwrap();
+        assert!(out.source.contains("    circle((0, 0))\n    rect((1, 1), (2, 2), name: \"r\")\n  })\n  line((0, 0), \"group.r.east\")"), "{}", out.source);
+        let skip = apply(src, &Edit::Group { calls: vec![shared_id(src, "rect("), shared_id(src, "circle(")] }).unwrap();
+        assert_eq!(skip.source, out.source);
+    }
+
+    #[test]
+    fn group_refuses_what_would_change_the_drawing() {
+        // Different blocks.
+        assert!(apply(SRC, &Edit::Group { calls: vec![id("rect"), id("content")] }).is_err());
+        // Inside a loop.
+        assert!(apply(SRC, &Edit::Group { calls: vec![id("circle")] }).is_err());
+        // A transform the next shape relies on.
+        let src = "#canvas({\n  import draw: *\n  rotate(10deg)\n  rect((0, 0), (1, 1))\n  circle((0, 0))\n})\n";
+        assert!(apply(src, &Edit::Group { calls: vec![shared_id(src, "rotate("), shared_id(src, "rect(")] }).is_err());
+        assert!(apply(src, &Edit::Group { calls: vec![shared_id(src, "rotate("), shared_id(src, "rect("), shared_id(src, "circle(")] }).is_ok());
+    }
+
+    #[test]
+    fn group_inside_a_group_keeps_the_outer_path() {
+        let src = "#canvas({\n  import draw: *\n  group(name: \"g\", {\n    rect((0, 0), (1, 1), name: \"r\")\n    circle((0, 0), name: \"c\")\n  })\n  line(\"g.r.east\", \"g.c\")\n})\n";
+        let out = apply(src, &Edit::Group { calls: vec![shared_id(src, "rect(")] }).unwrap();
+        assert!(out.source.contains("line(\"g.group.r.east\", \"g.c\")"), "{}", out.source);
+        assert!(out.source.contains("    group(name: \"group\", {\n      rect((0, 0), (1, 1), name: \"r\")\n    })\n"), "{}", out.source);
+    }
+
+    #[test]
+    fn group_inline_calls() {
+        let src = "#canvas({ import draw: *; circle((0, 0)); rect((0, 0), (1, 1)) })";
+        let out = apply(src, &Edit::Group { calls: vec![shared_id(src, "circle("), shared_id(src, "rect(")] }).unwrap();
+        assert_eq!(out.source, "#canvas({ import draw: *; group(name: \"group\", { circle((0, 0)); rect((0, 0), (1, 1)) });  })");
+        assert!(crate::summarize(&out.source).errors.is_empty());
+    }
+
+    #[test]
+    fn ungroup_unwraps_and_redirects_references() {
+        let src = "#canvas({\n  import draw: *\n  group(name: \"g\", {\n    rect((0, 0), (4, 2), name: \"box\")\n    content(\"box.center\", [Hi])\n  })\n  line(\"g.box.east\", (6, 1))\n})\n";
+        let out = apply(src, &Edit::Ungroup { calls: vec![shared_id(src, "group(")] }).unwrap();
+        assert_eq!(
+            out.source,
+            "#canvas({\n  import draw: *\n  rect((0, 0), (4, 2), name: \"box\")\n  content(\"box.center\", [Hi])\n  line(\"box.east\", (6, 1))\n})\n"
+        );
+        let created: Vec<&str> = out.created.iter().map(|&i| &out.source[i..i + 5]).collect();
+        assert_eq!(created, ["rect(", "conte"]);
+        // Group and ungroup round-trip.
+        // Several at once.
+        let two = "#canvas({\n  import draw: *\n  group({ circle((0, 0)) })\n  group({\n    rect((0, 0), (1, 1))\n    line((0, 0), (1, 1))\n  })\n})\n";
+        let groups = crate::parse(two).canvases[0].calls.iter().filter(|c| c.callee == "group").map(|c| c.id).collect();
+        let out2 = apply(two, &Edit::Ungroup { calls: groups }).unwrap();
+        assert_eq!(out2.source, "#canvas({\n  import draw: *\n  circle((0, 0))\n  rect((0, 0), (1, 1))\n  line((0, 0), (1, 1))\n})\n");
+        assert_eq!(out2.created.len(), 3);
+        let grouped = apply(&out.source, &Edit::Group { calls: out.created.clone() }).unwrap();
+        let back = apply(&grouped.source, &Edit::Ungroup { calls: grouped.created.clone() }).unwrap();
+        assert_eq!(back.source, out.source);
+    }
+
+    #[test]
+    fn ungroup_refuses_what_would_change_the_drawing() {
+        // The group's own anchor in use.
+        let src = "#canvas({\n  import draw: *\n  group(name: \"g\", { rect((0, 0), (1, 1)) })\n  line(\"g.north\", (2, 2))\n})\n";
+        assert!(apply(src, &Edit::Ungroup { calls: vec![shared_id(src, "group(")] }).unwrap_err().contains("g.north"));
+        // A rotation that would leak to what follows.
+        assert!(apply(SRC, &Edit::Ungroup { calls: vec![id("group")] }).is_err());
+        // A clashing name.
+        let src = "#canvas({\n  import draw: *\n  circle((0, 0), name: \"r\")\n  group({ rect((0, 0), (1, 1), name: \"r\") })\n})\n";
+        assert!(apply(src, &Edit::Ungroup { calls: vec![shared_id(src, "group(")] }).is_err());
+        // Not a group.
+        assert!(apply(SRC, &Edit::Ungroup { calls: vec![id("line")] }).is_err());
+        // Two groups whose children share a name.
+        let src = "#canvas({\n  import draw: *\n  group({ circle((0, 0), name: \"a\") })\n  group({ circle((1, 0), name: \"a\") })\n})\n";
+        let groups = crate::parse(src).canvases[0].calls.iter().filter(|c| c.callee == "group").map(|c| c.id).collect();
+        assert!(apply(src, &Edit::Ungroup { calls: groups }).is_err());
     }
 
     #[test]

@@ -230,6 +230,12 @@
       if (editor.selected.length) editor.edit({ kind: "duplicate", calls: editor.selected, dx: 0.5, dy: -0.5 });
       return;
     }
+    if (mod && e.key.toLowerCase() === "g") {
+      e.preventDefault();
+      if (e.shiftKey) editor.ungroupSelection();
+      else editor.groupSelection();
+      return;
+    }
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       editor.selection = editor.calls.filter((c) => editor.isSelectable(c)).map((c) => c.id);

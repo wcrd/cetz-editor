@@ -115,6 +115,7 @@
         onkeydown={onKey}
         spellcheck="false"
       />
+      {#if editor.isGroup(call.id)}<button title="Put its shapes back in place of the group (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
     </header>
     {#if call.in_loop}<p class="note">Inside a loop: edits apply to every iteration.</p>{/if}
     {#if call.conditional}<p class="note">Inside an <code>if</code>: only drawn when its condition holds.</p>{/if}
@@ -188,7 +189,12 @@
     </section>
   {:else if editor.selected.length > 1}
     {@const ids = editor.selected}
-    <header><span class="callee">{ids.length} shapes</span></header>
+    <header>
+      <span class="callee">{ids.length} shapes</span>
+      <span class="spacer"></span>
+      {#if ids.some((id) => editor.isGroup(id))}<button title="Put each group's shapes back in its place (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
+      <button title="Wrap these in a group (⌘G)" onclick={() => editor.groupSelection()}>Group</button>
+    </header>
     <section>
       <div class="quick">
         <label>Fill <input type="color" value="#ffffff" onchange={(e) => setNamed(ids, "fill", `rgb("${e.currentTarget.value}")`)} /></label>
@@ -223,7 +229,8 @@
   .callee {
     font: 600 13px ui-monospace, "SF Mono", Menlo, monospace;
   }
-  .name {
+  .name,
+  .spacer {
     flex: 1;
   }
   h3 {

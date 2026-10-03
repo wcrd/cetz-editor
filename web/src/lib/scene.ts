@@ -103,7 +103,9 @@ export type Edit =
   | { kind: "delete"; calls: number[] }
   | { kind: "insert"; canvas: number | null; text: string }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
-  | { kind: "duplicate"; calls: number[]; dx: number; dy: number };
+  | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
+  | { kind: "group"; calls: number[] }
+  | { kind: "ungroup"; calls: number[] };
 
 /** A change in byte offsets of the source it applies to. */
 export interface Patch {

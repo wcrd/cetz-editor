@@ -389,6 +389,21 @@ export class Editor {
     }
   }
 
+  /** Wraps the selected shapes in a new group, which becomes the selection. */
+  groupSelection() {
+    if (this.selected.length) this.edit({ kind: "group", calls: this.selected });
+  }
+
+  /** Replaces each selected group with its children, which become the selection. */
+  ungroupSelection() {
+    const groups = this.selected.filter((id) => this.isGroup(id));
+    if (groups.length) this.edit({ kind: "ungroup", calls: groups });
+  }
+
+  isGroup(id: number): boolean {
+    return baseName(this.callById.get(id)?.callee ?? "") === "group";
+  }
+
   flash(message: string) {
     this.notice = message;
     clearTimeout(this.#noticeTimer);
