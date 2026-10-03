@@ -9,7 +9,7 @@ import type { TypstCompiler, CompilerStatus, Diagnostic, ExportFormat } from "./
 import type { FileHandle } from "./files";
 import { OffsetIndex } from "./offsets";
 import { formatStep, parseStep } from "./pixels";
-import { isVec, transformPoint, type Probe, type Vec3 } from "./probe";
+import { isVec, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
 import {
   allCalls,
   applyEdit,
@@ -410,6 +410,72 @@ export class Editor {
       const what = points.length === 1 ? `Deleted ${this.pointLabel(points[0])}` : `Deleted ${points.length} points`;
       this.flash(kept > 0 ? `${what} · ${kept} use${kept === 1 ? "" : "s"} kept as coordinates` : what);
     }
+  }
+
+  // --- Align and distribute ---------------------------------------------------
+
+  /** A shape's bounds on the page, children included. */
+  boundsOf(id: number): { x0: number; y0: number; x1: number; y1: number } | undefined {
+    const family = this.family(id);
+    let box: { x0: number; y0: number; x1: number; y1: number } | undefined;
+    for (const probe of this.probes.filter((p) => family.has(p.id))) {
+      const b = probeBounds(probe);
+      if (!b) continue;
+      const frame = { origin: probe.origin, length: probe.length };
+      const [ax, ay] = this.toPage(frame, [b.x0, b.y1]);
+      const [bx, by] = this.toPage(frame, [b.x1, b.y0]);
+      box = box ? { x0: Math.min(box.x0, ax), y0: Math.min(box.y0, ay), x1: Math.max(box.x1, bx), y1: Math.max(box.y1, by) } : { x0: ax, y0: ay, x1: bx, y1: by };
+    }
+    return box;
+  }
+
+  /**
+   * Lines the selected shapes up by their bounds (`left` … `bottom`), or
+   * spaces three or more evenly across (`across`) or down (`down`), as one
+   * edit that moves each shape.
+   */
+  alignSelection(how: "left" | "center" | "right" | "top" | "middle" | "bottom" | "across" | "down") {
+    const items = this.selected.flatMap((id) => {
+      const b = this.boundsOf(id);
+      const probe = this.probesById.get(id)?.[0];
+      return b && probe ? [{ id, b, probe }] : [];
+    });
+    if (items.length < 2) return;
+    const x0 = Math.min(...items.map((i) => i.b.x0));
+    const x1 = Math.max(...items.map((i) => i.b.x1));
+    const y0 = Math.min(...items.map((i) => i.b.y0));
+    const y1 = Math.max(...items.map((i) => i.b.y1));
+    // Page-space shift for each shape.
+    const shift = new Map<number, [number, number]>();
+    for (const { id, b } of items) {
+      if (how === "left") shift.set(id, [x0 - b.x0, 0]);
+      if (how === "right") shift.set(id, [x1 - b.x1, 0]);
+      if (how === "center") shift.set(id, [(x0 + x1) / 2 - (b.x0 + b.x1) / 2, 0]);
+      if (how === "top") shift.set(id, [0, y0 - b.y0]);
+      if (how === "bottom") shift.set(id, [0, y1 - b.y1]);
+      if (how === "middle") shift.set(id, [0, (y0 + y1) / 2 - (b.y0 + b.y1) / 2]);
+    }
+    if (how === "across" || how === "down") {
+      if (items.length < 3) return;
+      const horizontal = how === "across";
+      const start = (i: (typeof items)[number]) => (horizontal ? i.b.x0 : i.b.y0);
+      const size = (i: (typeof items)[number]) => (horizontal ? i.b.x1 - i.b.x0 : i.b.y1 - i.b.y0);
+      const sorted = [...items].sort((a, b) => start(a) + size(a) / 2 - (start(b) + size(b) / 2));
+      const span = (horizontal ? x1 - x0 : y1 - y0) - sorted.reduce((n, i) => n + size(i), 0);
+      const gap = span / (sorted.length - 1);
+      let at = horizontal ? x0 : y0;
+      for (const i of sorted) {
+        shift.set(i.id, horizontal ? [at - start(i), 0] : [0, at - start(i)]);
+        at += size(i) + gap;
+      }
+    }
+    const edits: Edit[] = items.flatMap(({ id, probe }) => {
+      const [px, py] = shift.get(id) ?? [0, 0];
+      if (Math.abs(px) < 1e-9 && Math.abs(py) < 1e-9) return [];
+      const [dx, dy] = untransformDelta(probe.transform, [px / probe.length, -py / probe.length]);
+      return [{ kind: "move", calls: [id], dx: Math.round(dx * 1e4) / 1e4, dy: Math.round(dy * 1e4) / 1e4 }];
+    });
+    if (edits.length) this.edit({ kind: "batch", edits });
   }
 
   // --- Clipboard ------------------------------------------------------------

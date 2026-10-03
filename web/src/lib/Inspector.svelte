@@ -21,6 +21,17 @@
   // A rotated shape's scope shows the shape.
   const call = $derived(editor.selected.length === 1 ? (editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0])) : undefined);
 
+  const ALIGN: { how: Parameters<Editor["alignSelection"]>[0]; title: string; icon: string }[] = [
+    { how: "left", title: "Align left edges", icon: "M4 3v18M8 7h10v4H8zM8 14h6v4H8z" },
+    { how: "center", title: "Align horizontal centres", icon: "M12 3v18M6 7h12v4H6zM9 14h6v4H9z" },
+    { how: "right", title: "Align right edges", icon: "M20 3v18M6 7h10v4H6zM10 14h6v4h-6z" },
+    { how: "top", title: "Align top edges", icon: "M3 4h18M7 8h4v10H7zM14 8h4v6h-4z" },
+    { how: "middle", title: "Align vertical centres", icon: "M3 12h18M7 6h4v12H7zM14 9h4v6h-4z" },
+    { how: "bottom", title: "Align bottom edges", icon: "M3 20h18M7 6h4v10H7zM14 10h4v6h-4z" },
+    { how: "across", title: "Space evenly across (3 or more)", icon: "M3 4v16M21 4v16M9 8h6v8H9z" },
+    { how: "down", title: "Space evenly down (3 or more)", icon: "M4 3h16M4 21h16M8 9h8v6H8z" },
+  ];
+
   const COMMON_KEYS = ["stroke", "fill", "mark", "radius", "padding", "frame", "anchor", "angle", "name"];
 
   function label(call: Call, arg: Arg, i: number): string {
@@ -224,6 +235,16 @@
       {#if ids.some((id) => editor.isGroup(id))}<button title="Put each group's shapes back in its place (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
       <button title="Wrap these in a group (⌘G)" onclick={() => editor.groupSelection()}>Group</button>
     </header>
+    <section class="align">
+      {#each ALIGN as a (a.how)}
+        <button
+          class="icon"
+          title={a.title}
+          disabled={(a.how === "across" || a.how === "down") && ids.length < 3}
+          onclick={() => editor.alignSelection(a.how)}><svg viewBox="0 0 24 24"><path d={a.icon} /></svg></button
+        >
+      {/each}
+    </section>
     <!-- Rotated shapes' scopes edit as their shapes. -->
     {@const shapes = ids.map((id) => editor.rotatedShape(id)?.id ?? id)}
     {@const calls = shapes.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
@@ -353,6 +374,27 @@
     color: var(--muted);
     font-size: 11px;
     white-space: nowrap;
+  }
+  .align {
+    display: flex;
+    gap: 3px;
+  }
+  .align button {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    padding: 3px 0;
+  }
+  .align button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .align svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
   }
   button.small {
     padding: 1px 6px;
