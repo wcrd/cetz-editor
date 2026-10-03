@@ -651,7 +651,10 @@
   const snapTargets = $derived(
     editor.probes.flatMap((probe) => {
       const call = editor.callById.get(probe.id);
-      if (!call || call.parent !== null || call.in_loop || probe.drawables.length === 0) return [];
+      // A turned or scaled shape's scope lets its name through, so its anchors count too.
+      const wrap = call && call.parent !== null ? editor.wrapper(call.id) : undefined;
+      const topLevel = call && (call.parent === null || (wrap?.shape.id === call.id && wrap.scope.parent === null));
+      if (!call || !topLevel || call.in_loop || probe.drawables.length === 0) return [];
       return Object.entries(probe.anchors)
         .filter(([, v]) => isVec(v))
         .map(([anchor, v]) => ({ target: probe.id, anchor, point: editor.toPage(frameOf(probe), v as [number, number]) }));
@@ -717,7 +720,8 @@
    * anchors, and `vertices` adds lines' literal vertices. `at` is where the
    * reference will be written (an offset): only points and shapes defined
    * before it in its canvas count, though any vertex of that canvas does, as
-   * sharing one names it above both lines. Named points win
+   * sharing one names it above both lines. With `later`, shapes drawn after
+   * it count too (connecting moves the call after them). Named points win
    * near-ties, since they're what you usually mean, then vertices; an anchor
    * within a few pixels of either (a path's `mid` near a corner) never wins.
    */
@@ -730,7 +734,8 @@
       vertices = false,
       excludePoint,
       at,
-    }: { points?: boolean; anchors?: boolean; vertices?: boolean; excludePoint?: number; at?: number } = {},
+      later = false,
+    }: { points?: boolean; anchors?: boolean; vertices?: boolean; excludePoint?: number; at?: number; later?: boolean } = {},
   ): Snap | undefined {
     if (mods.free) return undefined;
     const radius = 8 / editor.zoom;
@@ -756,7 +761,8 @@
     if (anchors) {
       const shadowed = (q: Point) => corners.some((c) => Math.hypot(c.point[0] - q[0], c.point[1] - q[1]) < shadow);
       for (const t of snapTargets) {
-        if (excluded(t.target) || !usable(editor.callById.get(t.target)?.range)) continue;
+        // With `later`, shapes drawn after `at` count too: connecting moves the call after them.
+        if (excluded(t.target) || !usable(editor.callById.get(t.target)?.range, !later)) continue;
         if (shadowed(t.point)) continue;
         // Plain compass anchors (`east`) beat near-identical text ones (`base-east`, `mid-east`).
         consider(t, /^(base|mid)/.test(t.anchor) ? 1.15 : 1);
@@ -1456,7 +1462,7 @@
         if (drag.detach && drag.use) {
           // Detach this use: like a plain coordinate handle.
           const { call, arg, probe } = drag.use;
-          const snap = findSnap(p, call, { vertices: true, at: editor.callById.get(call)?.range.start });
+          const snap = findSnap(p, call, { vertices: true, at: editor.callById.get(call)?.range.start, later: true });
           const edit = snap && snapEdit(call, arg, snap);
           // A snap the edit refuses (a vertex it can't share this early) falls back to the grid.
           if (edit && editor.previewEdit(edit)) {
@@ -1484,7 +1490,7 @@
         break;
       }
       case "handle": {
-        const snap = findSnap(p, drag.call, { vertices: true, at: editor.callById.get(drag.call)?.range.start });
+        const snap = findSnap(p, drag.call, { vertices: true, at: editor.callById.get(drag.call)?.range.start, later: true });
         const edit = snap && snapEdit(drag.call, drag.arg, snap);
         // A snap the edit refuses (a vertex it can't share this early) falls back to the grid.
         if (edit && editor.previewEdit(edit)) {

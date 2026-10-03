@@ -82,7 +82,10 @@ pub enum Edit {
     /// pasted calls.
     Paste { canvas: Option<usize>, text: String, dx: f64, dy: f64 },
     /// Point a coordinate argument at another call's anchor
-    /// (`"name.anchor"`), naming that call first if it has no name.
+    /// (`"name.anchor"`), naming that call first if it has no name. CeTZ
+    /// knows names in drawing order, so a call drawn before its target first
+    /// moves to just after it (in front of it), when that's allowed as
+    /// `Reorder`; `created` then holds the moved call.
     Connect { call: usize, arg: usize, target: usize, anchor: String },
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
@@ -408,11 +411,11 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 return Err("can't connect a call to itself".into());
             }
             let at = find_call(&scene, *call)?.range.start;
+            if !defined_before(&scene, &find_call(&scene, *target)?.range, at) {
+                return connect_after(source, &scene, *call, *arg, *target, anchor);
+            }
             let arg = find_arg(&scene, *call, *arg)?;
             let target = find_call(&scene, *target)?;
-            if !defined_before(&scene, &target.range, at) {
-                return Err("can only connect to a shape drawn before this one".into());
-            }
             let name = match &target.name {
                 Some(name) => name.clone(),
                 None => {
@@ -846,6 +849,58 @@ fn extract_point(source: &str, scene: &Scene, call: &Call, arg: usize, name: &st
 /// Whether code at offset `at` can use what's defined over `range`: CeTZ
 /// resolves names in drawing order, so it must come first, and in the same
 /// canvas unless it's outside every canvas.
+/// `Connect` to a shape drawn after the call: the call's statement moves to
+/// just after the one holding the target in its block, then connects.
+fn connect_after(source: &str, scene: &Scene, call: usize, arg: usize, target: usize, anchor: &str) -> Result<EditResult, String> {
+    let refuse = |why: &str| format!("can only connect to a shape drawn before this one ({why})");
+    let moving = find_call(scene, call)?;
+    // The statement holding the target, in the call's block.
+    let mut holder = find_call(scene, target)?;
+    while holder.parent != moving.parent {
+        holder = holder.parent.and_then(|p| scene.call(p)).ok_or_else(|| refuse("it's in another block"))?;
+    }
+    if holder.id == call {
+        return Err("can't connect a call to its own shapes".into());
+    }
+    let moved = apply(source, &Edit::Reorder { calls: vec![call], target: holder.id, after: true }).map_err(|e| refuse(&e))?;
+    let new_call = *moved.created.first().ok_or_else(|| refuse("it can't move"))?;
+    // Only the moved call (and what's in it) changes places, so the target
+    // keeps its place among all the other calls.
+    let others = |scene: &Scene, moved: &Range<usize>| -> Vec<usize> {
+        let mut ids: Vec<usize> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| !(moved.start <= c.range.start && c.range.end <= moved.end)).map(|c| c.id).collect();
+        ids.sort_unstable();
+        ids
+    };
+    let index = others(scene, &moving.range).iter().position(|&id| id == target).ok_or_else(|| refuse("it's lost"))?;
+    let after = scene::parse(&moved.source);
+    let moved_range = after.call(new_call).ok_or_else(|| refuse("it's lost"))?.range.clone();
+    let target = *others(&after, &moved_range).get(index).ok_or_else(|| refuse("it's lost"))?;
+    let call = new_call;
+    let out = apply(&moved.source, &Edit::Connect { call, arg, target, anchor: anchor.to_string() })?;
+    let created = vec![map_offset(&out.patches, call)];
+    Ok(EditResult { patches: vec![diff(source, &out.source)], source: out.source, created })
+}
+
+/// Where an offset lands after the patches (each from the same source).
+fn map_offset(patches: &[Patch], at: usize) -> usize {
+    let shift: isize = patches.iter().filter(|p| p.end <= at).map(|p| p.text.len() as isize - (p.end - p.start) as isize).sum();
+    (at as isize + shift) as usize
+}
+
+/// One patch that turns `old` into `new`: what lies between their common start and end.
+fn diff(old: &str, new: &str) -> Patch {
+    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+        start -= 1;
+    }
+    let most = old.len().min(new.len()) - start;
+    let mut end = old.bytes().rev().zip(new.bytes().rev()).take(most).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
+        end -= 1;
+    }
+    patch(start..old.len() - end, new[start..new.len() - end].to_string())
+}
+
 fn defined_before(scene: &Scene, range: &Range<usize>, at: usize) -> bool {
     range.end <= at && scene.canvases.iter().filter(|c| c.body.contains(&range.start)).all(|c| c.body.contains(&at))
 }
@@ -2027,6 +2082,19 @@ mod tests {
         let out = run(Edit::Connect { call: id("content"), arg: 0, target: id("group"), anchor: "north".into() });
         assert!(out.source.contains(r#"content("g.north", [Hi])"#));
         assert!(apply(SRC, &Edit::Connect { call: id("line"), arg: 0, target: id("line"), anchor: "end".into() }).is_err());
+    }
+
+    #[test]
+    fn connect_moves_a_label_after_a_shape_drawn_later() {
+        let src = "#canvas({\n  import draw: *\n  content((0, 0), [Hi])\n  rect((1, 1), (2, 2))\n  scope({\n    rotate(30deg, origin: (4, 4))\n    circle((4, 4), name: \"c\")\n  })\n})";
+        let content = src.find("content(").unwrap();
+        let out = apply(src, &Edit::Connect { call: content, arg: 0, target: src.find("rect(").unwrap(), anchor: "east".into() }).unwrap();
+        assert!(out.source.contains("  rect((1, 1), (2, 2), name: \"rect\")\n  content(\"rect.east\", [Hi])\n"), "{}", out.source);
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 8], "content(");
+        assert_eq!(finish(src, out.patches.clone(), vec![]).unwrap().source, out.source);
+        // Inside a rotation's scope: after the scope.
+        let out = apply(src, &Edit::Connect { call: content, arg: 0, target: src.find("circle(").unwrap(), anchor: "north".into() }).unwrap();
+        assert!(out.source.contains("  })\n  content(\"c.north\", [Hi])\n})"), "{}", out.source);
     }
 
     #[test]
