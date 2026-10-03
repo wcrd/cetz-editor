@@ -412,7 +412,8 @@ export class Editor {
 
   /** Replaces each selected group with its children, which become the selection. */
   ungroupSelection() {
-    const groups = this.selected.filter((id) => this.isGroup(id));
+    // A rotated group's shapes stay in its scope, so they stay turned.
+    const groups = this.selected.map((id) => this.rotatedShape(id)?.id ?? id).filter((id) => this.isGroup(id));
     if (groups.length) this.edit({ kind: "ungroup", calls: groups });
   }
 
@@ -444,7 +445,17 @@ export class Editor {
   }
 
   isGroup(id: number): boolean {
-    return baseName(this.callById.get(id)?.callee ?? "") === "group";
+    return baseName((this.rotatedShape(id) ?? this.callById.get(id))?.callee ?? "") === "group";
+  }
+
+  /**
+   * The one shape in a `scope({ rotate(..); shape })`, which is how the
+   * rotation handle turns a shape, so the scope can be edited as that shape.
+   */
+  rotatedShape(id: number): Call | undefined {
+    if (baseName(this.callById.get(id)?.callee ?? "") !== "scope") return undefined;
+    const children = this.calls.filter((c) => c.parent === id).sort((a, b) => a.id - b.id);
+    return children.length === 2 && baseName(children[0].callee) === "rotate" ? children[1] : undefined;
   }
 
   flash(message: string) {

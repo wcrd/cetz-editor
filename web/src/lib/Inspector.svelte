@@ -18,7 +18,8 @@
     return () => (editor.focusInspector = undefined);
   });
 
-  const call = $derived(editor.selected.length === 1 ? editor.callById.get(editor.selected[0]) : undefined);
+  // A rotated shape's scope shows the shape.
+  const call = $derived(editor.selected.length === 1 ? (editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0])) : undefined);
 
   const COMMON_KEYS = ["stroke", "fill", "mark", "radius", "padding", "frame", "anchor", "angle", "name"];
 

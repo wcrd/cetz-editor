@@ -283,7 +283,8 @@
   /** Draggable points of a single selected call: its coordinate arguments. */
   const handles = $derived.by((): Handle[] => {
     if (editor.selected.length !== 1 || drag?.kind === "move") return [];
-    const call = editor.callById.get(editor.selected[0]);
+    // A rotated shape's scope gets the shape's handles, in its turned frame.
+    const call = editor.rotatedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     if (!call || !probe || call.in_loop) return [];
     return call.args.flatMap((_, i) => argHandle(call, probe, i) ?? []);
@@ -1083,8 +1084,10 @@
       }
       case "rotate": {
         const { spin } = drag;
+        // Whole degrees; ⇧ for 15° steps (which include level and upright), ⌘ for neither.
         let angle = wrapAngle(spin.angle + spin.sign * (pageAngle(spin.pivot, p) - drag.from));
-        if (!mods.free) angle = wrapAngle(Math.round(angle / 15) * 15);
+        if (mods.angle) angle = wrapAngle(Math.round(angle / 15) * 15);
+        else if (!mods.free) angle = Math.round(angle);
         drag.angle = angle;
         drag.edit = angle === spin.angle ? undefined : spin.edit(angle);
         if (drag.edit) editor.previewEdit(drag.edit);
@@ -1697,6 +1700,8 @@
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}
       <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "rotate"}
+      <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
       <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "create" && editor.tool === "polygon"}

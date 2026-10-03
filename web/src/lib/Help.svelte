@@ -63,7 +63,7 @@
     <section>
       <h3>Rotating</h3>
       <p>
-        Drag the knob above a selected shape. Polygons, stars and text set their <code>angle</code>; anything else is wrapped in
+        Drag the knob above a selected shape; hold <kbd>⇧</kbd> for 15° steps. Polygons, stars and text set their <code>angle</code>; anything else is wrapped in
         a <code>scope</code> that starts with a <code>rotate</code>, which keeps its name usable outside, and later turns edit
         that rotation.
       </p>
@@ -79,7 +79,7 @@
           point's handle, or moving shapes that use shared points, it detaches them instead of moving the point.
         </dd>
         <dt><kbd>⇧</kbd></dt>
-        <dd>Lock lines and joined segments to 15° steps.</dd>
+        <dd>Lock lines, joined segments and rotation to 15° steps.</dd>
         <dt><kbd>Space</kbd></dt>
         <dd>Hold and drag to pan.</dd>
       </dl>

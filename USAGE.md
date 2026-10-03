@@ -13,7 +13,7 @@ Press **?** in the app for a quick version of this guide.
 | **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
 | Drag a shape | Move it (snaps its first point to the grid) |
-| Drag the knob above a selected shape | Rotate it in 15° steps. Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate` |
+| Drag the knob above a selected shape | Rotate it (⇧: 15° steps, which include level and upright). Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate`. Selecting the scope selects the shape: its handles, inspector and Ungroup work as before |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
 | Double-click a group | Enter it to select its children (Esc to leave) |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
@@ -111,7 +111,8 @@ the step is a view setting remembered in this browser, which also sets the
 default.
 
 **Snapping modifiers.** Hold **⇧** to lock line, arrow and join segments to
-15° steps (lengths still snap to the grid along horizontal and vertical ones).
+15° steps (lengths still snap to the grid along horizontal and vertical ones),
+and the rotation handle to 15° steps.
 Polygon and arc radii snap to the grid step and their angles to 15°.
 Hold **⌘** (Ctrl elsewhere) to place without any snapping: no grid, points or
 anchors. It works for every drawing tool, handle and move.
