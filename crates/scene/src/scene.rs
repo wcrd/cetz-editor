@@ -15,6 +15,45 @@ pub struct Scene {
     pub canvases: Vec<Canvas>,
     /// Literal points defined once and shared by reference.
     pub points: Vec<Point>,
+    /// Every `let` binding, at the top level or in a canvas.
+    pub variables: Vec<Variable>,
+    /// Loops in canvas bodies that contain draw calls.
+    pub loops: Vec<Loop>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Variable {
+    pub name: String,
+    /// The whole `let` binding.
+    pub range: Range<usize>,
+    pub value_range: Range<usize>,
+    pub kind: VariableKind,
+    /// The value's source, shortened to one line.
+    pub summary: String,
+    /// The canvas the binding is in, if any.
+    pub canvas: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VariableKind {
+    /// A literal coordinate: `let A = (0, 0)`.
+    Point,
+    /// A dictionary or array holding literal coordinates.
+    Points,
+    Function,
+    Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Loop {
+    /// Byte offset of the `for`/`while`.
+    pub id: usize,
+    pub range: Range<usize>,
+    /// `(k, p)` in `for (k, p) in pts`; empty for `while`.
+    pub pattern: String,
+    /// `pts` in `for (k, p) in pts`, or the `while` condition.
+    pub iterable: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +81,8 @@ pub struct Call {
     pub parent: Option<usize>,
     /// Inside a loop: one call, possibly many shapes.
     pub in_loop: bool,
+    /// The innermost loop around the call.
+    pub loop_id: Option<usize>,
     pub conditional: bool,
 }
 
@@ -105,12 +146,76 @@ pub fn parse(source: &str) -> Scene {
     let linked = LinkedNode::new(&root);
     let points = points::collect(&linked);
     let mut canvases = Vec::new();
+    let mut loops = Vec::new();
     walk::for_each_canvas(&linked, &mut |canvas, body| {
         let mut calls = Vec::new();
         walk::for_each_call(body, Context::default(), &mut |call, ctx| calls.push(parse_call(source, &points, call, ctx)));
         canvases.push(Canvas { id: canvas.offset(), body: body.range(), calls });
     });
-    Scene { canvases, points }
+    let loop_ids: std::collections::BTreeSet<usize> = canvases.iter().flat_map(|c| &c.calls).filter_map(|c| c.loop_id).collect();
+    collect_loops(source, &linked, &loop_ids, &mut loops);
+    let mut variables = Vec::new();
+    collect_variables(source, &linked, &canvases, &points, &mut variables);
+    Scene { canvases, points, variables, loops }
+}
+
+fn collect_loops(source: &str, node: &LinkedNode, ids: &std::collections::BTreeSet<usize>, out: &mut Vec<Loop>) {
+    if matches!(node.kind(), SyntaxKind::ForLoop | SyntaxKind::WhileLoop) && ids.contains(&node.offset()) {
+        let parts: Vec<_> = node
+            .children()
+            .filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::For | SyntaxKind::In | SyntaxKind::While))
+            .collect();
+        let (pattern, iterable) = match (node.kind(), parts.as_slice()) {
+            (SyntaxKind::ForLoop, [pattern, iterable, ..]) => (source[pattern.range()].to_string(), source[iterable.range()].to_string()),
+            (_, [condition, ..]) => (String::new(), source[condition.range()].to_string()),
+            _ => (String::new(), String::new()),
+        };
+        out.push(Loop { id: node.offset(), range: node.range(), pattern, iterable });
+    }
+    for child in node.children() {
+        collect_loops(source, &child, ids, out);
+    }
+}
+
+fn collect_variables(source: &str, node: &LinkedNode, canvases: &[Canvas], points: &[Point], out: &mut Vec<Variable>) {
+    if node.kind() == SyntaxKind::LetBinding {
+        let parts: Vec<_> = node.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Let | SyntaxKind::Eq)).collect();
+        let found = match parts.as_slice() {
+            // `let f(x) = ...` parses as a closure holding the name.
+            [closure] if closure.kind() == SyntaxKind::Closure => closure
+                .children()
+                .find(|c| c.kind() == SyntaxKind::Ident)
+                .map(|name| (name.get().leaf_text().to_string(), closure.clone(), VariableKind::Function)),
+            [pattern, value] if pattern.kind() == SyntaxKind::Ident => {
+                let name = pattern.get().leaf_text().to_string();
+                let kind = if coord(value).is_some() {
+                    VariableKind::Point
+                } else if points.iter().any(|p| p.path.starts_with(&format!("{name}.")) || p.path.starts_with(&format!("{name}["))) {
+                    VariableKind::Points
+                } else if value.kind() == SyntaxKind::Closure {
+                    VariableKind::Function
+                } else {
+                    VariableKind::Value
+                };
+                Some((name, value.clone(), kind))
+            }
+            _ => None,
+        };
+        if let Some((name, value, kind)) = found {
+            let text = &source[value.range()];
+            let first = text.lines().next().unwrap_or_default().trim();
+            let summary = if first.chars().count() > 60 || text.contains('\n') {
+                format!("{}…", first.chars().take(60).collect::<String>())
+            } else {
+                first.to_string()
+            };
+            let canvas = canvases.iter().find(|c| c.body.start <= node.offset() && node.offset() < c.body.end).map(|c| c.id);
+            out.push(Variable { name, range: node.range(), value_range: value.range(), kind, summary, canvas });
+        }
+    }
+    for child in node.children() {
+        collect_variables(source, &child, canvases, points, out);
+    }
 }
 
 fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -> Call {
@@ -151,6 +256,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         args_close,
         parent: ctx.parent,
         in_loop: ctx.in_loop,
+        loop_id: ctx.loop_id,
         conditional: ctx.conditional,
     }
 }
@@ -291,6 +397,36 @@ mod tests {
             (0..8).map(path_of).collect::<Vec<_>>(),
             [Some("pts.A"), Some("pts.B"), Some("C"), Some("pts.B"), Some("O"), Some("pts.A"), None, None]
         );
+    }
+
+    #[test]
+    fn lists_variables_and_loops() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#let O = (0, 0)
+#canvas({
+  import draw: *
+  let pts = (A: (1, 0), B: (2, 1))
+  let face(..a) = line(..a.pos(), close: true)
+  let s = (stroke: red)
+  for (k, p) in pts { anchor(k, p) }
+  for (a, b) in (("A", "B"),) { line(a, b) }
+})"#;
+        let scene = parse(src);
+        let vars: Vec<_> = scene.variables.iter().map(|v| (v.name.as_str(), v.kind, v.canvas.is_some())).collect();
+        assert_eq!(
+            vars,
+            [
+                ("O", VariableKind::Point, false),
+                ("pts", VariableKind::Points, true),
+                ("face", VariableKind::Function, true),
+                ("s", VariableKind::Value, true),
+            ]
+        );
+        assert_eq!(scene.variables[3].summary, "(stroke: red)");
+        let loops: Vec<_> = scene.loops.iter().map(|l| (l.pattern.as_str(), l.iterable.as_str())).collect();
+        assert_eq!(loops, [("(k, p)", "pts"), ("(a, b)", r#"(("A", "B"),)"#)]);
+        let line = scene.canvases[0].calls.iter().find(|c| c.callee == "line").unwrap();
+        assert_eq!(line.loop_id, Some(scene.loops[1].id));
     }
 
     #[test]

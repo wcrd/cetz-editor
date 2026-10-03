@@ -11,6 +11,8 @@ pub struct Context {
     pub parent: Option<usize>,
     /// Inside a `for`/`while` body: the call may produce several instances.
     pub in_loop: bool,
+    /// Offset of the innermost enclosing loop.
+    pub loop_id: Option<usize>,
     /// Inside an `if`/`else` body.
     pub conditional: bool,
 }
@@ -49,7 +51,7 @@ fn walk_stmt<'a>(stmt: &LinkedNode<'a>, ctx: Context, f: &mut impl FnMut(&Linked
             }
         }
         SyntaxKind::ForLoop | SyntaxKind::WhileLoop => {
-            let inner = Context { in_loop: true, ..ctx };
+            let inner = Context { in_loop: true, loop_id: Some(stmt.offset()), ..ctx };
             for child in stmt.children().filter(|c| c.kind() == SyntaxKind::CodeBlock) {
                 for_each_call(&child, inner, f);
             }
