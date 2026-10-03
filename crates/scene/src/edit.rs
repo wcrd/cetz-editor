@@ -11,8 +11,21 @@ use crate::scene::{self, Call, Scene, Value};
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Edit {
     /// Translate every literal coordinate of the calls (and of calls nested
-    /// in them, like a group's children) by `(dx, dy)` canvas units.
-    Move { calls: Vec<usize>, dx: f64, dy: f64 },
+    /// in them, like a group's children) by `(dx, dy)` canvas units. Shared
+    /// points they use move too (once each), unless `detach` is set: then
+    /// those uses become literal coordinates in just these calls.
+    Move {
+        calls: Vec<usize>,
+        dx: f64,
+        dy: f64,
+        #[serde(default)]
+        detach: bool,
+    },
+    /// Move a shared point's definition; every use follows.
+    SetPoint { point: usize, x: f64, y: f64 },
+    /// Turn a literal coordinate argument into a shared point: insert
+    /// `anchor("name", (x, y))` before the call and use `"name"` instead.
+    ExtractPoint { call: usize, arg: usize, name: Option<String> },
     /// Set one positional coordinate argument. Literal coordinates keep their
     /// formatting; anything else (an anchor name, an expression) is replaced.
     SetCoord { call: usize, arg: usize, x: f64, y: f64 },
@@ -58,12 +71,35 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
     let mut created = Vec::new();
 
     match edit {
-        Edit::Move { calls, dx, dy } => {
-            for call in with_descendants(&scene, &outermost(&scene, calls)?) {
-                if !TRANSFORMS.contains(&base_name(&call.callee)) {
-                    move_coords(call, *dx, *dy, &mut patches);
-                }
+        Edit::Move { calls, dx, dy, detach } => {
+            let moved = with_descendants(&scene, &outermost(&scene, calls)?);
+            move_calls(&scene, &moved, *dx, *dy, *detach, &mut patches);
+        }
+        Edit::SetPoint { point, x, y } => {
+            let p = scene.point(*point).ok_or_else(|| format!("no shared point at offset {point}"))?;
+            patches.push(patch(p.x_range.clone(), num(*x)));
+            patches.push(patch(p.y_range.clone(), num(*y)));
+        }
+        Edit::ExtractPoint { call, arg, name } => {
+            let call = find_call(&scene, *call)?;
+            let arg = call.args.get(*arg).ok_or("no such argument")?;
+            if !matches!(arg.value, Value::Coord { .. }) || arg.point.is_some() {
+                return Err("only a literal coordinate can become a shared point".into());
             }
+            let name = match name {
+                Some(n) if !n.is_empty() && !n.contains('.') => n.clone(),
+                Some(_) => return Err("a point name can't be empty or contain '.'".into()),
+                None => unique_point_name(&scene),
+            };
+            let definition = format!("anchor({:?}, {})", name, arg.text);
+            let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+            if source[line_start..call.range.start].trim().is_empty() {
+                let indent = &source[line_start..call.range.start];
+                patches.push(patch(line_start..line_start, format!("{indent}{definition}\n")));
+            } else {
+                patches.push(patch(call.range.start..call.range.start, format!("{definition}; ")));
+            }
+            patches.push(patch(arg.value_range.clone(), format!("{name:?}")));
         }
         Edit::SetCoord { call, arg, x, y } => {
             let arg = find_arg(&scene, *call, *arg)?;
@@ -199,17 +235,53 @@ fn base_name(callee: &str) -> &str {
     callee.rsplit('.').next().unwrap_or(callee)
 }
 
-fn move_coords(call: &Call, dx: f64, dy: f64, patches: &mut Vec<Patch>) {
-    for (_, arg) in call.coords() {
-        if let Value::Coord { x, y, x_range, y_range } = &arg.value {
-            if dx != 0.0 {
-                patches.push(patch(x_range.clone(), num(x + dx)));
-            }
-            if dy != 0.0 {
-                patches.push(patch(y_range.clone(), num(y + dy)));
+/// Moves the calls' own literal coordinates and the shared points they use.
+fn move_calls(scene: &Scene, calls: &[&Call], dx: f64, dy: f64, detach: bool, patches: &mut Vec<Patch>) {
+    let mut points = std::collections::BTreeSet::new();
+    for call in calls.iter().filter(|c| !TRANSFORMS.contains(&base_name(&c.callee))) {
+        for arg in call.args.iter().filter(|a| a.key.is_none()) {
+            match (&arg.value, arg.point) {
+                // A literal that is itself a shared point: move it once.
+                (Value::Coord { .. }, Some(p)) if !detach => {
+                    points.insert(p);
+                }
+                (Value::Coord { x, y, x_range, y_range }, _) => {
+                    if dx != 0.0 {
+                        patches.push(patch(x_range.clone(), num(x + dx)));
+                    }
+                    if dy != 0.0 {
+                        patches.push(patch(y_range.clone(), num(y + dy)));
+                    }
+                }
+                (_, Some(p)) if detach => {
+                    if let Some(p) = scene.point(p) {
+                        patches.push(patch(arg.value_range.clone(), format!("({}, {})", num(p.x + dx), num(p.y + dy))));
+                    }
+                }
+                (_, Some(p)) => {
+                    points.insert(p);
+                }
+                _ => {}
             }
         }
     }
+    for p in points.into_iter().filter_map(|id| scene.point(id)) {
+        if dx != 0.0 {
+            patches.push(patch(p.x_range.clone(), num(p.x + dx)));
+        }
+        if dy != 0.0 {
+            patches.push(patch(p.y_range.clone(), num(p.y + dy)));
+        }
+    }
+}
+
+/// `P1`, `P2`, ... whichever isn't already an anchor or element name.
+fn unique_point_name(scene: &Scene) -> String {
+    let taken = |n: &str| {
+        scene.points.iter().any(|p| p.anchors.iter().any(|a| a == n))
+            || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n))
+    };
+    (1..).map(|i| format!("P{i}")).find(|n| !taken(n)).unwrap()
 }
 
 fn set_named(call: &Call, key: &str, text: Option<&str>, patches: &mut Vec<Patch>) -> Result<(), String> {
@@ -301,15 +373,14 @@ fn unique_name(scene: &Scene, base: &str) -> String {
 }
 
 /// The call's text with its coordinates shifted and its `name:` removed.
+/// The call's text with its coordinates shifted, shared points it uses
+/// detached into literals (so the copy is independent), and its `name:`
+/// removed.
 fn duplicate_text(source: &str, scene: &Scene, call: &Call, dx: f64, dy: f64) -> Result<String, String> {
     let mut patches = Vec::new();
-    for c in with_descendants(scene, &[call]) {
-        if !TRANSFORMS.contains(&base_name(&c.callee)) {
-            move_coords(c, dx, dy, &mut patches);
-        }
-        if c.id == call.id && c.name.is_some() {
-            set_named(c, "name", None, &mut patches)?;
-        }
+    move_calls(scene, &with_descendants(scene, &[call]), dx, dy, true, &mut patches);
+    if call.name.is_some() {
+        set_named(call, "name", None, &mut patches)?;
     }
     let text = &source[call.range.clone()];
     let local: Vec<Patch> = patches
@@ -353,14 +424,14 @@ mod tests {
 
     #[test]
     fn move_preserves_formatting() {
-        let out = run(Edit::Move { calls: vec![id("line")], dx: 1.0, dy: 0.25 });
+        let out = run(Edit::Move { calls: vec![id("line")], dx: 1.0, dy: 0.25, detach: false });
         assert!(out.source.contains(r#"line((1, 0.25), (2.5,-1.75), "a.east", stroke: red, name: "l")"#), "{}", out.source);
         assert_eq!(out.patches.len(), 4);
     }
 
     #[test]
     fn move_group_moves_children_but_not_transforms() {
-        let out = run(Edit::Move { calls: vec![id("group"), id("rect")], dx: 2.0, dy: 0.0 });
+        let out = run(Edit::Move { calls: vec![id("group"), id("rect")], dx: 2.0, dy: 0.0, detach: false });
         assert!(out.source.contains("rect((2,0), (3,1))"));
         assert!(out.source.contains("rotate(30deg)"));
     }
@@ -439,7 +510,8 @@ mod tests {
             let total = count(&scene);
             for call in scene.canvases.iter().flat_map(|c| &c.calls) {
                 let edits = [
-                    Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5 },
+                    Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5, detach: false },
+                    Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5, detach: true },
                     Edit::SetNamed { call: call.id, key: "stroke".into(), text: Some("blue".into()) },
                     Edit::Duplicate { calls: vec![call.id], dx: 1.0, dy: 0.0 },
                     Edit::Delete { calls: vec![call.id] },
@@ -467,6 +539,63 @@ mod tests {
         let out = run(Edit::Connect { call: id("content"), arg: 0, target: id("group"), anchor: "north".into() });
         assert!(out.source.contains(r#"content("g.north", [Hi])"#));
         assert!(apply(SRC, &Edit::Connect { call: id("line"), arg: 0, target: id("line"), anchor: "end".into() }).is_err());
+    }
+
+    const SHARED: &str = r#"#canvas({
+  import draw: *
+  let pts = (A: (0, 0), B: (2, 0))
+  for (k, p) in pts { anchor(k, p) }
+  line("A", "B")
+  line("B", (3, 1))
+  rect((0, 1), (1, 2))
+})"#;
+
+    fn shared_id(src: &str, needle: &str) -> usize {
+        src.find(needle).unwrap()
+    }
+
+    #[test]
+    fn move_moves_shared_points_once() {
+        let calls = vec![shared_id(SHARED, r#"line("A""#), shared_id(SHARED, r#"line("B""#)];
+        let out = apply(SHARED, &Edit::Move { calls, dx: 1.0, dy: 0.0, detach: false }).unwrap();
+        assert!(out.source.contains("let pts = (A: (1, 0), B: (3, 0))"), "{}", out.source);
+        assert!(out.source.contains(r#"line("A", "B")"#));
+        assert!(out.source.contains(r#"line("B", (4, 1))"#));
+    }
+
+    #[test]
+    fn move_with_detach_leaves_shared_points() {
+        let call = shared_id(SHARED, r#"line("B""#);
+        let out = apply(SHARED, &Edit::Move { calls: vec![call], dx: 1.0, dy: 1.0, detach: true }).unwrap();
+        assert!(out.source.contains("let pts = (A: (0, 0), B: (2, 0))"));
+        assert!(out.source.contains("line((3, 1), (4, 2))"), "{}", out.source);
+    }
+
+    #[test]
+    fn set_point_edits_the_definition() {
+        let scene = crate::parse(SHARED);
+        let b = scene.points.iter().find(|p| p.path == "pts.B").unwrap().id;
+        let out = apply(SHARED, &Edit::SetPoint { point: b, x: 2.5, y: -1.0 }).unwrap();
+        assert!(out.source.contains("B: (2.5, -1)"));
+    }
+
+    #[test]
+    fn extract_point_inserts_an_anchor() {
+        let call = shared_id(SHARED, "rect(");
+        let out = apply(SHARED, &Edit::ExtractPoint { call, arg: 1, name: None }).unwrap();
+        assert!(out.source.contains("  anchor(\"P1\", (1, 2))\n  rect((0, 1), \"P1\")"), "{}", out.source);
+        let scene = crate::parse(&out.source);
+        let rect = scene.canvases[0].calls.iter().find(|c| c.callee == "rect").unwrap();
+        assert_eq!(scene.point(rect.args[1].point.unwrap()).unwrap().path, "P1");
+        // Already shared or not a literal: refused.
+        assert!(apply(SHARED, &Edit::ExtractPoint { call: shared_id(SHARED, r#"line("A""#), arg: 0, name: None }).is_err());
+    }
+
+    #[test]
+    fn duplicate_detaches_shared_points() {
+        let call = shared_id(SHARED, r#"line("A""#);
+        let out = apply(SHARED, &Edit::Duplicate { calls: vec![call], dx: 0.5, dy: 0.0 }).unwrap();
+        assert!(out.source.contains("line(\"A\", \"B\")\n  line((0.5, 0), (2.5, 0))"), "{}", out.source);
     }
 
     #[test]

@@ -2,11 +2,13 @@
 
 mod edit;
 mod instrument;
+mod points;
 mod scene;
 mod walk;
 
 pub use edit::{Edit, EditResult, Patch, apply};
 pub use instrument::{Instrumented, PROBE_PATH, instrument};
+pub use points::Point;
 pub use scene::{Arg, Call, Canvas, Scene, Value, parse};
 
 use std::ops::Range;

@@ -7,11 +7,14 @@ use std::ops::Range;
 use serde::Serialize;
 use typst_syntax::{LinkedNode, SyntaxKind, ast};
 
+use crate::points::{self, Point};
 use crate::walk::{self, Context};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Scene {
     pub canvases: Vec<Canvas>,
+    /// Literal points defined once and shared by reference.
+    pub points: Vec<Point>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +55,8 @@ pub struct Arg {
     pub value_range: Range<usize>,
     pub text: String,
     pub value: Value,
+    /// The shared point this argument uses (`A`, `pts.A`, `"A"`), if any.
+    pub point: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +76,10 @@ pub enum Value {
 impl Scene {
     pub fn call(&self, id: usize) -> Option<&Call> {
         self.canvases.iter().flat_map(|c| &c.calls).find(|c| c.id == id)
+    }
+
+    pub fn point(&self, id: usize) -> Option<&Point> {
+        self.points.iter().find(|p| p.id == id)
     }
 
     pub fn canvas_of(&self, call: usize) -> Option<&Canvas> {
@@ -93,16 +102,18 @@ impl Call {
 
 pub fn parse(source: &str) -> Scene {
     let root = typst_syntax::parse(source);
+    let linked = LinkedNode::new(&root);
+    let points = points::collect(&linked);
     let mut canvases = Vec::new();
-    walk::for_each_canvas(&LinkedNode::new(&root), &mut |canvas, body| {
+    walk::for_each_canvas(&linked, &mut |canvas, body| {
         let mut calls = Vec::new();
-        walk::for_each_call(body, Context::default(), &mut |call, ctx| calls.push(parse_call(source, call, ctx)));
+        walk::for_each_call(body, Context::default(), &mut |call, ctx| calls.push(parse_call(source, &points, call, ctx)));
         canvases.push(Canvas { id: canvas.offset(), body: body.range(), calls });
     });
-    Scene { canvases }
+    Scene { canvases, points }
 }
 
-fn parse_call(source: &str, call: &LinkedNode, ctx: Context) -> Call {
+fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -> Call {
     let callee = walk::callee(call).map(|c| source[c.range()].to_string()).unwrap_or_default();
     let mut args = Vec::new();
     let mut args_close = None;
@@ -113,7 +124,7 @@ fn parse_call(source: &str, call: &LinkedNode, ctx: Context) -> Call {
                 SyntaxKind::Named => {
                     let key = item.children().next().map(|k| k.get().leaf_text().to_string());
                     if let Some(value) = item.children().last() {
-                        args.push(arg(source, key, item.range(), &value));
+                        args.push(arg(source, points, key, item.range(), &value));
                     }
                 }
                 SyntaxKind::LeftParen
@@ -123,7 +134,7 @@ fn parse_call(source: &str, call: &LinkedNode, ctx: Context) -> Call {
                 | SyntaxKind::LineComment
                 | SyntaxKind::BlockComment
                 | SyntaxKind::Spread => {}
-                _ => args.push(arg(source, None, item.range(), &item)),
+                _ => args.push(arg(source, points, None, item.range(), &item)),
             }
         }
     }
@@ -144,25 +155,48 @@ fn parse_call(source: &str, call: &LinkedNode, ctx: Context) -> Call {
     }
 }
 
-fn arg(source: &str, key: Option<String>, range: Range<usize>, value: &LinkedNode) -> Arg {
-    Arg { key, range, value_range: value.range(), text: source[value.range()].to_string(), value: classify(value) }
+fn arg(source: &str, points: &[Point], key: Option<String>, range: Range<usize>, value: &LinkedNode) -> Arg {
+    // A literal can itself be a shared point (`anchor("A", (0, 0))`).
+    let point = points
+        .iter()
+        .find(|p| p.range == value.range())
+        .map(|p| p.id)
+        .or_else(|| points::link(value).and_then(|l| points::resolve(points, &l, value.offset())));
+    Arg {
+        key,
+        range,
+        value_range: value.range(),
+        text: source[value.range()].to_string(),
+        value: classify(value),
+        point,
+    }
+}
+
+/// A literal 2D/3D coordinate: `(x, y)` or `(x, y, z)` of plain numbers.
+pub(crate) fn coord(node: &LinkedNode) -> Option<(f64, f64, Range<usize>, Range<usize>)> {
+    if node.kind() != SyntaxKind::Array {
+        return None;
+    }
+    let items: Vec<_> = node
+        .children()
+        .filter(|c| !matches!(c.kind(), SyntaxKind::LeftParen | SyntaxKind::RightParen | SyntaxKind::Comma | SyntaxKind::Space))
+        .collect();
+    if !(2..=3).contains(&items.len()) {
+        return None;
+    }
+    let (x, y) = (number(&items[0])?, number(&items[1])?);
+    if items.get(2).is_some_and(|z| number(z).is_none()) {
+        return None;
+    }
+    Some((x, y, items[0].range(), items[1].range()))
 }
 
 fn classify(node: &LinkedNode) -> Value {
     match node.kind() {
-        SyntaxKind::Array => {
-            let items: Vec<_> = node
-                .children()
-                .filter(|c| !matches!(c.kind(), SyntaxKind::LeftParen | SyntaxKind::RightParen | SyntaxKind::Comma | SyntaxKind::Space))
-                .collect();
-            if (2..=3).contains(&items.len())
-                && let (Some(x), Some(y)) = (number(&items[0]), number(&items[1]))
-                && items.get(2).is_none_or(|z| number(z).is_some())
-            {
-                return Value::Coord { x, y, x_range: items[0].range(), y_range: items[1].range() };
-            }
-            Value::Expr
-        }
+        SyntaxKind::Array => match coord(node) {
+            Some((x, y, x_range, y_range)) => Value::Coord { x, y, x_range, y_range },
+            None => Value::Expr,
+        },
         SyntaxKind::Str => Value::Str { value: node.get().cast::<ast::Str>().map(|s| s.get().to_string()).unwrap_or_default() },
         SyntaxKind::ContentBlock => {
             let inner = node.children().find(|c| c.kind() == SyntaxKind::Markup).map(|m| m.range());
@@ -222,6 +256,41 @@ mod tests {
 
         let Value::Content { inner } = &calls[4].args[1].value else { panic!() };
         assert_eq!(&SRC[inner.clone()], "Hi *there*");
+    }
+
+    #[test]
+    fn links_arguments_to_shared_points() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#let O = (0, 0)
+#canvas({
+  import draw: *
+  let pts = (A: (1, 0), B: (2, 1))
+  for (k, p) in pts { anchor(k, p) }
+  anchor("C", (5, 5))
+  anchor("D", pts.B)
+  line("A", "B", "C", "D", O, pts.A, (9, 9), "x.east")
+})"#;
+        let scene = parse(src);
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        let paths: Vec<_> = scene.points.iter().map(|p| (p.path.as_str(), sorted(p.anchors.clone()))).collect();
+        assert_eq!(
+            paths,
+            [
+                ("O", vec![]),
+                ("pts.A", vec!["A".to_string()]),
+                ("pts.B", vec!["B".to_string(), "D".to_string()]),
+                ("C", vec!["C".to_string()]),
+            ]
+        );
+        let line = scene.canvases[0].calls.iter().find(|c| c.callee == "line").unwrap();
+        let path_of = |i: usize| line.args[i].point.map(|id| scene.point(id).unwrap().path.as_str());
+        assert_eq!(
+            (0..8).map(path_of).collect::<Vec<_>>(),
+            [Some("pts.A"), Some("pts.B"), Some("C"), Some("pts.B"), Some("O"), Some("pts.A"), None, None]
+        );
     }
 
     #[test]
