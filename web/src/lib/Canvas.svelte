@@ -306,6 +306,7 @@
     exclude?: number | Set<number>,
     { points = true, anchors = true, excludePoint }: { points?: boolean; anchors?: boolean; excludePoint?: number } = {},
   ): Snap | undefined {
+    if (mods.free) return undefined;
     const radius = 8 / editor.zoom;
     let best: Snap | undefined;
     let bestDist = radius;
@@ -320,10 +321,48 @@
     if (anchors) {
       for (const t of snapTargets) {
         if (exclude instanceof Set ? exclude.has(t.target) : t.target === exclude) continue;
-        consider(t, 1);
+        // Plain compass anchors (`east`) beat near-identical text ones (`base-east`, `mid-east`).
+        consider(t, /^(base|mid)/.test(t.anchor) ? 1.15 : 1);
       }
     }
     return best;
+  }
+
+  // --- Snapping modifiers ----------------------------------------------------
+
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  /** ⌘ (Ctrl off macOS) places freely; Shift locks segments to 15° steps. Read from each pointer event. */
+  let mods = $state({ free: false, angle: false });
+  function readMods(e: PointerEvent | KeyboardEvent) {
+    mods = { free: isMac ? e.metaKey : e.ctrlKey, angle: e.shiftKey };
+  }
+
+  /**
+   * Locks `to` onto the nearest 15° direction from `from` (page points),
+   * keeping its distance along that direction.
+   */
+  function constrainAngle(from: Point, to: Point): Point {
+    const dx = to[0] - from[0];
+    const dy = to[1] - from[1];
+    const step = Math.PI / 12;
+    const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+    const length = dx * Math.cos(angle) + dy * Math.sin(angle);
+    return [from[0] + length * Math.cos(angle), from[1] + length * Math.sin(angle)];
+  }
+
+  /**
+   * A point for the next vertex from `from` with Shift held: on a 15° ray,
+   * with the length snapped to the grid along horizontal and vertical rays.
+   */
+  function angled(frame: Frame, transform: number[][] | undefined, from: Point, p: Point): { page: Point; local: Point } {
+    const page = constrainAngle(from, p);
+    let local = pageToLocal(frame, transform, page);
+    if (!mods.free) {
+      const start = pageToLocal(frame, transform, from);
+      if (Math.abs(page[1] - from[1]) < 1e-9) local = [start[0] + editor.snapValue(local[0] - start[0]), start[1]];
+      else if (Math.abs(page[0] - from[0]) < 1e-9) local = [start[0], start[1] + editor.snapValue(local[1] - start[1])];
+    }
+    return { page: editor.toPage(frame, transformPoint(transform, local)), local };
   }
 
   /** The edit that points one argument at a snap target. */
@@ -337,7 +376,7 @@
 
   function snapPoint(frame: Frame, transform: number[][] | undefined, p: Point): Point {
     const [x, y] = pageToLocal(frame, transform, p);
-    return [editor.snapValue(x), editor.snapValue(y)];
+    return mods.free ? [x, y] : [editor.snapValue(x), editor.snapValue(y)];
   }
 
   /** The frame and transform new shapes are drawn in: the end of the active canvas. */
@@ -352,8 +391,12 @@
   /** Where the point/join tools would place their next point, while hovering. */
   let toolHover = $state<{ page: Point; snap?: Snap }>();
 
-  /** A path being joined point by point: each step's source text and page position. */
-  let joining = $state<{ refs: string[]; pages: Point[] }>();
+  /**
+   * A path being joined point by point: each step's source text and page
+   * position, plus anchors of unnamed shapes to connect once it exists.
+   */
+  type Joining = { refs: string[]; pages: Point[]; connects: { arg: number; target: number; anchor: string }[] };
+  let joining = $state<Joining>();
 
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
@@ -361,10 +404,16 @@
     if (editor.tool !== "point" && editor.tool !== "join") toolHover = undefined;
   });
 
-  /** Snaps a pointer for the point/join tools: to a named point (join only), else the grid. */
-  function toolTarget(p: Point, points: boolean): { page: Point; local: Point; snap?: Snap } {
+  /**
+   * Where the point/join tools put their next point: with Shift, on a 15°
+   * ray from the previous one; else on a named point or (join only) a shape
+   * anchor; else the grid. ⌘ skips all snapping.
+   */
+  function toolTarget(p: Point, join: boolean): { page: Point; local: Point; snap?: Snap } {
     const { frame, transform } = creationFrame();
-    const snap = points ? findSnap(p, undefined, { anchors: false }) : undefined;
+    const last = joining?.pages[joining.pages.length - 1];
+    if (join && mods.angle && last) return angled(frame, transform, last, p);
+    const snap = join ? findSnap(p) : undefined;
     if (snap) return { page: snap.point, local: pageToLocal(frame, transform, snap.point), snap };
     const local = snapPoint(frame, transform, p);
     return { page: editor.toPage(frame, transformPoint(transform, local)), local };
@@ -381,22 +430,36 @@
   }
 
   function joinAt(p: Point, double: boolean) {
-    const target = toolTarget(p, true);
-    const path = joining ?? { refs: [], pages: [] };
-    const near = (a: Point) => Math.hypot(a[0] - target.page[0], a[1] - target.page[1]) * editor.zoom < 8;
-    // Back on the first point: close the shape. Double-click: finish it open.
-    if (path.pages.length >= 3 && near(path.pages[0])) return finishJoin(path, true);
+    const path = joining ?? { refs: [], pages: [], connects: [] };
+    // Closing on the first point is checked against the raw pointer, so an
+    // angle-locked ray doesn't stop you landing on it.
+    const near = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]) * editor.zoom < 8;
+    if (path.pages.length >= 3 && near(path.pages[0], p)) return finishJoin(path, true);
     if (double && path.pages.length >= 2) return finishJoin(path, false);
-    if (path.pages.length > 0 && near(path.pages[path.pages.length - 1])) return;
-    const ref = target.snap?.ref ?? `(${num(target.local[0])}, ${num(target.local[1])})`;
-    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page] };
+    const target = toolTarget(p, true);
+    if (path.pages.length > 0 && near(path.pages[path.pages.length - 1], target.page)) return;
+    const literal = `(${num(target.local[0])}, ${num(target.local[1])})`;
+    const snap = target.snap;
+    let ref = snap?.ref ?? literal;
+    const connects = [...path.connects];
+    if (snap?.target !== undefined && snap.anchor !== undefined) {
+      // A shape's anchor: by name if it has one, else connect (naming it) once the path exists.
+      const name = editor.callById.get(snap.target)?.name;
+      if (name) ref = JSON.stringify(`${name}.${snap.anchor}`);
+      else connects.push({ arg: path.refs.length, target: snap.target, anchor: snap.anchor });
+    }
+    joining = { refs: [...path.refs, ref], pages: [...path.pages, target.page], connects };
   }
 
-  function finishJoin(path: { refs: string[] }, closed: boolean) {
+  function finishJoin(path: Joining, closed: boolean) {
     joining = undefined;
     if (path.refs.length < 2) return;
     const text = `line(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
-    if (editor.edit({ kind: "insert", canvas: editor.activeCanvas ?? null, text })) editor.tool = "select";
+    const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
+    for (const { arg, target, anchor } of path.connects) {
+      steps.push(({ created, map }) => ({ kind: "connect", call: created[0], arg, target: map(target), anchor }));
+    }
+    if (editor.chain(steps)) editor.tool = "select";
   }
 
   const joinPreview = $derived.by(() => {
@@ -409,6 +472,7 @@
     if (e.button === 2) return;
     viewport.setPointerCapture(e.pointerId);
     const p = pagePoint(e);
+    readMods(e);
 
     if (e.button === 0 && !spaceHeld && editor.tool === "point") {
       placePoint(p);
@@ -474,6 +538,7 @@
 
   function onpointermove(e: PointerEvent) {
     const p = pagePoint(e);
+    readMods(e);
     const r = viewport.getBoundingClientRect();
     pointer = [e.clientX - r.left, e.clientY - r.top];
     if (!drag && (editor.tool === "point" || editor.tool === "join")) {
@@ -564,6 +629,12 @@
         break;
       }
       case "create": {
+        if (mods.angle && isLineTool()) {
+          const from = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
+          drag.endSnap = undefined;
+          drag.end = angled(drag.frame, drag.transform, from, p).local;
+          break;
+        }
         drag.endSnap = findSnap(p, undefined, { anchors: isLineTool() });
         drag.end = drag.endSnap ? pageToLocal(drag.frame, drag.transform, drag.endSnap.point) : snapPoint(drag.frame, drag.transform, p);
         break;
@@ -573,7 +644,7 @@
 
   /** Snaps a move so the selection's first literal coordinate lands on the grid. */
   function snapDelta(dx: number, dy: number): Point {
-    if (!editor.snap) return [dx, dy];
+    if (!editor.snap || mods.free) return [dx, dy];
     const call = editor.callById.get(editor.selected[0]);
     const anchor = call?.args.find((a) => a.key === null && a.value.type === "coord")?.value;
     if (anchor?.type !== "coord") return [editor.snapValue(dx), editor.snapValue(dy)];
@@ -739,6 +810,7 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control") readMods(e);
     if (joining && !(e.target as HTMLElement).closest?.(".cm-editor") && !(e.target instanceof HTMLInputElement)) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -755,6 +827,7 @@
     }
   }
   function onkeyup(e: KeyboardEvent) {
+    if (e.key === "Shift" || e.key === "Meta" || e.key === "Control") readMods(e);
     if (e.key === " ") spaceHeld = false;
   }
 
@@ -916,6 +989,11 @@
           y1: selectionBox.y1 + moveShift[1],
         }}
       />
+    {/if}
+    {#if joining}
+      <div class="hint">Click the first point to close · Enter to finish · ⇧ 15° · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if drag?.kind === "create" && isLineTool()}
+      <div class="hint">⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {/if}
     {#if sharing}
       <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>
