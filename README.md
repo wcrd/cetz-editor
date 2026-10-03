@@ -90,6 +90,12 @@ it's used by that name. The join tool (**J**) builds a path from points:
 `line("A", "B", "G", close: true)`, snapping to named points and to other
 shapes' anchors (an unnamed shape gets a name in the same undo step).
 
+**Right-click menu.** Right-click anywhere on the canvas for what applies
+there: on shapes, Duplicate, Group (two or more), Ungroup and Delete (a shape
+outside the selection becomes the selection); on a named point, Rename, Select
+shapes using it and Delete; on empty canvas, Select all, Zoom to fit and the
+points and grid toggles; while joining, Finish, Close and Cancel.
+
 **Editing a line's points.** Right-click a line for **Add point here** (on
 the nearest segment, on the grid when snapping), **Continue from start/end**
 and **Close/Open path**; right-click one of its points to remove it or carry

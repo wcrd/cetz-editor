@@ -562,47 +562,119 @@
 
   // --- Context menu --------------------------------------------------------
 
-  type MenuItem = { label: string; run: () => void };
-  /** The right-click menu, at screen pixels in the viewport. */
-  let menu = $state<{ at: Point; items: MenuItem[] }>();
+  type MenuItem = { label: string; keys?: string; run: () => void };
+  /** The right-click menu, at screen pixels in the viewport: sections of items, divided by rules. */
+  let menu = $state<{ at: Point; sections: MenuItem[][] }>();
+  const modKey = isMac ? "⌘" : "Ctrl+";
+  const shiftModKey = isMac ? "⇧⌘" : "Ctrl+Shift+";
 
+  /**
+   * Right-click belongs to the canvas: what's offered depends on what's
+   * under the pointer. A shape outside the selection becomes the selection.
+   */
   function oncontextmenu(e: MouseEvent) {
-    if (joining || drag || editor.tool !== "select") return;
+    e.preventDefault();
+    if (drag) return;
+    const sections = joining ? joinMenu(joining) : editor.tool === "select" ? selectMenu(e) : [];
+    const shown = sections.filter((items) => items.length > 0);
+    if (shown.length === 0) return;
+    const r = viewport.getBoundingClientRect();
+    menu = { at: [e.clientX - r.left, e.clientY - r.top], sections: shown };
+  }
+
+  function joinMenu(path: Joining): MenuItem[][] {
+    const canClose = path.extend ? path.pages.length >= 1 : path.pages.length >= 3;
+    const canFinish = path.pages.length >= (path.extend ? 1 : 2);
+    return [
+      [
+        ...(canFinish ? [{ label: "Finish line", keys: "↩", run: () => finishJoin(path, false) }] : []),
+        ...(canClose ? [{ label: "Close path", run: () => finishJoin(path, true) }] : []),
+        { label: "Cancel", keys: "Esc", run: () => (joining = undefined) },
+      ],
+    ];
+  }
+
+  function selectMenu(e: MouseEvent): MenuItem[][] {
     const p = pagePoint(e);
-    const items: MenuItem[] = [];
     const grab = grabAt(p);
+    if (grab && "handle" in grab) return [vertexItems(grab.handle.call, grab.handle.arg)];
+    if (grab && "point" in grab) return pointMenu(grab.point);
     const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
-    if (grab && "handle" in grab) {
-      const { call, arg } = grab.handle;
-      const path = editablePath(call);
-      if (path) {
-        const end = path.verts.indexOf(arg) === 0 ? "start" : arg === path.verts[path.verts.length - 1] ? "end" : undefined;
-        if (end && !path.closed) items.push({ label: "Continue line from here", run: () => continueLine(call, end === "start") });
-        if (path.verts.length > (path.closed ? 3 : 2)) {
-          items.push({ label: "Remove point", run: () => editor.edit({ kind: "remove-arg", call, arg, keep: path.closed ? 3 : 2 }) });
-        }
-      }
-    } else if (hit !== null && hit !== undefined && editablePath(Number(hit))) {
-      const id = Number(hit);
-      const path = editablePath(id)!;
+    if (hit === null || hit === undefined) return canvasMenu();
+    const id = Number(hit);
+    if (!editor.selected.includes(id)) {
       editor.selection = [id];
       editor.pointSelection = [];
-      items.push({ label: "Add point here", run: () => addVertexAt(id, p) });
-      if (!path.closed) {
-        items.push({ label: "Continue from start", run: () => continueLine(id, true) });
-        items.push({ label: "Continue from end", run: () => continueLine(id, false) });
-      }
-      if (path.closed || path.verts.length >= 3) {
-        items.push({
-          label: path.closed ? "Open path" : "Close path",
-          run: () => editor.edit({ kind: "set-named", call: id, key: "close", text: path.closed ? null : "true" }),
-        });
-      }
     }
-    if (items.length === 0) return;
-    e.preventDefault();
-    const r = viewport.getBoundingClientRect();
-    menu = { at: [e.clientX - r.left, e.clientY - r.top], items };
+    const selected = editor.selected;
+    const lineItems = selected.length === 1 ? pathItems(id, p) : [];
+    return [
+      lineItems,
+      [
+        { label: "Duplicate", keys: `${modKey}D`, run: () => editor.edit({ kind: "duplicate", calls: editor.selected, dx: 0.5, dy: -0.5 }) },
+        ...(selected.length > 1 ? [{ label: "Group", keys: `${modKey}G`, run: () => editor.groupSelection() }] : []),
+        ...(selected.some((s) => editor.isGroup(s)) ? [{ label: "Ungroup", keys: `${shiftModKey}G`, run: () => editor.ungroupSelection() }] : []),
+      ],
+      [{ label: "Delete", keys: "⌫", run: () => editor.deleteSelection() }],
+    ];
+  }
+
+  /** A line's own items: add a point where you clicked, continue it, close or open it. */
+  function pathItems(id: number, p: Point): MenuItem[] {
+    const path = editablePath(id);
+    if (!path) return [];
+    const items: MenuItem[] = [{ label: "Add point here", run: () => addVertexAt(id, p) }];
+    if (!path.closed) {
+      items.push({ label: "Continue from start", run: () => continueLine(id, true) });
+      items.push({ label: "Continue from end", run: () => continueLine(id, false) });
+    }
+    if (path.closed || path.verts.length >= 3) {
+      items.push({
+        label: path.closed ? "Open path" : "Close path",
+        run: () => editor.edit({ kind: "set-named", call: id, key: "close", text: path.closed ? null : "true" }),
+      });
+    }
+    return items;
+  }
+
+  /** One of a line's vertices: continue from it if it's an end, or remove it. */
+  function vertexItems(call: number, arg: number): MenuItem[] {
+    const path = editablePath(call);
+    if (!path) return [];
+    const items: MenuItem[] = [];
+    const last = path.verts[path.verts.length - 1];
+    if (!path.closed && (arg === path.verts[0] || arg === last)) {
+      items.push({ label: "Continue line from here", run: () => continueLine(call, arg === path.verts[0]) });
+    }
+    const keep = path.closed ? 3 : 2;
+    if (path.verts.length > keep) items.push({ label: "Remove point", run: () => editor.edit({ kind: "remove-arg", call, arg, keep }) });
+    return items;
+  }
+
+  function pointMenu(point: number): MenuItem[][] {
+    editor.selection = [];
+    editor.pointSelection = [point];
+    const users = [...new Set((editor.pointUsers.get(point) ?? []).map((id) => editor.selectableFor(id)))].filter((id) => id !== undefined);
+    return [
+      [
+        { label: "Rename", run: () => (editor.renamingPoint = point) },
+        ...(users.length ? [{ label: "Select shapes using it", run: () => ((editor.pointSelection = []), (editor.selection = users)) }] : []),
+      ],
+      [{ label: "Delete", keys: "⌫", run: () => editor.deleteSelection() }],
+    ];
+  }
+
+  function canvasMenu(): MenuItem[][] {
+    return [
+      [
+        { label: "Select all", keys: `${modKey}A`, run: () => (editor.selection = editor.calls.filter((c) => editor.isSelectable(c)).map((c) => c.id)) },
+        { label: "Zoom to fit", keys: `${modKey}0`, run: fit },
+      ],
+      [
+        { label: editor.showPoints ? "Hide points" : "Show points", keys: "P", run: () => (editor.showPoints = !editor.showPoints) },
+        { label: editor.showGrid ? "Hide grid" : "Show grid", keys: "G", run: () => (editor.showGrid = !editor.showGrid) },
+      ],
+    ];
   }
 
   // Leaving the join tool abandons a half-made path.
@@ -1281,23 +1353,31 @@
       />
     {/if}
     {#if menu}
+      {@const rows = menu.sections.reduce((n, items) => n + items.length, 0)}
       <div
         class="menu"
         role="menu"
         tabindex="-1"
-        style:left="{Math.min(menu.at[0], width - 190)}px"
-        style:top="{Math.min(menu.at[1], height - 8 - 32 * menu.items.length)}px"
+        style:left="{Math.min(menu.at[0], width - 230)}px"
+        style:top="{Math.max(0, Math.min(menu.at[1], height - 8 - 30 * rows - 9 * menu.sections.length))}px"
         onpointerdown={(e) => e.stopPropagation()}
-        oncontextmenu={(e) => e.preventDefault()}
+        oncontextmenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
       >
-        {#each menu.items as item (item.label)}
-          <button
-            role="menuitem"
-            onclick={() => {
-              menu = undefined;
-              item.run();
-            }}>{item.label}</button
-          >
+        {#each menu.sections as items, i (i)}
+          {#if i > 0}<hr />{/if}
+          {#each items as item (item.label)}
+            <button
+              role="menuitem"
+              onclick={() => {
+                menu = undefined;
+                item.run();
+              }}
+              ><span>{item.label}</span>{#if item.keys}<kbd>{item.keys}</kbd>{/if}</button
+            >
+          {/each}
         {/each}
       </div>
     {/if}
@@ -1485,7 +1565,15 @@
     background: var(--bg);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
   }
+  .menu hr {
+    margin: 4px 6px;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
   .menu button {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
     padding: 6px 10px;
     border: none;
     border-radius: 5px;
@@ -1495,6 +1583,15 @@
     font-size: 13px;
     text-align: left;
     cursor: default;
+  }
+  .menu kbd {
+    color: var(--muted);
+    font: inherit;
+  }
+  .menu button:hover kbd,
+  .menu button:focus-visible kbd {
+    color: inherit;
+    opacity: 0.8;
   }
   .menu button:hover,
   .menu button:focus-visible {
