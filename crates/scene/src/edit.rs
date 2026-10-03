@@ -1045,6 +1045,33 @@ fn ungroup(
         }
     }
 
+    if let Some((scope, rotate)) = rotated_scope(scene, group) {
+        // A group turned by the rotation handle: each statement gets its own
+        // copy of the scope, so its shapes come apart and stay turned. A
+        // `let` or a style would stop reaching the statements after it.
+        let plain = stmts.iter().all(|s| matches!(s.kind(), SyntaxKind::FuncCall | SyntaxKind::LineComment | SyntaxKind::BlockComment));
+        if plain && !children.iter().any(|c| changes_state(c)) && stmts.iter().any(|s| s.kind() == SyntaxKind::FuncCall) {
+            let indent = indent_at(source, scope.range.start);
+            let child_indent = stmts.first().map_or("", |s| indent_at(source, s.offset()));
+            let rotate = &source[rotate.range.clone()];
+            let mut text = String::new();
+            for s in &stmts {
+                if !text.is_empty() {
+                    text.push_str(&format!("\n{indent}"));
+                }
+                let body = source[s.range()].replace(&format!("\n{child_indent}"), &format!("\n{indent}  "));
+                if s.kind() == SyntaxKind::FuncCall {
+                    created.push((patches.len(), text.len()));
+                    text.push_str(&format!("scope({{\n{indent}  {rotate}\n{indent}  {body}\n{indent}}})"));
+                } else {
+                    text.push_str(&body);
+                }
+            }
+            patches.push(patch(scope.range.clone(), text));
+            return Ok(());
+        }
+    }
+
     let (Some(first), Some(last)) = (stmts.first(), stmts.last()) else {
         patches.push(patch(statement_range(source, &group.range), String::new()));
         return Ok(());
@@ -1064,6 +1091,18 @@ fn ungroup(
     }
     patches.push(patch(group.range.clone(), text));
     Ok(())
+}
+
+/// The `scope({ rotate(..); call })` the rotation handle wraps a call in,
+/// and its `rotate`, when the call is alone in one.
+fn rotated_scope<'a>(scene: &'a Scene, call: &Call) -> Option<(&'a Call, &'a Call)> {
+    let scope = scene.call(call.parent?).filter(|s| base_name(&s.callee) == "scope" && !s.in_loop)?;
+    let mut children: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent == Some(scope.id)).collect();
+    children.sort_by_key(|c| c.id);
+    match children[..] {
+        [rotate, only] if base_name(&rotate.callee) == "rotate" && only.id == call.id => Some((scope, rotate)),
+        _ => None,
+    }
 }
 
 /// Calls that draw nothing, so passing them doesn't change what's in front.
@@ -1436,7 +1475,8 @@ fn strings(node: &LinkedNode, out: &mut Vec<(Range<usize>, String)>) {
 
 /// How code at `at` reaches the elements in `parent`'s body: through the
 /// names of the groups around them that `at` is outside of (`"g."`), or
-/// `None` if one of those groups has no name.
+/// `None` if one of those groups has no name. A `scope` lets its names
+/// through, so it adds nothing.
 fn path_from(scene: &Scene, parent: Option<usize>, at: &Range<usize>) -> Option<String> {
     let mut path = Vec::new();
     let mut next = parent.and_then(|id| scene.call(id));
@@ -1444,7 +1484,9 @@ fn path_from(scene: &Scene, parent: Option<usize>, at: &Range<usize>) -> Option<
         if call.range.start <= at.start && at.end <= call.range.end {
             break;
         }
-        path.push(call.name.clone()?);
+        if base_name(&call.callee) != "scope" {
+            path.push(call.name.clone()?);
+        }
         next = call.parent.and_then(|id| scene.call(id));
     }
     Some(path.iter().rev().map(|n| format!("{n}.")).collect())
@@ -1502,6 +1544,21 @@ mod tests {
         assert!(out.source.contains("  scope({\n    rotate(30deg, origin: (2, 3))\n    content((2, 3), [Hi])\n  })"), "{}", out.source);
         assert_eq!(&out.source[out.created[0]..out.created[0] + 6], "scope(");
         assert!(apply(SRC, &Edit::Rotate { call: id("circle"), angle: 30.0, x: 0.0, y: 0.0 }).is_err());
+    }
+
+    #[test]
+    fn ungroup_splits_a_rotated_group_into_rotated_shapes() {
+        let src = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: *\n  scope({\n    rotate(30deg, origin: (4, 1))\n    group(name: \"g\", {\n      circle((3, 1))\n      // the box\n      rect((5, 0), (6, 1), name: \"r\")\n    })\n  })\n  line(\"g.r.east\", (8, 0))\n})";
+        let out = apply(src, &Edit::Ungroup { calls: vec![src.find("group(").unwrap()] }).unwrap();
+        let want = "  scope({\n    rotate(30deg, origin: (4, 1))\n    circle((3, 1))\n  })\n  // the box\n  scope({\n    rotate(30deg, origin: (4, 1))\n    rect((5, 0), (6, 1), name: \"r\")\n  })\n  line(\"r.east\", (8, 0))";
+        assert!(out.source.contains(want), "{}", out.source);
+        let created: Vec<&str> = out.created.iter().map(|&at| &out.source[at..at + 6]).collect();
+        assert_eq!(created, ["scope(", "scope("]);
+
+        // A style inside would stop reaching the shapes after it: keep one scope.
+        let styled = src.replace("circle((3, 1))", "set-style(fill: red)\n      circle((3, 1))");
+        let out = apply(&styled, &Edit::Ungroup { calls: vec![styled.find("group(").unwrap()] }).unwrap();
+        assert!(out.source.contains("  scope({\n    rotate(30deg, origin: (4, 1))\n    set-style(fill: red)\n    circle((3, 1))"), "{}", out.source);
     }
 
     #[test]

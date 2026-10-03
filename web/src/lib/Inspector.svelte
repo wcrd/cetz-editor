@@ -224,26 +224,28 @@
       {#if ids.some((id) => editor.isGroup(id))}<button title="Put each group's shapes back in its place (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
       <button title="Wrap these in a group (⌘G)" onclick={() => editor.groupSelection()}>Group</button>
     </header>
-    {@const calls = ids.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
+    <!-- Rotated shapes' scopes edit as their shapes. -->
+    {@const shapes = ids.map((id) => editor.rotatedShape(id)?.id ?? id)}
+    {@const calls = shapes.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
     {@const opts = sharedOptions(calls)}
     {#if opts.groups.length === 0 && opts.other.length === 0}<p class="note">These shapes have no options in common.</p>{/if}
     {#each opts.groups as group (group.title)}
       <section>
         <h3>{group.title}</h3>
         {#each group.opts as opt (opt.key)}
-          <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(ids, opt.key, c)} onkeydown={onKey} />
+          <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(shapes, opt.key, c)} onkeydown={onKey} />
         {/each}
       </section>
     {/each}
     <section>
       {#if opts.other.length > 0}<h3>Other</h3>{/if}
       {#each opts.other as opt (opt.key)}
-        <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(ids, opt.key, c)} onkeydown={onKey} />
+        <PropRow {opt} texts={calls.map((c) => valueOf(c, opt.key))} commit={(c) => setNamed(shapes, opt.key, c)} onkeydown={onKey} />
       {/each}
       <div class="row add">
         <input class="code key" placeholder="property" list="cetz-keys" bind:value={newKey} spellcheck="false" />
-        <input class="code" placeholder="value" bind:value={newValue} onkeydown={(e) => e.key === "Enter" && addNamed(ids)} spellcheck="false" />
-        <button onclick={() => addNamed(ids)}>Set</button>
+        <input class="code" placeholder="value" bind:value={newValue} onkeydown={(e) => e.key === "Enter" && addNamed(shapes)} spellcheck="false" />
+        <button onclick={() => addNamed(shapes)}>Set</button>
       </div>
     </section>
   {/if}
