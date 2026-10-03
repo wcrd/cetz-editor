@@ -6,10 +6,11 @@ default:
 setup:
     pnpm --dir web install
 
-# Build the WASM core into web/src/lib/wasm
+# Build the WASM modules (parser, compiler worker) into web/src/lib/wasm
 wasm:
-    cargo build -p cetz-wasm --target wasm32-unknown-unknown --release
+    cargo build -p cetz-wasm -p cetz-worker --target wasm32-unknown-unknown --release
     wasm-bindgen --target web --out-dir web/src/lib/wasm target/wasm32-unknown-unknown/release/cetz_wasm.wasm
+    wasm-bindgen --target web --out-dir web/src/lib/wasm target/wasm32-unknown-unknown/release/cetz_worker.wasm
 
 # Run the editor dev server
 dev: wasm
