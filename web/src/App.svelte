@@ -64,6 +64,64 @@
     }
   }
 
+  // The code panel's width, dragged by its edge; undefined is the default
+  // (30% of the window). Remembered in this browser.
+  const CODE_WIDTH_KEY = "cetz-editor:code-width";
+  let codeWidth = $state(readCodeWidth());
+  let resizing = $state<{ x: number; width: number }>();
+  let codePanel: HTMLElement;
+  function readCodeWidth(): number | undefined {
+    try {
+      const width = Number(localStorage.getItem(CODE_WIDTH_KEY));
+      return width > 0 ? width : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  function saveCodeWidth() {
+    try {
+      if (codeWidth === undefined) localStorage.removeItem(CODE_WIDTH_KEY);
+      else localStorage.setItem(CODE_WIDTH_KEY, String(Math.round(codeWidth)));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+  /** The panel's width as rendered, which the CSS may have clamped. */
+  const renderedCodeWidth = () => codePanel.getBoundingClientRect().width;
+
+  function onResizeStart(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    resizing = { x: e.clientX, width: renderedCodeWidth() };
+  }
+  function onResizeMove(e: PointerEvent) {
+    if (resizing) codeWidth = resizing.width + e.clientX - resizing.x;
+  }
+  function onResizeEnd() {
+    if (!resizing) return;
+    resizing = undefined;
+    // Keep what the CSS allowed, not how far past its limit the pointer went.
+    codeWidth = renderedCodeWidth();
+    saveCodeWidth();
+  }
+  function onResizeKey(e: KeyboardEvent) {
+    const step = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+    if (step === undefined) return;
+    // Keep the arrows from also nudging the selected shapes.
+    e.preventDefault();
+    e.stopPropagation();
+    codeWidth = renderedCodeWidth() + (e.shiftKey ? step * 4 : step);
+    requestAnimationFrame(() => {
+      codeWidth = renderedCodeWidth();
+      saveCodeWidth();
+    });
+  }
+  function resetCodeWidth() {
+    codeWidth = undefined;
+    saveCodeWidth();
+  }
+
   // Infinite canvas view; remembered in this browser like the code panel.
   const INFINITE_KEY = "cetz-editor:infinite";
   try {
@@ -270,7 +328,11 @@
 
 <svelte:window {onkeydown} {onbeforeunload} {ondragover} {ondrop} ondragleave={() => (dropping = false)} />
 
-<div class="app">
+<div
+  class="app"
+  class:resizing
+  style:--code-width={codeWidth === undefined ? null : `clamp(200px, ${codeWidth}px, 100vw - 600px)`}
+>
   <header class="toolbar" class:code-open={codeOpen}>
     <div class="section code-section">
       <div class="group">
@@ -387,7 +449,7 @@
   </div>
 
   <main class:code-open={codeOpen}>
-    <aside class="code-panel" aria-label="Code">
+    <aside class="code-panel" aria-label="Code" bind:this={codePanel}>
       {#if !codeOpen}
         <button class="rail" title="Show code (⌘\)" onclick={() => toggleCode(true)}>
           <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
@@ -406,6 +468,23 @@
           <div class="code" class:hidden={t !== editor}><CodeEditor editor={t} /></div>
         {/each}
       </div>
+      {#if codeOpen}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div
+          class="resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize code panel"
+          title="Drag to resize · double-click to reset"
+          tabindex="0"
+          onpointerdown={onResizeStart}
+          onpointermove={onResizeMove}
+          onpointerup={onResizeEnd}
+          onpointercancel={onResizeEnd}
+          ondblclick={resetCodeWidth}
+          onkeydown={onResizeKey}
+        ></div>
+      {/if}
     </aside>
     <section class="stage">
       {#key editor}<Canvas {editor} />{/key}
@@ -506,7 +585,7 @@
     min-height: 34px;
   }
   .toolbar.code-open {
-    grid-template-columns: minmax(280px, 30%) minmax(0, 1fr);
+    grid-template-columns: var(--code-width, minmax(280px, 30%)) minmax(0, 1fr);
   }
   /* Too narrow to line up with the code column and still fit the canvas
      controls; let the file controls take only what they need. */
@@ -739,7 +818,7 @@
     grid-template-areas: "code stage side";
   }
   main.code-open {
-    grid-template-columns: minmax(280px, 30%) minmax(0, 1fr) 340px;
+    grid-template-columns: var(--code-width, minmax(280px, 30%)) minmax(0, 1fr) 340px;
   }
   .stage {
     grid-area: stage;
@@ -754,6 +833,7 @@
     overflow: hidden;
   }
   .code-panel {
+    position: relative;
     grid-area: code;
     min-width: 0;
     min-height: 0;
@@ -761,6 +841,40 @@
     background: var(--panel);
     display: flex;
     flex-direction: column;
+  }
+  /* Straddles the panel's right border so it's easy to grab. */
+  .resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -4px;
+    width: 7px;
+    z-index: 5;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .resizer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 1px;
+    transition: background 0.1s;
+  }
+  .resizer:hover::after,
+  .resizer:focus-visible::after,
+  .resizing .resizer::after {
+    left: 2px;
+    width: 3px;
+    background: var(--accent);
+  }
+  .resizer:focus-visible {
+    outline: none;
+  }
+  .app.resizing {
+    cursor: col-resize;
+    user-select: none;
   }
   .code-body {
     flex: 1;
@@ -899,7 +1013,8 @@
       grid-template-rows: minmax(0, 1fr) 30% 30%;
       grid-template-areas: "stage" "side" "code";
     }
-    main:not(.code-open) .code-panel {
+    main:not(.code-open) .code-panel,
+    .resizer {
       display: none;
     }
     .side {
