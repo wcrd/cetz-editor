@@ -962,15 +962,37 @@
     if (name && snap?.anchor !== undefined) ref = JSON.stringify(`${name}.${snap.anchor}`);
     else if (snap && snap.ref === undefined) links = [...links, { arg: path.refs.length, snap }];
     joining = { ...path, refs: [...path.refs, ref], pages: [...path.pages, target.page], links };
+    // An angle mark is done at its third point.
+    if (editor.tool === "angle" && joining.refs.length === 3) finishJoin(joining, false);
   }
 
   function finishJoin(path: Joining, closed: boolean) {
     joining = undefined;
     if (path.extend) return finishExtend(path, path.extend, closed);
+    if (editor.tool === "angle") return finishAngle(path);
     if (path.refs.length < 2) return;
     const text = `${editor.tool === "curve" ? "catmull" : "line"}(${path.refs.join(", ")}${closed ? ", close: true" : ""})`;
     const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
     for (const { arg, snap } of path.links) steps.push(({ created, map }) => snapEdit(created[0], arg, snap, map));
+    if (editor.chain(steps)) editor.tool = "select";
+  }
+
+  /**
+   * Writes an angle mark from its corner and a point on each side. CeTZ
+   * sweeps counter-clockwise from the first side, so the sides go in the
+   * order that marks the inner angle; square sides get `right-angle`.
+   */
+  function finishAngle(path: Joining) {
+    if (path.refs.length !== 3) return;
+    const [o, a, b] = path.pages;
+    const [u, v] = [[a[0] - o[0], a[1] - o[1]], [b[0] - o[0], b[1] - o[1]]];
+    // The page's y runs down, so a clockwise turn here is counter-clockwise in CeTZ.
+    const swap = u[0] * v[1] - u[1] * v[0] > 0;
+    const right = Math.abs(u[0] * v[0] + u[1] * v[1]) < 1e-3 * Math.hypot(...u) * Math.hypot(...v);
+    const order = swap ? [0, 2, 1] : [0, 1, 2];
+    const text = `${right ? "right-angle" : "angle"}(${order.map((i) => path.refs[i]).join(", ")})`;
+    const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert-library", canvas: editor.activeCanvas ?? null, module: "angle", text }];
+    for (const { arg, snap } of path.links) steps.push(({ created, map }) => snapEdit(created[0], order.indexOf(arg), snap, map));
     if (editor.chain(steps)) editor.tool = "select";
   }
 
@@ -992,8 +1014,10 @@
   const joinPreview = $derived.by(() => {
     if (!joining) return undefined;
     const from = joining.extend ? [joining.extend.from] : [];
-    const pages = [...from, ...joining.pages, ...(toolHover ? [toolHover.page] : [])];
+    let pages = [...from, ...joining.pages, ...(toolHover ? [toolHover.page] : [])];
     if (pages.length < 2) return undefined;
+    // An angle's sides both run from its corner, the first point.
+    if (editor.tool === "angle" && pages.length >= 2) pages = [pages[1], pages[0], ...pages.slice(2)];
     if (editor.tool !== "curve") return pages.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
     // A Catmull-Rom spline through the points, as cubic Béziers.
     const at = (i: number) => pages[Math.max(0, Math.min(pages.length - 1, i))];
@@ -1341,12 +1365,12 @@
   // --- Creating shapes -----------------------------------------------------
 
   function isLineTool() {
-    return editor.tool === "line" || editor.tool === "arrow";
+    return editor.tool === "line" || editor.tool === "arrow" || editor.tool === "brace";
   }
 
   /** Tools that build a path point by point: join (a line) and curve (a catmull). */
   function isJoinTool() {
-    return editor.tool === "join" || editor.tool === "curve";
+    return editor.tool === "join" || editor.tool === "curve" || editor.tool === "angle";
   }
 
   /** Tools drawn out from a centre: the drag sets a radius and an angle. */
@@ -1492,18 +1516,28 @@
       case "text":
         text = `content(${a}, [Text])`;
         break;
+      case "brace":
+        if (tiny) [x1, y1] = [x0 + 2, y0];
+        text = `brace(${a}, ${endRef ?? pt(x1, y1)})`;
+        break;
       default:
         return;
     }
-    insertShape(text, [
-      [0, d.startSnap],
-      [1, tiny ? undefined : d.endSnap],
-    ]);
+    insertShape(
+      text,
+      [
+        [0, d.startSnap],
+        [1, tiny ? undefined : d.endSnap],
+      ],
+      editor.tool === "brace" ? "decorations" : undefined,
+    );
   }
 
   /** Adds a new shape to the active canvas and selects it. `snaps` are where its point arguments were snapped. */
-  function insertShape(text: string, snaps: [number, Snap | undefined][]) {
-    const steps: Parameters<Editor["chain"]>[0] = [{ kind: "insert", canvas: editor.activeCanvas ?? null, text }];
+  function insertShape(text: string, snaps: [number, Snap | undefined][], module?: string) {
+    const canvas = editor.activeCanvas ?? null;
+    // A library's call (`decorations.brace`) also imports the library if needed.
+    const steps: Parameters<Editor["chain"]>[0] = [module ? { kind: "insert-library", canvas, module, text } : { kind: "insert", canvas, text }];
     // Ends snapped to another shape's anchor connect to it (naming it if
     // needed); ends on a line's vertex share it.
     for (const [arg, snap] of snaps) {
@@ -1874,6 +1908,8 @@
     {/if}
     {#if continuable}
       <div class="hint">Click an end to continue this line</div>
+    {:else if editor.tool === "angle" && (joining || toolHover)}
+      <div class="hint">Click the corner, then a point on each side · Esc cancels</div>
     {:else if joining?.extend}
       <div class="hint">Click the other end to close · Enter to finish · ⇧ 15° · {isMac ? "⌥" : "Alt"} don't share · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if joining}

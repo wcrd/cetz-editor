@@ -50,6 +50,7 @@
         <li>Click the first point to close the shape; <kbd>Enter</kbd> or double-click leaves it open; <kbd>Esc</kbd> cancels.</li>
         <li>Select an open line, press <kbd>J</kbd>, and click one of its ends to keep extending it.</li>
         <li><kbd>K</kbd> works the same way but draws a smooth curve through the points (<code>catmull</code>).</li>
+        <li><kbd>Q</kbd> marks an angle: click the corner, then a point on each side. <kbd>B</kbd> draws a brace between two points.</li>
       </ul>
     </section>
 

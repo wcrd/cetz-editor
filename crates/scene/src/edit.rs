@@ -64,6 +64,13 @@ pub enum Edit {
     Delete { calls: Vec<usize> },
     /// Append a statement to the end of a canvas body (default: the first).
     Insert { canvas: Option<usize>, text: String },
+    /// Append a call from one of CeTZ's libraries (`text` like
+    /// `brace((0, 0), (2, 0))` from `module` `decorations`) to a canvas,
+    /// named the way the file reaches that library (`decorations.brace`, or
+    /// `cetz.decorations.brace` under a bare `#import "@preview/cetz:.."`),
+    /// adding it to the file's CeTZ import list when it isn't there.
+    /// `created` holds the call.
+    InsertLibrary { canvas: Option<usize>, module: String, text: String },
     /// Several edits as one: each is worked out against the same source and
     /// their changes combined. Identical changes (two moves of one shared
     /// point) count once; conflicting ones fail. `created` is empty.
@@ -350,6 +357,18 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let (at, prefix, suffix) = insertion_point(source, canvas);
             created.push((patches.len(), prefix.len()));
             patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
+        }
+        Edit::InsertLibrary { canvas, module, text } => {
+            let canvas = match canvas {
+                Some(id) => scene.canvases.iter().find(|c| c.id == *id),
+                None => scene.canvases.first(),
+            }
+            .ok_or("no canvas to insert into")?;
+            let (path, import) = library_path(source, module)?;
+            patches.extend(import);
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            created.push((patches.len(), prefix.len()));
+            patches.push(patch(at..at, format!("{prefix}{path}{text}{suffix}")));
         }
         Edit::Batch { edits } => {
             for edit in edits {
@@ -991,6 +1010,45 @@ fn duplicate_text(source: &str, scene: &Scene, call: &Call, dx: f64, dy: f64) ->
         .map(|p| Patch { start: p.start - call.range.start, end: p.end - call.range.start, text: p.text })
         .collect();
     Ok(finish(text, local, vec![])?.source)
+}
+
+/// How the file reaches CeTZ's `module` library (`"decorations."`), and the
+/// change to its CeTZ import that brings the library in, if one's needed.
+fn library_path(source: &str, module: &str) -> Result<(String, Option<Patch>), String> {
+    fn imports<'a>(node: &LinkedNode<'a>, out: &mut Vec<LinkedNode<'a>>) {
+        if node.kind() == SyntaxKind::ModuleImport {
+            out.push(node.clone());
+        }
+        for child in node.children() {
+            imports(&child, out);
+        }
+    }
+    let root = typst_syntax::parse(source);
+    let mut found = Vec::new();
+    imports(&LinkedNode::new(&root), &mut found);
+    let is_cetz = |import: &LinkedNode| {
+        import.children().any(|c| c.get().cast::<typst_syntax::ast::Str>().is_some_and(|s| s.get().starts_with("@preview/cetz:")))
+    };
+    let Some(import) = found.iter().find(|i| is_cetz(i)) else {
+        return Err(format!("can't add the {module} library: this file doesn't import @preview/cetz"));
+    };
+    let direct = format!("{module}.");
+    if import.children().any(|c| c.kind() == SyntaxKind::Star) {
+        return Ok((direct, None));
+    }
+    if let Some(items) = import.children().find(|c| c.kind() == SyntaxKind::ImportItems) {
+        let listed: Vec<LinkedNode> = items.children().filter(|c| matches!(c.kind(), SyntaxKind::ImportItemPath | SyntaxKind::RenamedImportItem)).collect();
+        // An item binds its last identifier: `draw`, or `d` in `draw as d`.
+        let binds = |item: &LinkedNode| item.children().filter(|c| c.kind() == SyntaxKind::Ident).last().map(|c| source[c.range()].to_string()).or_else(|| Some(source[item.range()].to_string()));
+        if listed.iter().any(|item| binds(item).as_deref() == Some(module)) {
+            return Ok((direct, None));
+        }
+        let end = listed.last().map_or(items.range().end, |item| item.range().end);
+        return Ok((direct, Some(patch(end..end, format!(", {module}")))));
+    }
+    // A bare import binds the package by its name, or by its `as` name.
+    let name = import.children().filter(|c| c.kind() == SyntaxKind::Ident).last().map_or("cetz".to_string(), |c| source[c.range()].to_string());
+    Ok((format!("{name}.{module}."), None))
 }
 
 /// Copied statements ready to paste into `scene` (see `Edit::Paste`), and
@@ -1775,6 +1833,24 @@ mod tests {
         let out = apply(src, &Edit::Insert { canvas: None, text: "rect((0,0), (1,1))".into() }).unwrap();
         assert_eq!(out.source, "#canvas({ line((0,0), (1,1)) \n  rect((0,0), (1,1))\n})");
         assert_eq!(crate::parse(&out.source).canvases[0].calls.len(), 2);
+    }
+
+    #[test]
+    fn insert_library_imports_and_names_the_library() {
+        let run = |src: &str| apply(src, &Edit::InsertLibrary { canvas: None, module: "decorations".into(), text: "brace((0, 0), (2, 0))".into() });
+        let out = run(SRC).unwrap();
+        assert!(out.source.starts_with("#import \"@preview/cetz:0.5.2\": canvas, draw, decorations\n"), "{}", out.source);
+        assert!(out.source.contains("  decorations.brace((0, 0), (2, 0))\n})"), "{}", out.source);
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 17], "decorations.brace");
+        // Already imported, or everything is.
+        let again = run(&out.source).unwrap();
+        assert!(again.source.starts_with("#import \"@preview/cetz:0.5.2\": canvas, draw, decorations\n"));
+        let star = SRC.replace(": canvas, draw", ": *");
+        assert!(run(&star).unwrap().source.starts_with("#import \"@preview/cetz:0.5.2\": *\n"));
+        // A bare import goes through the package's name.
+        let bare = SRC.replace("#import \"@preview/cetz:0.5.2\": canvas, draw", "#import \"@preview/cetz:0.5.2\"").replace("#canvas", "#cetz.canvas");
+        assert!(run(&bare).unwrap().source.contains("cetz.decorations.brace("), "{}", run(&bare).unwrap().source);
+        assert!(run("#canvas({ line((0,0), (1,1)) })").is_err());
     }
 
     #[test]

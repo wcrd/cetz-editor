@@ -10,6 +10,8 @@ Press **?** in the app for a quick version of this guide.
 | **N** | Polygon: drag from the centre to a corner, which sets its size and rotation (`polygon((0, 0), 6, radius: 1)`) |
 | **U** | Arc: drag from the centre to where it starts (or click both), then move to sweep it either way and click to finish |
 | **.** | Named point: click to place one, then type its name |
+| **B** | Brace: drag from start to end like a line, written as `decorations.brace(..)` |
+| **Q** | Angle mark: click the corner, then a point on each side. It marks the inner angle (`angle.angle(..)`), or `angle.right-angle(..)` when the sides are square. Both tools add the library to your `#import "@preview/cetz:.."` line if it isn't there (or write `cetz.decorations.brace` under a bare import) |
 | **K** | Curve through points: the join tool's clicks and snapping, written as a smooth `catmull(..)` |
 | **J** | Join points: click points in turn; click the first again to close the shape, Enter or double-click to finish an open path, Esc to cancel |
 | Click, Shift-click, drag on empty space | Select, add to selection, marquee select |
