@@ -8,7 +8,7 @@
   import { applyChange, parseText, type Change } from "./props";
   import { optFor, optionsFor, wrappedOptions } from "./schema";
   import TextField from "./TextField.svelte";
-  import { baseName, STATE_CALLS, type Arg, type Call, type Route } from "./scene";
+  import { baseName, STATE_CALLS, type Arg, type Call, type Edit, type Route } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -145,6 +145,16 @@
 
   function valueOf(call: Call, key: string): string {
     return call.args.find((a) => a.key === key)?.text ?? "";
+  }
+
+  /** Sets where elbow connectors cross over, as a percentage of the way between their ends (5–95, as the canvas handle allows). */
+  function setBend(calls: Call[], input: HTMLInputElement) {
+    const n = Number(input.value);
+    if (input.value.trim() === "" || !Number.isFinite(n)) return;
+    const percent = Math.min(95, Math.max(5, n));
+    input.value = num(percent);
+    const edits: Edit[] = calls.map((c) => ({ kind: "bend", call: c.id, ratio: percent / 100 }));
+    editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
   }
 
   function onKey(e: KeyboardEvent) {
@@ -284,6 +294,8 @@
     </section>
   {/if}
   {#snippet routes(connectors: Call[])}
+    <!-- Only an elbow with two corners has a bend to move. -->
+    {@const bendable = connectors.filter((c) => c.connector?.bend != null)}
     <section class="route">
       <div class="row">
         <span class="label">Route</span>
@@ -294,6 +306,25 @@
           {/each}
         </div>
       </div>
+      {#if bendable.length > 0}
+        {@const bends = [...new Set(bendable.map((c) => num((c.connector?.bend ?? 0) * 100)))]}
+        <div class="row">
+          <span class="label">Bend</span>
+          <label class="percent" title="Where the elbow crosses over, as a share of the way from its start to its end">
+            <input
+              type="number"
+              min="5"
+              max="95"
+              step="5"
+              value={bends.length === 1 ? bends[0] : ""}
+              placeholder={bends.length > 1 ? "mixed" : ""}
+              onchange={(e) => setBend(bendable, e.currentTarget)}
+              onkeydown={onKey}
+            />
+            %
+          </label>
+        </div>
+      {/if}
     </section>
   {/snippet}
   <datalist id="cetz-keys">
@@ -425,6 +456,15 @@
   .choices {
     display: flex;
     gap: 3px;
+  }
+  .percent {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+  }
+  .percent input {
+    width: 72px;
   }
   .choices button.active {
     background: color-mix(in srgb, var(--accent) 18%, var(--button-bg));
