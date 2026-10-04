@@ -24,6 +24,9 @@ pub struct Connector {
     /// How far from `from` to `to` (0 to 1) a two-corner elbow crosses
     /// over, when it's written as a plain percentage.
     pub bend: Option<f64>,
+    /// Pinned by a `// cetz-editor: fixed` comment above it: its sides stay
+    /// put when the shapes it joins move.
+    pub fixed: bool,
 }
 
 /// The connector a `line` call draws, if it is one: its first and last
@@ -46,7 +49,7 @@ pub fn detect(callee: &str, args: &[Arg]) -> Option<Connector> {
         _ => return None,
     };
     let bend = (corners.len() == 2).then(|| bend(&corners[0].text, &from)).flatten();
-    Some(Connector { route, from, to, bend })
+    Some(Connector { route, from, to, bend, fixed: false })
 }
 
 /// The `50%` in a corner `("a.south", "|-", ("a.south", 50%, "b.north"))`.

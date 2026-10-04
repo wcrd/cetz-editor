@@ -67,6 +67,8 @@ export interface Connector {
   to: string;
   /** How far from `from` to `to` (0 to 1) a two-corner elbow crosses over. */
   bend: number | null;
+  /** Pinned by a `// cetz-editor: fixed` comment: its sides stay put when its shapes move. */
+  fixed: boolean;
 }
 
 export interface Variable {
@@ -125,7 +127,8 @@ export type Edit =
   | { kind: "paste"; canvas: number | null; text: string; dx: number; dy: number }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
   | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route }
-  | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null }
+  | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null; keep_bend?: boolean }
+  | { kind: "set-fixed"; call: number; fixed: boolean }
   | { kind: "bend"; call: number; ratio: number }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "rotate"; call: number; angle: number; x: number; y: number }

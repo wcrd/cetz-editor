@@ -37,6 +37,11 @@
     { route: "elbow", label: "Elbow", title: "Right-angled, leaving and entering square to the shapes (again to re-pick sides)" },
   ];
 
+  const SIDES: { fixed: boolean; label: string; title: string }[] = [
+    { fixed: false, label: "Auto", title: "Re-pick the sides it joins when its shapes move" },
+    { fixed: true, label: "Fixed", title: "Keep the sides it joins, marked by a // cetz-editor: fixed comment above it" },
+  ];
+
   const COMMON_KEYS = ["stroke", "fill", "mark", "radius", "padding", "frame", "anchor", "angle", "name"];
 
   function label(call: Call, arg: Arg, i: number): string {
@@ -303,6 +308,16 @@
           {#each ROUTES as r (r.route)}
             {@const on = connectors.every((c) => c.connector?.route === r.route)}
             <button class:active={on} aria-pressed={on} title={r.title} onclick={() => editor.reroute(connectors.map((c) => c.id), r.route)}>{r.label}</button>
+          {/each}
+        </div>
+      </div>
+      <div class="row">
+        <span class="label">Sides</span>
+        <div class="choices" role="group" aria-label="Sides">
+          {#each SIDES as s (s.label)}
+            {@const on = connectors.every((c) => c.connector?.fixed === s.fixed)}
+            {@const edits = connectors.map((c): Edit => ({ kind: "set-fixed", call: c.id, fixed: s.fixed }))}
+            <button class:active={on} aria-pressed={on} title={s.title} onclick={() => editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits })}>{s.label}</button>
           {/each}
         </div>
       </div>

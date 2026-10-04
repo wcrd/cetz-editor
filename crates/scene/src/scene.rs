@@ -167,6 +167,25 @@ pub fn grid_comment(source: &str, canvas: usize) -> Option<Range<usize>> {
     None
 }
 
+/// The `// cetz-editor: fixed` comment line right above the call at
+/// `call` (among the comment lines there), which pins a connector's sides:
+/// the range of the whole line, its line break included.
+pub fn fixed_comment(source: &str, call: usize) -> Option<Range<usize>> {
+    let mut line_start = source[..call].rfind('\n').map_or(0, |i| i + 1);
+    if !source[line_start..call].trim().is_empty() {
+        return None;
+    }
+    while line_start > 0 {
+        let start = source[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
+        let comment = source[start..line_start - 1].trim_start().strip_prefix("//")?;
+        if comment.trim_start().strip_prefix("cetz-editor:").is_some_and(|rest| rest.trim() == "fixed") {
+            return Some(start..line_start);
+        }
+        line_start = start;
+    }
+    None
+}
+
 pub fn parse(source: &str) -> Scene {
     let root = typst_syntax::parse(source);
     let linked = LinkedNode::new(&root);
@@ -274,7 +293,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         Value::Str { value } => Some(value.clone()),
         _ => None,
     });
-    let connector = route::detect(&callee, &args);
+    let connector = route::detect(&callee, &args).map(|c| Connector { fixed: fixed_comment(source, call.offset()).is_some(), ..c });
     Call {
         id: call.offset(),
         range: call.range(),

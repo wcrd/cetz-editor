@@ -326,7 +326,7 @@ export class Editor {
 
   /** Applies an edit as one undoable change. Returns false if it failed. */
   edit(edit: Edit): boolean {
-    return this.chain([edit]);
+    return this.chain([this.withConnectors(edit)]);
   }
 
   /**
@@ -440,10 +440,28 @@ export class Editor {
    * The anchors a connector between two shapes joins (see `pickAnchor`).
    * An end given an anchor keeps it, and the other end faces that point.
    */
-  connectorAnchors(from: number, to: number, route: Route, fromAnchor?: string, toAnchor?: string): [string, string] | undefined {
-    const [fromBox, toBox] = [this.boundsOf(from), this.boundsOf(to)];
+  connectorAnchors(
+    from: number,
+    to: number,
+    route: Route,
+    fromAnchor?: string,
+    toAnchor?: string,
+    shift?: Map<number, [number, number]>,
+  ): [string, string] | undefined {
+    // Shapes about to move are judged where they'll be, `shift` (page) away.
+    const by = (id: number): [number, number] => shift?.get(id) ?? [0, 0];
+    const box = (id: number) => {
+      const b = this.boundsOf(id);
+      const [sx, sy] = by(id);
+      return b && { x0: b.x0 + sx, y0: b.y0 + sy, x1: b.x1 + sx, y1: b.y1 + sy };
+    };
+    const anchors = (id: number) => {
+      const [sx, sy] = by(id);
+      return Object.fromEntries(Object.entries(this.anchorsOf(id)).map(([k, [x, y]]) => [k, [x + sx, y + sy] as [number, number]]));
+    };
+    const [fromBox, toBox] = [box(from), box(to)];
     if (!fromBox || !toBox) return undefined;
-    const [fromAnchors, toAnchors] = [this.anchorsOf(from), this.anchorsOf(to)];
+    const [fromAnchors, toAnchors] = [anchors(from), anchors(to)];
     const at = (p: [number, number] | undefined, box: typeof fromBox) => (p ? { x0: p[0], y0: p[1], x1: p[0], y1: p[1] } : box);
     const a = fromAnchor ?? pickAnchor(fromBox, fromAnchors, at(toAnchor ? toAnchors[toAnchor] : undefined, toBox), route);
     const b = toAnchor ?? pickAnchor(toBox, toAnchors, at(fromAnchor ? fromAnchors[fromAnchor] : undefined, fromBox), route);
@@ -455,18 +473,52 @@ export class Editor {
    * the shapes they join (by name, at the top level) to suit the new route.
    */
   reroute(ids: number[], route: Route): boolean {
-    const shape = (anchor: string) => {
-      const name = anchor.includes(".") ? anchor.slice(0, anchor.lastIndexOf(".")) : anchor;
-      return this.calls.find((c) => c.name === name && c.parent === null)?.id;
-    };
     const edits: Edit[] = ids.flatMap((id) => {
       const connector = this.callById.get(id)?.connector;
       if (!connector) return [];
-      const [from, to] = [shape(connector.from), shape(connector.to)];
+      const [from, to] = [this.connectorEnd(connector.from), this.connectorEnd(connector.to)];
       const anchors = from !== undefined && to !== undefined ? this.connectorAnchors(from, to, route) : undefined;
       return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null }];
     });
     return edits.length > 0 && this.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
+  /** The top-level shape a connector's end (`"a.south"`) names. */
+  connectorEnd(anchor: string): number | undefined {
+    const name = anchor.includes(".") ? anchor.slice(0, anchor.lastIndexOf(".")) : anchor;
+    return this.calls.find((c) => c.name === name && c.parent === null)?.id;
+  }
+
+  /**
+   * `edit`, plus re-picking the sides of the connectors joined to shapes it
+   * moves, unless they're pinned (`fixed`). The new sides are worked out
+   * from where the shapes will be, so they show in a drag's preview too,
+   * and a bend stays where it was along the way.
+   */
+  withConnectors(edit: Edit): Edit {
+    const moves = (edit.kind === "batch" ? edit.edits : [edit]).filter((e) => e.kind === "move");
+    if (moves.length === 0 || !this.calls.some((c) => c.connector && !c.connector.fixed)) return edit;
+    const shift = new Map<number, [number, number]>();
+    for (const move of moves) {
+      for (const id of move.calls) {
+        const family = this.family(id);
+        const probe = this.probes.find((p) => family.has(p.id));
+        if (!probe) continue;
+        const m = probe.transform;
+        const [wx, wy] = m ? [m[0][0] * move.dx + m[0][1] * move.dy, m[1][0] * move.dx + m[1][1] * move.dy] : [move.dx, move.dy];
+        for (const f of family) shift.set(f, [wx * probe.length, -wy * probe.length]);
+      }
+    }
+    const side = (anchor: string) => anchor.slice(anchor.lastIndexOf(".") + 1);
+    const reroutes: Edit[] = this.calls.flatMap((call) => {
+      const c = call.connector;
+      const [from, to] = c && !c.fixed ? [this.connectorEnd(c.from), this.connectorEnd(c.to)] : [];
+      if (!c || from === undefined || to === undefined || (!shift.has(from) && !shift.has(to))) return [];
+      const anchors = this.connectorAnchors(from, to, c.route, undefined, undefined, shift);
+      if (!anchors || (anchors[0] === side(c.from) && anchors[1] === side(c.to))) return [];
+      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: anchors[0], to_anchor: anchors[1], keep_bend: true }];
+    });
+    return reroutes.length ? { kind: "batch", edits: [edit, ...reroutes] } : edit;
   }
 
   // --- Align and distribute ---------------------------------------------------
@@ -662,7 +714,7 @@ export class Editor {
       return true;
     }
     try {
-      const result = applyEdit(this.source, edit);
+      const result = applyEdit(this.source, this.withConnectors(edit));
       this.draft = { source: result.source, patches: result.patches, dx, dy };
       return true;
     } catch {
