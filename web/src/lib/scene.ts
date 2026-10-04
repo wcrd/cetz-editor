@@ -48,6 +48,7 @@ export interface Call {
   name: string | null;
   args: Arg[];
   args_close: number | null;
+  /** The enclosing draw call; for a statement of a drawing function, the function's id. */
   parent: number | null;
   in_loop: boolean;
   /** The innermost loop around the call. */
@@ -55,6 +56,23 @@ export interface Call {
   conditional: boolean;
   /** The connector it draws, when it's a `line` between two anchors. */
   connector: Connector | null;
+  /** The drawing function the call is in (its `DrawFunction.id`). */
+  function: number | null;
+}
+
+/** A function the canvases draw with: its calls are drawn once per use. */
+export interface DrawFunction {
+  /** Byte offset of its `let` binding. */
+  id: number;
+  name: string;
+  /** The whole `let` binding. */
+  range: Range;
+  /** The parameter list as written, parentheses included. */
+  params: string;
+  body: Range;
+  calls: Call[];
+  /** Draw calls that call it, wherever they are. */
+  uses: number[];
 }
 
 /** How a connector runs between its anchors. */
@@ -108,6 +126,7 @@ export interface Scene {
   points: Point[];
   variables: Variable[];
   loops: Loop[];
+  functions: DrawFunction[];
 }
 
 export type Edit =
@@ -192,8 +211,14 @@ export function mapOffset(patches: Patch[], offset: number, utf8Length: (s: stri
 const encoder = new TextEncoder();
 export const utf8Length = (s: string) => (/^[\x00-\x7f]*$/.test(s) ? s.length : encoder.encode(s).length);
 
+/** Every draw call: the canvases', then the drawing functions'. */
 export function allCalls(scene: Scene): Call[] {
-  return scene.canvases.flatMap((c) => c.calls);
+  return [...scene.canvases.flatMap((c) => c.calls), ...scene.functions.flatMap((f) => f.calls)];
+}
+
+/** Whether a call can draw several shapes (in a loop or a function), so it has no handles of its own. */
+export function repeats(call: Call): boolean {
+  return call.in_loop || call.function !== null;
 }
 
 /** Drawing commands that only change state; they have no shape to select. */

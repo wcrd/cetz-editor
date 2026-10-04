@@ -5,7 +5,7 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame, Tool } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
+  import { baseName, repeats, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
   import { num } from "./format";
   import { COMPASS, outward, routePoints, STUB, vertical } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
@@ -339,7 +339,7 @@
     // A rotated shape's scope gets the shape's handles, in its turned frame.
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
-    if (!call || !probe || call.in_loop) return [];
+    if (!call || !probe || repeats(call)) return [];
     // The handle being dragged shows where it's going; the source catches up on release.
     const dragged = drag?.kind === "handle" ? drag : undefined;
     return call.args
@@ -397,7 +397,7 @@
     const call = editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
     const base = call && baseName(call.callee);
-    if (!call || !probe || !base || call.in_loop || STATE_CALLS.has(base) || probe.drawables.length === 0) return undefined;
+    if (!call || !probe || !base || repeats(call) || STATE_CALLS.has(base) || probe.drawables.length === 0) return undefined;
     const sign = handedness(probe.transform);
     const center = isVec(probe.anchors.center) ? editor.toPage(frameOf(probe), probe.anchors.center) : undefined;
 
@@ -545,8 +545,8 @@
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
-    if (call && probe && !call.in_loop && call.connector) return connectorHandles(call, probe);
-    if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
+    if (call && probe && !repeats(call) && call.connector) return connectorHandles(call, probe);
+    if (!call || !probe || repeats(call) || !["rect", "grid"].includes(baseName(call.callee))) return [];
     const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
     if (at.length < 2 || at.some((i) => call.args[i].point !== null)) return [];
     const [a, b] = at.map((i) => call.args[i].value);
@@ -679,7 +679,7 @@
     const probe = call && probeOf.get(call.id);
     const base = call && baseName(call.callee);
     const names = base && RADIUS_ANCHORS[base];
-    if (!call || !probe || !names || call.in_loop) return [];
+    if (!call || !probe || !names || repeats(call)) return [];
     const at = (name: string) => {
       const v = probe.anchors[name];
       return isVec(v) ? editor.toPage(frameOf(probe), v) : undefined;
@@ -722,7 +722,7 @@
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "sweep")) return [];
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
-    if (!call || !probe || call.in_loop || baseName(call.callee) !== "arc") return [];
+    if (!call || !probe || repeats(call) || baseName(call.callee) !== "arc") return [];
     const value = (key: string) => {
       const arg = call.args.find((a) => a.key === key);
       return arg ? degrees(arg.text) : undefined;
@@ -800,7 +800,7 @@
       // A turned or scaled shape's scope lets its name through, so its anchors count too.
       const wrap = call && call.parent !== null ? editor.wrapper(call.id) : undefined;
       const topLevel = call && (call.parent === null || (wrap?.shape.id === call.id && wrap.scope.parent === null));
-      if (!call || !topLevel || call.in_loop || probe.drawables.length === 0) return [];
+      if (!call || !topLevel || repeats(call) || probe.drawables.length === 0) return [];
       return Object.entries(probe.anchors)
         .filter(([, v]) => isVec(v))
         .map(([anchor, v]) => ({ target: probe.id, anchor, point: editor.toPage(frameOf(probe), v as [number, number]) }));
@@ -812,7 +812,7 @@
     editor.scene.canvases.flatMap((canvas) =>
       canvas.calls.flatMap((call) => {
         const probe = probeOf.get(call.id);
-        if (!probe || call.parent !== null || call.in_loop || baseName(call.callee) !== "line") return [];
+        if (!probe || call.parent !== null || repeats(call) || baseName(call.callee) !== "line") return [];
         return call.args.flatMap((arg, i) =>
           arg.key === null && arg.point === null && arg.value.type === "coord"
             ? [{ vertex: { call: call.id, arg: i }, point: localToPage(probe, [arg.value.x, arg.value.y]) }]
@@ -1082,7 +1082,7 @@
     const call = editor.callById.get(id);
     const probe = probeOf.get(id);
     const base = call && baseName(call.callee);
-    if (!call || !probe || call.in_loop || !base || !["line", "catmull", "hobby"].includes(base)) return undefined;
+    if (!call || !probe || repeats(call) || !base || !["line", "catmull", "hobby"].includes(base)) return undefined;
     const verts = call.args.flatMap((a, i) => (a.key === null ? [i] : []));
     const closed = call.args.some((a) => a.key === "close" && a.text.trim() === "true");
     const tool: Tool = base === "line" ? "join" : "curve";
@@ -1889,13 +1889,8 @@
     // Text (also turned or scaled) is edited where it is.
     const shape = editor.wrappedShape(id) ?? editor.callById.get(id);
     if (shape && startTextEdit(shape.id, pagePoint(e))) return;
-    const hasChildren = editor.calls.some((c) => c.parent === id);
-    if (hasChildren) {
-      editor.scope = id;
-      editor.selection = [];
-    } else {
-      void tick().then(() => editor.focusInspector?.());
-    }
+    // A group opens to its children, a use of a drawing function to the function.
+    if (!editor.enter(id)) void tick().then(() => editor.focusInspector?.());
   }
 
   // --- Editing text in place ------------------------------------------------
@@ -1912,7 +1907,7 @@
   /** Starts editing a `content(..)`'s text; false when it has no `[..]` or string to edit. */
   function startTextEdit(id: number, at: Point, select = false): boolean {
     const call = editor.callById.get(id);
-    if (!call || baseName(call.callee) !== "content" || call.in_loop) return false;
+    if (!call || baseName(call.callee) !== "content" || repeats(call)) return false;
     // The body is the last positional argument: the position before it can be a name, a string too.
     const arg = call.args.reduce((last, a, i) => (a.key === null ? i : last), -1);
     const value = call.args[arg]?.value;

@@ -139,6 +139,9 @@ export class Editor {
     return users;
   });
   canvasOfCall = $derived(new Map(this.scene.canvases.flatMap((cv) => cv.calls.map((c) => [c.id, cv.id] as const))));
+  functionById = $derived(new Map(this.scene.functions.map((f) => [f.id, f])));
+  /** The drawing function each call that uses one calls. */
+  functionOfUse = $derived(new Map(this.scene.functions.flatMap((f) => f.uses.map((u) => [u, f] as const))));
 
   selection = $state<number[]>([]);
   selected = $derived(this.selection.filter((id) => this.callById.has(id)));
@@ -146,7 +149,10 @@ export class Editor {
   pointSelection = $state<number[]>([]);
   selectedPoints = $derived(this.pointSelection.filter((id) => this.pointById.has(id)));
   hovered = $state<number>();
-  /** A group the user has entered (double-click) to select its children. */
+  /**
+   * A group the user has entered (double-click) to select its children, or
+   * a drawing function's id, entered from one of its uses.
+   */
   scope = $state<number>();
   /** Groups folded closed in the outline. */
   collapsed = $state(new Set<number>());
@@ -803,6 +809,41 @@ export class Editor {
   }
 
   /**
+   * Calls whose shapes include those of a drawing function: its uses, the
+   * calls around them, and the uses of functions they're in.
+   */
+  drawnBy(fn: number): Set<number> {
+    const out = new Set<number>();
+    const add = (id: number) => {
+      if (out.has(id)) return;
+      out.add(id);
+      const call = this.callById.get(id);
+      if (!call) return;
+      if (call.parent !== null && this.callById.has(call.parent)) add(call.parent);
+      if (call.function !== null) for (const use of this.functionById.get(call.function)?.uses ?? []) add(use);
+    };
+    for (const use of this.functionById.get(fn)?.uses ?? []) add(use);
+    return out;
+  }
+
+  /** The drawing function the entered scope is, or is in. */
+  scopeFunction = $derived(this.scope === undefined ? undefined : this.functionById.has(this.scope) ? this.scope : (this.callById.get(this.scope)?.function ?? undefined));
+  /** Calls whose outlines would cover the entered function's shapes. */
+  #covering = $derived(this.scopeFunction === undefined ? new Set<number>() : this.drawnBy(this.scopeFunction));
+
+  /**
+   * Enters what a double-click on a call opens: a group (its children) or a
+   * use of a drawing function (the function). False if there's nothing in it.
+   */
+  enter(id: number): boolean {
+    const fn = this.functionOfUse.get(id);
+    if (!this.calls.some((c) => c.parent === id) && !fn?.calls.length) return false;
+    this.scope = this.calls.some((c) => c.parent === id) ? id : fn!.id;
+    this.selection = [];
+    return true;
+  }
+
+  /**
    * The call a click on a probe picks: inside the entered group, the child
    * of it that holds the probe; anywhere else, the top-level call, so
    * clicking outside the group can leave it.
@@ -813,6 +854,8 @@ export class Editor {
     for (let c = this.scope === undefined ? undefined : this.callById.get(this.scope); c; c = parentOf(c)) {
       if (c.id === id) return undefined;
     }
+    // So would the uses of an entered function.
+    if (this.#covering.has(id)) return undefined;
     let inside = false;
     for (let c = this.callById.get(id); c && this.scope !== undefined; c = parentOf(c)) {
       if (c.parent === this.scope) inside = true;
@@ -823,8 +866,10 @@ export class Editor {
     return call?.id;
   }
 
-  /** The call plus all calls nested inside it. */
+  /** The call plus all calls nested inside it; for a drawing function's id, its uses'. */
   family(id: number): Set<number> {
+    const fn = this.functionById.get(id);
+    if (fn) return new Set(fn.uses.flatMap((u) => [...this.family(u)]));
     const call = this.callById.get(id);
     if (!call) return new Set();
     return new Set(this.calls.filter((c) => c.range.start >= call.range.start && c.range.end <= call.range.end).map((c) => c.id));
