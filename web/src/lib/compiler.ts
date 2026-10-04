@@ -32,12 +32,17 @@ export type WorkerRequest = CompileRequest | ExportRequest;
 
 /** `crashed`: the worker's WebAssembly died, and it must be replaced. */
 export type WorkerMessage =
+  | { kind: "loading"; progress: number; size: number }
   | { id: number; kind: "fetching"; packages: string[] }
   | ({ id: number; kind: "done"; crashed?: boolean } & CompileResult)
   | { id: number; kind: "exported"; data?: Uint8Array; error?: string; crashed?: boolean };
 
 export type CompilerStatus =
-  | { kind: "loading" }
+  /**
+   * Once the download reports them: the fraction of the compiler downloaded,
+   * and its size over the network (compressed, if the host compresses it).
+   */
+  | { kind: "loading"; progress?: number; size?: number }
   | { kind: "compiling" }
   | { kind: "fetching"; packages: string[] }
   | ({ kind: "done" } & CompileResult);
@@ -63,12 +68,17 @@ export class TypstCompiler {
     worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
       this.#receive(e.data);
       // After answering, so the request that crashed it isn't sent again.
-      if (e.data.kind !== "fetching" && e.data.crashed) this.#restart();
+      if ((e.data.kind === "done" || e.data.kind === "exported") && e.data.crashed) this.#restart();
     };
     return worker;
   }
 
   #receive(message: WorkerMessage) {
+    if (message.kind === "loading") {
+      // Not an answer to any request: every document waiting hears it.
+      for (const [id, onStatus] of this.#callbacks) onStatus(message, id);
+      return;
+    }
     if (message.kind === "exported") {
       const { id, data, error } = message;
       const pending = this.#exported.get(id);
@@ -124,4 +134,13 @@ export class TypstCompiler {
   dispose(): void {
     this.#worker.terminate();
   }
+}
+
+/** "Downloading the compiler… 6.4 of 16.0 MB", or a plain label before the download reports. */
+export function loadingLabel(status: CompilerStatus & { kind: "loading" }): string {
+  const { progress, size } = status;
+  if (progress === undefined || !size) return "Loading compiler…";
+  if (progress >= 1) return "Starting the compiler…";
+  const mb = (bytes: number) => (bytes / 1e6).toFixed(1);
+  return `Downloading the compiler… ${mb(progress * size)} of ${mb(size)} MB`;
 }

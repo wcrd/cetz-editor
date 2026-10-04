@@ -7,7 +7,7 @@
   import Help from "./lib/Help.svelte";
   import { ROUTE_ICONS } from "./lib/connectors";
   import type { Editor, Tool } from "./lib/editor.svelte";
-  import type { ExportFormat } from "./lib/compiler";
+  import { loadingLabel, type ExportFormat } from "./lib/compiler";
   import { exportFile, loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
   import { PanelSize } from "./lib/panelSize.svelte";
   import Resizer from "./lib/Resizer.svelte";
@@ -426,7 +426,7 @@
     const s = editor.status;
     switch (s.kind) {
       case "loading":
-        return "Loading compiler…";
+        return loadingLabel(s);
       case "compiling":
         return "Compiling…";
       case "fetching":

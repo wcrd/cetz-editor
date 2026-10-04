@@ -5,7 +5,38 @@ import { loadPackage } from "./packages";
 import type { CompileRequest, Diagnostic, ExportRequest, WorkerMessage, WorkerRequest } from "./compiler";
 import type { Probe } from "./probe";
 
-const compiler = init().then(() => new Compiler());
+/** The uncompressed size of the compiler's WebAssembly, set by the build. */
+declare const __WORKER_WASM_BYTES__: number;
+
+/**
+ * Fetches the compiler, reporting progress: it's tens of megabytes, so the
+ * first visit can take a while. Streams it into compilation as it arrives.
+ */
+async function load(): Promise<Response> {
+  const res = await fetch(new URL("./wasm/cetz_worker_bg.wasm", import.meta.url));
+  // The body arrives decompressed, so Content-Length (compressed) won't do.
+  const size = Number(res.headers.get("content-length")) || 0;
+  const total = __WORKER_WASM_BYTES__ || size;
+  if (!res.ok || !res.body || !total) return res;
+  let loaded = 0;
+  let reported = 0;
+  const counted = res.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        loaded += chunk.byteLength;
+        // Every half percent is plenty, and keeps a cached load from flooding the page.
+        if (loaded - reported >= total / 200 || loaded >= total) {
+          reported = loaded;
+          post({ kind: "loading", progress: Math.min(loaded / total, 1), size: size || total });
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  return new Response(counted, { headers: res.headers });
+}
+
+const compiler = init({ module_or_path: load() }).then(() => new Compiler());
 const inflight = new Map<string, Promise<void>>();
 let latest = 0;
 

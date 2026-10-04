@@ -7,6 +7,7 @@
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, repeats, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
   import { num } from "./format";
+  import { loadingLabel } from "./compiler";
   import { COMPASS, outward, routePoints, STUB, vertical } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
@@ -2756,6 +2757,18 @@
       <div class="hint">{detaching ? "Detaching from the shared point" : "Moving shared points · hold ⌥ to detach"}</div>
     {/if}
   {:else}
+    {#if editor.status.kind === "loading"}
+      {@const progress = editor.status.progress}
+      <div class="empty">
+        <div class="loading">
+          {loadingLabel(editor.status)}
+          {#if progress !== undefined}
+            <progress max="1" value={progress}></progress>
+            {#if progress < 1}<small>This is a one-time download. It's cached, so future opens will be instant.</small>{/if}
+          {/if}
+        </div>
+      </div>
+    {:else}
     <div class="empty">
       {editor.hasErrors
         ? "Fix the errors to see the drawing."
@@ -2765,6 +2778,7 @@
             ? `Fetching ${editor.status.packages.join(", ")}…`
             : "Compiling…"}
     </div>
+    {/if}
   {/if}
 </div>
 
@@ -3053,5 +3067,17 @@
     display: grid;
     place-items: center;
     color: var(--muted);
+  }
+  .loading {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .loading progress {
+    width: 240px;
+  }
+  .loading small {
+    font-size: 11px;
   }
 </style>
