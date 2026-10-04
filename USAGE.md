@@ -37,9 +37,10 @@ Press **?** in the app for a quick version of this guide.
 | Export button (next to Save) | PDF, SVG, or PNG at 144 or 300 ppi, named after the file (`diagram.typ` → `diagram.pdf`). It's the whole document compiled as written, all pages stacked for SVG and PNG, the same as `typst compile` gives |
 | Scroll / ⌘-scroll or pinch / Space-drag | Pan / zoom / pan |
 | ⌘0, ⌘+, ⌘− | Fit, zoom in, zoom out |
-| P | Show every shared point's marker |
+| ⇧P | Show every shared point's marker |
 | ⇧G / ⇧S | Toggle the grid / snapping to it |
-| I | Infinite canvas: hide the page edge, extend the grid everywhere, and keep the drawing still as an auto-sized page grows |
+| ⇧R | Toggle the rulers |
+| ⇧I | Infinite canvas: hide the page edge, extend the grid everywhere, and keep the drawing still as an auto-sized page grows |
 | ⌘\ | Show or hide the code panel (left). The inspector stays on the right |
 
 **Shared points.** Points defined once and used by name are linked to their

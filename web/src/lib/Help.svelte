@@ -46,7 +46,7 @@
       <h3><kbd>.</kbd> Named point</h3>
       <p>
         Click to drop a point, then type its name. It's written once in the code and referenced by name everywhere it's used,
-        so moving it moves every shape built on it. <kbd>P</kbd> shows all points.
+        so moving it moves every shape built on it. <kbd>⇧P</kbd> shows all points.
       </p>
     </section>
 

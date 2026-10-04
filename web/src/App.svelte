@@ -344,26 +344,26 @@
       helpOpen = true;
       return;
     }
-    // Before the tools: plain R, G and S are the rectangle, polygon and star.
-    if (e.shiftKey && e.key.toLowerCase() === "r") {
-      toggleRulers();
-      return;
-    }
-    if (e.shiftKey && e.key.toLowerCase() === "g") {
-      editor.showGrid = !editor.showGrid;
-      return;
-    }
-    if (e.shiftKey && e.key.toLowerCase() === "s") {
-      editor.snap = !editor.snap;
-      return;
+    // View toggles are ⇧ and a letter; plain letters pick tools.
+    if (e.shiftKey) {
+      const toggles: Record<string, () => void> = {
+        r: toggleRulers,
+        g: () => (editor.showGrid = !editor.showGrid),
+        s: () => (editor.snap = !editor.snap),
+        p: () => (editor.showPoints = !editor.showPoints),
+        i: toggleInfinite,
+      };
+      const toggle = toggles[e.key.toLowerCase()];
+      if (toggle) {
+        toggle();
+        return;
+      }
     }
     const tool = tools.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
     if (tool) {
       editor.tool = tool.id;
       return;
     }
-    if (e.key === "p") editor.showPoints = !editor.showPoints;
-    if (e.key === "i") toggleInfinite();
   }
 
   // Browsers only reveal a picked file's name, never its folder or path.
@@ -491,7 +491,7 @@
       <div class="group toggles">
         <button
           class:active={editor.infinite}
-          title="Infinite canvas (I)"
+          title="Infinite canvas (⇧I)"
           aria-label="Infinite canvas"
           aria-pressed={editor.infinite}
           onclick={toggleInfinite}
@@ -507,7 +507,7 @@
         >
           <svg viewBox="0 0 24 24"><path d="M3 8h18v8H3zM7 8v3M11 8v4M15 8v3M19 8v4" /></svg>
         </button>
-        <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
+        <label title="Show shared points (⇧P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
         <label title="Show grid (⇧G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
         <label title="Snap to grid (⇧S)"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
         <GridStep {editor} />
