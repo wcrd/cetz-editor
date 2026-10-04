@@ -56,24 +56,34 @@
         }
       }
       let open-path = "centroid" in names and __cetz_probe_open(drawables)
-      // A closed line's or path's centroid (also its default anchor) only
-      // exists when its own points share one z, and CeTZ panics otherwise.
-      // Ask only when the points' canvas z still tells us that: under a 3D
-      // transform (`ortho`) it might not.
-      let no-centroid = if "centroid" in names and outline != none {
+      let outline-points = if outline != none and outline.segments.len() > 0 {
         let (origin, _, segments) = outline.segments.first()
-        // Up to three points always have one, closing segment aside.
-        let closing = segments.len() > 0 and segments.last().last() == origin
-        let few = segments.len() - int(closing) <= 2 and segments.all(s => s.first() == "l")
+        (origin,) + segments.map(s => s.slice(1)).join(default: ())
+      } else { () }
+      // A closed line's or path's centroid (also its default anchor) only
+      // exists when its own points share one z, and CeTZ panics otherwise;
+      // it also divides by the outline's area. Ask only when the canvas
+      // points still tell us both are fine: under a 3D transform (`ortho`)
+      // they might not.
+      let no-centroid = "centroid" in names and {
         let zrow = ctx.transform.at(2)
-        let planar = zrow.at(0) == 0 and zrow.at(1) == 0 and zrow.at(2) != 0
-        let zs = (origin,) + segments.map(s => s.slice(1)).join()
-        not few and not (planar and zs.all(p => p.at(2, default: 0) == origin.at(2, default: 0)))
-      } else { false }
+        let z = outline-points.at(0, default: ()).at(2, default: 0)
+        let planar = zrow.at(0) == 0 and zrow.at(1) == 0 and zrow.at(2) != 0 and outline-points.all(p => p.at(2, default: 0) == z)
+        let n = outline-points.len()
+        let area = range(n).map(i => {
+          let (a, b) = (outline-points.at(i), outline-points.at(calc.rem(i + 1, n)))
+          a.at(0) * b.at(1) - b.at(0) * a.at(1)
+        }).sum(default: 0)
+        not planar or calc.abs(area) < 1e-9
+      }
+      // A path's start, mid and end are points along it, and CeTZ fails an
+      // assertion when it has no length (a line from a point to itself).
+      let no-length = outline-points.all(p => p == outline-points.first())
       for name in names {
         if open-arc and name in __cetz_probe_compass { continue }
         if open-path and name == "centroid" { continue }
         if no-centroid and name in ("centroid", "default") { continue }
+        if no-length and name in ("start", "mid", "end") { continue }
         let corner = name.starts-with("corner-") and ring != none and ring.len() == corners
         let edge = name.starts-with("edge-") and ring != none and ring.len() == corners
         anchors.insert(name, if corner {
