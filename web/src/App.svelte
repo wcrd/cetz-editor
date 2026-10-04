@@ -133,7 +133,11 @@
   } catch {
     // Default route.
   }
-  const ROUTE_ICONS = { elbow: "M4 6h7v12h6M14 15l3 3-3 3", straight: "M4 6l13 12M11 18h6v-6" };
+  /** A connector with a circle at each end: stepped for elbows, diagonal for straight. */
+  const ROUTE_ICONS = {
+    elbow: "M7 6h5v12h5M7 6a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
+    straight: "M6.4 17.6L17.6 6.4M7 19a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 5a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
+  };
   /** Picks the connector tool, or with it already picked, switches straight and elbow connectors. */
   function connectorTool() {
     if (editor.tool !== "connector") {
