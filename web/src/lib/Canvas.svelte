@@ -1105,6 +1105,7 @@
   let menu = $state<{ at: Point; sections: MenuItem[][] }>();
   const modKey = isMac ? "⌘" : "Ctrl+";
   const shiftModKey = isMac ? "⇧⌘" : "Ctrl+Shift+";
+  const modClick = isMac ? "⌘-click" : "Ctrl+click";
 
   /**
    * Right-click belongs to the canvas: what's offered depends on what's
@@ -1167,7 +1168,7 @@
   function pathItems(id: number, p: Point): MenuItem[] {
     const path = editablePath(id);
     if (!path) return [];
-    const items: MenuItem[] = [{ label: "Add point here", run: () => addVertexAt(id, p) }];
+    const items: MenuItem[] = [{ label: "Add point here", keys: modClick, run: () => addVertexAt(id, p) }];
     if (!path.closed) {
       items.push({ label: "Continue from start", run: () => continueLine(id, true) });
       items.push({ label: "Continue from end", run: () => continueLine(id, false) });
@@ -1191,7 +1192,7 @@
       items.push({ label: "Continue from here", run: () => continueLine(call, arg === path.verts[0]) });
     }
     const keep = path.closed ? 3 : 2;
-    if (path.verts.length > keep) items.push({ label: "Remove point", run: () => editor.edit({ kind: "remove-arg", call, arg, keep }) });
+    if (path.verts.length > keep) items.push({ label: "Remove point", keys: modClick, run: () => editor.edit({ kind: "remove-arg", call, arg, keep }) });
     return items;
   }
 
