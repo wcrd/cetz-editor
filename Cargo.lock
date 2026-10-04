@@ -183,6 +183,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cetz-corpus"
+version = "0.1.0"
+dependencies = [
+ "cetz-compile",
+ "cetz-scene",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cetz-scene"
 version = "0.1.0"
 dependencies = [

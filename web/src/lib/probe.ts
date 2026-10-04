@@ -26,6 +26,8 @@ export interface Probe {
   length: number;
   /** Where canvas (0, 0) landed on the page, in points. */
   origin: { page: number; x: number; y: number };
+  /** The last repetition of a loop the probe recorded: it may have drawn more. */
+  truncated: boolean;
 }
 
 export function toPage(probe: Probe, [x, y]: Vec3 | number[]): [number, number] {

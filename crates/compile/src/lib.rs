@@ -187,12 +187,39 @@ impl EditorWorld {
     }
 
     pub fn compile(&mut self) -> Output {
-        let (doc, diagnostics, missing_packages) = self.compile_document();
+        let (mut doc, mut diagnostics, missing_packages) = self.compile_document();
+        let mut probed = self.probe.is_some();
+        // The probe reaches into CeTZ's internals, so it can fail where the
+        // source itself compiles (an older CeTZ, a case it doesn't handle).
+        // Show the plain render then, without geometry, rather than nothing.
+        if doc.is_none()
+            && missing_packages.is_empty()
+            && let Some(probe) = self.probe.take()
+        {
+            let instrumented = self.main.text().to_owned();
+            self.main.replace(probe.original.text());
+            let (plain, plain_diagnostics, _) = self.compile_document();
+            self.main.replace(&instrumented);
+            if plain.is_some() {
+                let reason = diagnostics.iter().find(|d| d.error).map_or(String::new(), |d| d.message.clone());
+                diagnostics = plain_diagnostics;
+                diagnostics.push(Diagnostic {
+                    error: false,
+                    message: format!("Couldn't measure the shapes, so they can't be edited on the canvas: {reason}"),
+                    file: None,
+                    line: None,
+                    column: None,
+                });
+                doc = plain;
+                probed = false;
+            }
+            self.probe = Some(probe);
+        }
         let mut out = Output { diagnostics, missing_packages, ..Default::default() };
         if let Some(doc) = doc {
             out.svg = Some(typst_svg::svg_merged(&doc, &Default::default(), Abs::zero()));
             out.page_heights = doc.pages().iter().map(|p| p.frame.height().to_pt()).collect();
-            if self.probe.is_some() {
+            if probed {
                 out.probes = Some(probes_json(&doc));
             }
         }
@@ -304,11 +331,17 @@ impl EditorWorld {
 /// Collects the probe metadata from a compiled document as a JSON array.
 fn probes_json(doc: &PagedDocument) -> String {
     let label = Label::new(PicoStr::intern("__cetz-editor-probe")).unwrap();
-    let values: Vec<_> = doc
-        .introspector()
+    let introspector = doc.introspector();
+    let values: Vec<serde_json::Value> = introspector
         .query(&Selector::Label(label))
         .iter()
-        .filter_map(|c| c.to_packed::<MetadataElem>().map(|m| m.value.clone()))
+        .filter_map(|c| {
+            let mut value = serde_json::to_value(&c.to_packed::<MetadataElem>()?.value).ok()?;
+            // Where the probe, at canvas (0, 0), landed: the canvas origin.
+            let at = introspector.position(c.location()?)?;
+            value["origin"] = serde_json::json!({ "page": at.page.get(), "x": at.point.x.to_pt(), "y": at.point.y.to_pt() });
+            Some(value)
+        })
         .collect();
     serde_json::to_string(&values).unwrap_or_else(|_| "[]".into())
 }
@@ -410,16 +443,17 @@ mod tests {
         assert_eq!(out.missing_packages, ["@preview/cetz:0.5.2"]);
     }
 
-    /// Compiles every `.typ` fixture using packages from the local Typst
-    /// cache (populated by `typst compile` / `just render`).
+    /// Compiles every `.typ` fixture and bundled example using packages from
+    /// the local Typst cache (populated by `typst compile` / `just render`).
     #[test]
     fn compiles_fixtures_from_local_package_cache() {
         let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
             eprintln!("skipping: no local Typst package cache");
             return;
         };
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
-        for entry in std::fs::read_dir(fixtures).unwrap() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = [root.join("fixtures"), root.join("examples/cetz-gallery")];
+        for entry in dirs.iter().flat_map(|dir| std::fs::read_dir(dir).unwrap()) {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|e| e != "typ") {
                 continue;
@@ -587,6 +621,22 @@ mod tests {
             (p[0] - expected[0]).abs() < 1e-4 && (p[1] - expected[1]).abs() < 1e-4,
             "{p:?} != {expected:?}"
         );
+    }
+
+    #[test]
+    fn falls_back_to_the_plain_render_when_the_probe_fails() {
+        // Not CeTZ: its "elements" aren't functions of a context, so the
+        // probe can't unpack them, but the document itself compiles.
+        let source = "#let canvas(body) = body.map(el => el(none)).len()\n#let f() = (x => 1,)\n#canvas({ f() })";
+        let mut world = EditorWorld::new();
+        world.set_main(source);
+        let plain = world.compile();
+        world.set_main_probed(source);
+        let out = world.compile();
+        assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
+        assert!(out.diagnostics.iter().any(|d| d.message.starts_with("Couldn't measure the shapes")));
+        assert_eq!(out.svg, plain.svg);
+        assert!(out.probes.is_none());
     }
 
     #[test]

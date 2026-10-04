@@ -38,6 +38,15 @@ function toPlain(d: CompileOutput["diagnostics"][number]): Diagnostic {
   return plain;
 }
 
+/**
+ * Whether the WebAssembly side died: a Rust panic (a trap) or a stack
+ * overflow. Its state is then unusable, and every later call fails, so the
+ * main thread replaces this worker.
+ */
+function isCrash(err: unknown): boolean {
+  return err instanceof WebAssembly.RuntimeError || err instanceof RangeError;
+}
+
 let pending: CompileRequest | undefined;
 
 // Requests queue up while a compile runs (e.g. during a drag). Defer to a
@@ -45,7 +54,7 @@ let pending: CompileRequest | undefined;
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   if (e.data.kind === "export") {
     const request = e.data;
-    runExport(request).catch((err) => post({ id: request.id, kind: "exported", error: String(err) }));
+    runExport(request).catch((err) => post({ id: request.id, kind: "exported", error: String(err), crashed: isCrash(err) }));
     return;
   }
   latest = e.data.id;
@@ -57,7 +66,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     run(request).catch((err) => {
       // Always answer, or the editor waits on this compile forever.
       console.error("compile failed", err);
-      post({ id: request.id, kind: "done", diagnostics: [{ error: true, message: `internal compiler error: ${err}` }], ms: 0 });
+      const crashed = isCrash(err);
+      const message = crashed ? `The compiler crashed and was restarted (${err}). This diagram may need more memory than the browser allows.` : `internal compiler error: ${err}`;
+      post({ id: request.id, kind: "done", diagnostics: [{ error: true, message }], ms: 0, crashed });
     });
   });
 };

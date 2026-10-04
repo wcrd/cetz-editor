@@ -1319,6 +1319,129 @@ fn library_path(source: &str, module: &str) -> Result<(String, Option<Patch>), S
     Ok((format!("{name}.{module}."), None))
 }
 
+/// How code in a canvas `body` calls each of CeTZ's draw functions `funcs`
+/// (`group`, or `draw.group` where the file reaches them through the
+/// module), and the changes to imports that bring them in: files often
+/// import only the functions they use (`import draw: line`).
+fn draw_functions(source: &str, body: &Range<usize>, funcs: &[&str]) -> (Vec<String>, Vec<Patch>) {
+    fn walk_all<'a>(node: &LinkedNode<'a>, f: &mut impl FnMut(&LinkedNode<'a>)) {
+        f(node);
+        for child in node.children() {
+            walk_all(&child, f);
+        }
+    }
+    fn items<'a>(i: &LinkedNode<'a>) -> Option<LinkedNode<'a>> {
+        i.children().find(|c| c.kind() == SyntaxKind::ImportItems)
+    }
+    let root = typst_syntax::parse(source);
+    let root = LinkedNode::new(&root);
+    let (mut found, mut used) = (Vec::new(), Vec::new());
+    walk_all(&root, &mut |n| match n.kind() {
+        SyntaxKind::ModuleImport => found.push(n.clone()),
+        SyntaxKind::Ident if !n.parent().is_some_and(|p| matches!(p.kind(), SyntaxKind::ImportItemPath | SyntaxKind::RenamedImportItem)) => {
+            used.push(source[n.range()].to_string())
+        }
+        _ => {}
+    });
+    // Imports the body sees: the file's own, and the body's statements.
+    let visible: Vec<&LinkedNode> = found
+        .iter()
+        .filter(|i| {
+            i.parent().is_some_and(|p| {
+                p.kind() == SyntaxKind::Markup || (p.kind() == SyntaxKind::Code && p.parent().is_some_and(|b| b.range() == *body))
+            })
+        })
+        .collect();
+    let from = |i: &LinkedNode| {
+        i.children()
+            .find(|c| matches!(c.kind(), SyntaxKind::Ident | SyntaxKind::FieldAccess | SyntaxKind::Str))
+            .map(|c| source[c.range()].to_string())
+            .unwrap_or_default()
+    };
+    let star = |i: &LinkedNode| i.children().any(|c| c.kind() == SyntaxKind::Star);
+    // What each listed item imports and binds: `line`, or `line` as `l`.
+    let listed = |items: &LinkedNode| -> Vec<(String, String, usize)> {
+        items
+            .children()
+            .filter(|c| matches!(c.kind(), SyntaxKind::ImportItemPath | SyntaxKind::RenamedImportItem))
+            .map(|item| {
+                // `line`, `a.b`, or `line as l` (its path, then the new name).
+                let idents: Vec<String> = item
+                    .children()
+                    .flat_map(|c| if c.kind() == SyntaxKind::ImportItemPath { c.children().collect() } else { vec![c] })
+                    .filter(|c| c.kind() == SyntaxKind::Ident)
+                    .map(|c| source[c.range()].to_string())
+                    .collect();
+                let name = idents.first().cloned().unwrap_or_default();
+                (name, idents.last().cloned().unwrap_or_default(), item.range().end)
+            })
+            .collect()
+    };
+    let add = |items: &LinkedNode, names: &[&str]| -> Option<Patch> {
+        let end = listed(items).last().map_or(items.range().end, |(.., end)| *end);
+        (!names.is_empty()).then(|| patch(end..end, names.iter().map(|n| format!(", {n}")).collect()))
+    };
+
+    // The draw module's path (`draw`, `cetz.draw`), adding `draw` to the
+    // package import when it's not there.
+    let module = || -> Option<(String, Option<Patch>)> {
+        let cetz = visible.iter().find(|i| from(i).trim_matches('"').starts_with("@preview/cetz:"))?;
+        if star(cetz) {
+            return Some(("draw".into(), None));
+        }
+        Some(match items(cetz) {
+            Some(it) => match listed(&it).into_iter().find(|(name, ..)| name == "draw") {
+                Some((_, binds, _)) => (binds, None),
+                None => ("draw".into(), add(&it, &["draw"])),
+            },
+            // A bare import binds the package by its name, or its `as` name.
+            None => {
+                let name = cetz.children().filter(|c| c.kind() == SyntaxKind::Ident).last().map_or("cetz".to_string(), |c| source[c.range()].to_string());
+                (format!("{name}.draw"), None)
+            }
+        })
+    };
+
+    let draw: Vec<&&LinkedNode> = visible.iter().filter(|i| {
+        let from = from(i);
+        from == "draw" || from.ends_with(".draw")
+    }).collect();
+    if draw.iter().any(|i| star(i)) {
+        return (funcs.iter().map(|f| f.to_string()).collect(), vec![]);
+    }
+    let lists: Vec<(LinkedNode, Vec<(String, String, usize)>)> = draw.iter().filter_map(|i| items(i).map(|it| (it.clone(), listed(&it)))).collect();
+    let Some((target, _)) = lists.iter().max_by_key(|(it, _)| it.offset()) else {
+        // No import of draw functions: everything goes through the module.
+        return match module() {
+            Some((module, import)) => (funcs.iter().map(|f| format!("{module}.{f}")).collect(), import.into_iter().collect()),
+            None => (funcs.iter().map(|f| f.to_string()).collect(), vec![]),
+        };
+    };
+    // A function the file renamed is called by its new name. Others join the
+    // list nearest the body (its own, else the file's), unless the name
+    // already means something else here, like Typst's own `rotate`, which
+    // importing would hide: those go through the module.
+    let bound = |f: &str| lists.iter().flat_map(|(_, l)| l).find(|(name, ..)| name == f).map(|(_, binds, _)| binds.clone());
+    let (mut names, mut added, mut patches) = (Vec::new(), Vec::new(), Vec::new());
+    let mut via_module = None;
+    for &f in funcs {
+        if let Some(name) = bound(f) {
+            names.push(name);
+        } else if used.iter().any(|u| u == f)
+            && let Some((module, import)) = via_module.get_or_insert_with(module).clone()
+        {
+            patches.extend(import);
+            names.push(format!("{module}.{f}"));
+        } else {
+            added.push(f);
+            names.push(f.to_string());
+        }
+    }
+    patches.extend(add(target, &added));
+    patches.dedup();
+    (names, patches)
+}
+
 /// Copied statements ready to paste into `scene` (see `Edit::Paste`), and
 /// where each top-level call starts in them.
 fn paste_text(scene: &Scene, text: &str, dx: f64, dy: f64) -> Result<(String, Vec<usize>), String> {
@@ -1423,14 +1546,17 @@ fn group(source: &str, scene: &Scene, ids: &[usize], patches: &mut Vec<Patch>, c
         }
     }
 
+    let (callees, import) = draw_functions(source, &body, &["group"]);
+    patches.extend(import);
+    let group = &callees[0];
     let indent = indent_at(source, first.range.start);
     let line_start = source[..first.range.start].rfind('\n').map_or(0, |i| i + 1);
     let texts = calls.iter().map(|c| &source[c.range.clone()]);
     let text = if source[line_start..first.range.start].trim().is_empty() {
         let body: String = texts.map(|t| format!("\n{indent}  {}", t.replace('\n', "\n  "))).collect();
-        format!("group(name: {name:?}, {{{body}\n{indent}}})")
+        format!("{group}(name: {name:?}, {{{body}\n{indent}}})")
     } else {
-        format!("group(name: {name:?}, {{ {} }})", texts.collect::<Vec<_>>().join("; "))
+        format!("{group}(name: {name:?}, {{ {} }})", texts.collect::<Vec<_>>().join("; "))
     };
     created.push((patches.len(), 0));
     patches.push(patch(first.range.clone(), text));
@@ -1511,7 +1637,7 @@ fn ungroup(
                 let body = source[s.range()].replace(&format!("\n{child_indent}"), &format!("\n{indent}  "));
                 if s.kind() == SyntaxKind::FuncCall {
                     created.push((patches.len(), text.len()));
-                    text.push_str(&format!("scope({{\n{indent}  {rotate}\n{indent}  {body}\n{indent}}})"));
+                    text.push_str(&format!("{}({{\n{indent}  {rotate}\n{indent}  {body}\n{indent}}})", scope.callee));
                 } else {
                     text.push_str(&body);
                 }
@@ -1576,20 +1702,27 @@ fn set_transform(
 ) -> Result<(), String> {
     let call = find_call(scene, call)?;
     let wrapper = wrapped(scene, call).or_else(|| wrapper_of(scene, call));
-    let statement = |value: &str| format!("{kind}({value}, origin: ({}, {}))", num(x), num(y));
+    let (body, _) = scene.block_of(call.id).ok_or("shape outside a canvas")?;
+    // A new scope needs `scope` and the transform; an existing one, just the transform.
+    let funcs: &[&str] = if wrapper.is_none() { &["scope", kind] } else { &[kind] };
+    let (callees, import) = draw_functions(source, &body, funcs);
+    let transform = callees.last().unwrap().clone();
+    let statement = |value: &str| format!("{transform}({value}, origin: ({}, {}))", num(x), num(y));
     match (wrapper, value) {
         (None, None) => {}
         (None, Some(value)) => {
             if call.in_loop {
                 return Err(format!("can't {kind} a shape inside a loop"));
             }
+            let scope = &callees[0];
+            patches.extend(import);
             let indent = indent_at(source, call.range.start);
             let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
             let text = &source[call.range.clone()];
             let text = if source[line_start..call.range.start].trim().is_empty() {
-                format!("scope({{\n{indent}  {}\n{indent}  {}\n{indent}}})", statement(&value), text.replace('\n', "\n  "))
+                format!("{scope}({{\n{indent}  {}\n{indent}  {}\n{indent}}})", statement(&value), text.replace('\n', "\n  "))
             } else {
-                format!("scope({{ {}; {text} }})", statement(&value))
+                format!("{scope}({{ {}; {text} }})", statement(&value))
             };
             created.push((patches.len(), 0));
             patches.push(patch(call.range.clone(), text));
@@ -1602,6 +1735,7 @@ fn set_transform(
                     patches.push(patch(arg.value_range.clone(), value));
                 }
                 (None, Some(value)) => {
+                    patches.extend(import);
                     // A rotate goes first; a scale after any rotate.
                     let next = if kind == "rotate" { transforms[0] } else { transforms.iter().find(|t| base_name(&t.callee) != "rotate").copied().unwrap_or(shape) };
                     let sep = if source[..next.range.start].ends_with(['{', ' ', ';']) && !indent_at(source, next.range.start).is_empty() { format!("\n{}", indent_at(source, next.range.start)) } else { "; ".into() };
@@ -2727,6 +2861,43 @@ mod tests {
         let out = apply(src, &Edit::Group { calls: vec![shared_id(src, "rect(")] }).unwrap();
         assert!(out.source.contains("line(\"g.group.r.east\", \"g.c\")"), "{}", out.source);
         assert!(out.source.contains("    group(name: \"group\", {\n      rect((0, 0), (1, 1), name: \"r\")\n    })\n"), "{}", out.source);
+    }
+
+    #[test]
+    fn group_and_rotate_bring_in_the_draw_functions_they_write() {
+        let at = |src: &str, needle: &str| src.find(needle).unwrap();
+        // Only some functions imported: the new ones join the list.
+        let listed = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  import draw: circle, line\n  circle((0, 0))\n})";
+        let grouped = apply(listed, &Edit::Group { calls: vec![at(listed, "circle((")] }).unwrap().source;
+        assert!(grouped.contains("  import draw: circle, line, group\n  group(name: \"group\""), "{grouped}");
+        let rotated = apply(listed, &Edit::Rotate { call: at(listed, "circle(("), angle: 30.0, x: 0.0, y: 0.0 }).unwrap();
+        assert!(rotated.source.contains("import draw: circle, line, scope, rotate\n  scope({\n    rotate(30deg"), "{}", rotated.source);
+        assert_eq!(&rotated.source[rotated.created[0]..rotated.created[0] + 6], "scope(");
+        // Scaling a rotated shape adds only `scale`.
+        let scaled = apply(&rotated.source, &Edit::Scale { call: rotated.created[0], factor: 2.0, x: 0.0, y: 0.0 }).unwrap().source;
+        assert!(scaled.contains("import draw: circle, line, scope, rotate, scale\n"), "{scaled}");
+        // Already there, or everything is: nothing to add.
+        assert!(apply(&grouped, &Edit::Group { calls: vec![at(&grouped, "circle((")] }).unwrap().source.contains("import draw: circle, line, group\n"));
+        let star = listed.replace("draw: circle, line", "draw: *");
+        assert!(apply(&star, &Edit::Group { calls: vec![at(&star, "circle((")] }).unwrap().source.contains("import draw: *\n"));
+        // Through the module when the file has no draw import.
+        let module = "#import \"@preview/cetz:0.5.2\": canvas, draw\n#canvas({\n  draw.circle((0, 0))\n})";
+        let out = apply(module, &Edit::Group { calls: vec![at(module, "draw.circle")] }).unwrap().source;
+        assert!(out.contains("  draw.group(name: \"group\", {\n    draw.circle((0, 0))"), "{out}");
+        let unlisted = module.replace(": canvas, draw", ": canvas");
+        let out = apply(&unlisted, &Edit::Rotate { call: at(&unlisted, "draw.circle"), angle: 30.0, x: 0.0, y: 0.0 }).unwrap().source;
+        assert!(out.starts_with("#import \"@preview/cetz:0.5.2\": canvas, draw\n") && out.contains("draw.scope({\n    draw.rotate(30deg"), "{out}");
+        // A name that means something else here stays as it is: Typst's own
+        // `rotate` turning a label, or a variable.
+        let typst_rotate = listed.replace("circle((0, 0))", "circle((0, 0))\n  content((1, 0), rotate(90deg)[Hi])");
+        let out = apply(&typst_rotate, &Edit::Rotate { call: at(&typst_rotate, "circle(("), angle: 30.0, x: 0.0, y: 0.0 }).unwrap().source;
+        assert!(out.contains("import draw: circle, line, scope\n  scope({\n    draw.rotate(30deg"), "{out}");
+        let unlisted_rotate = typst_rotate.replace(": canvas, draw", ": canvas");
+        let out = apply(&unlisted_rotate, &Edit::Rotate { call: at(&unlisted_rotate, "circle(("), angle: 30.0, x: 0.0, y: 0.0 }).unwrap().source;
+        assert!(out.starts_with("#import \"@preview/cetz:0.5.2\": canvas, draw\n") && out.contains("draw.rotate(30deg"), "{out}");
+        let bare = "#import \"@preview/cetz:0.5.2\"\n#cetz.canvas({\n  cetz.draw.circle((0, 0))\n})";
+        let out = apply(bare, &Edit::Group { calls: vec![at(bare, "cetz.draw.circle")] }).unwrap().source;
+        assert!(out.contains("cetz.draw.group(name:"), "{out}");
     }
 
     #[test]
