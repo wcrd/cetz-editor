@@ -142,18 +142,16 @@ impl Compiler {
         loop {
             let out = self.world.compile();
             if out.missing_packages.is_empty() {
+                if let Some(d) = out.diagnostics.iter().find(|d| d.error) {
+                    let file = d.file.as_deref().unwrap_or("main");
+                    return Err(format!("{} ({file}{})", d.message, d.line.map_or(String::new(), |l| format!(":{}", l + 1))));
+                }
                 // The editor falls back to the plain render when the probe fails.
                 if probed && out.probes.is_none() {
-                    let warning = out.diagnostics.iter().find(|d| !d.error).map_or("", |d| d.message.as_str());
-                    return Err(format!("probe failed: {warning}"));
+                    let why = out.diagnostics.iter().find_map(|d| d.message.strip_prefix("Couldn't measure the shapes, so they can't be edited on the canvas: "));
+                    return Err(format!("probe failed: {}", why.unwrap_or("")));
                 }
-                return match out.diagnostics.iter().find(|d| d.error) {
-                    Some(d) => {
-                        let file = d.file.as_deref().unwrap_or("main");
-                        Err(format!("{} ({file}{})", d.message, d.line.map_or(String::new(), |l| format!(":{}", l + 1))))
-                    }
-                    None => Ok(out),
-                };
+                return Ok(out);
             }
             for spec in &out.missing_packages {
                 let dir = package_dir(&self.cache, spec);
