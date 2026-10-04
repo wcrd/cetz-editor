@@ -1,8 +1,8 @@
 <script lang="ts">
   // The document outline, shown when nothing is selected: variables (the
-  // definitions, editable when they're literal points), shapes (the draw
-  // calls; groups fold, loops expand into the repetitions CeTZ drew,
-  // read-only) and the functions the canvases draw with, with their calls.
+  // definitions, editable when they're literal points), the functions the
+  // canvases draw with, with their calls, and shapes (the draw calls; groups
+  // fold, loops expand into the repetitions CeTZ drew, read-only).
   import type { Editor } from "./editor.svelte";
   import { endShape, ROUTE_ICONS } from "./connectors";
   import { num } from "./format";
@@ -621,22 +621,6 @@
     </ul>
   {/if}
 
-  <h3>
-    Shapes
-    {#if editor.scope !== undefined}
-      <button class="link" onclick={() => (editor.scope = undefined)}
-        >Exit {editor.functionById.get(editor.scope)?.name ?? "group"}</button
-      >
-    {/if}
-  </h3>
-  <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
-    {#each rows as row (row.call.id)}
-      {@render shapeRow(row)}
-    {:else}
-      <li class="empty">No CeTZ canvas in this file.</li>
-    {/each}
-  </ul>
-
   {#if editor.scene.functions.length > 0}
     <h3>Functions</h3>
     <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
@@ -673,6 +657,23 @@
       {/each}
     </ul>
   {/if}
+
+  <h3>
+    Shapes
+    {#if editor.scope !== undefined}
+      <button class="link" onclick={() => (editor.scope = undefined)}
+        >Exit {editor.functionById.get(editor.scope)?.name ?? "group"}</button
+      >
+    {/if}
+  </h3>
+  <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
+    {#each rows as row (row.call.id)}
+      {@render shapeRow(row)}
+    {:else}
+      <li class="empty">No CeTZ canvas in this file.</li>
+    {/each}
+  </ul>
+
 </div>
 
 <style>
