@@ -6,7 +6,7 @@ A canvas-style visual editor for [CeTZ](https://github.com/cetz-package/cetz)
 diagrams that edits Typst source in place. Everything runs
 in the browser using the Typst compiler via WebAssembly.
 
-Use it here: [TBC]()
+Try it here: [wcrd.github.io/cetz-editor](https://wcrd.github.io/cetz-editor/)
 
 ![The editor with the zone diagram open on an infinite canvas: hovering a face in the outline highlights it on the canvas and in the code, and the outline lists the diagram's named points and shapes](assets/screenshot-outline.png)
 
@@ -20,7 +20,7 @@ Use it here: [TBC]()
 
 ## Getting started
 
-Use it here: [TBC]()
+Try it here: [wcrd.github.io/cetz-editor](https://wcrd.github.io/cetz-editor/)
 
 ### Building Locally
 Requires Rust (with the `wasm32-unknown-unknown` target), `wasm-bindgen-cli`
