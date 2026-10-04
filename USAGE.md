@@ -8,6 +8,7 @@ Press **?** in the app for a quick version of this guide.
 |---|---|
 | **V** / **L** / **A** / **R** / **C** / **T** | Select, line, arrow, rectangle, circle, text tools |
 | **N** | Node: drag out a rounded rect with text on it, written as `rect(.., radius: 0.2, name: "node")` and `content("node", [Text])`, so the text follows the rect. The text opens ready to type |
+| **E** | Connector: drag from one shape to another for an arrow between them, `elbow` (right-angled) or `straight`; press **E** again (or click the tool) to switch which. Drop on an anchor to use it, anywhere else on the shape to have one picked: an elbow leaves square to the side facing the other shape, a straight arrow from the nearest compass anchor. Unnamed shapes get a name. An elbow's corners are written from the two anchors (`("a.south", "\|-", ("a.south", 50%, "b.north"))`), so CeTZ re-routes it whenever either shape moves. The inspector's **Route** switches a selected connector between the two, re-picking its anchors; click the current route again to re-pick them after moving shapes |
 | **G** | Polygon: drag from the centre to a corner, which sets its size and rotation (`polygon((0, 0), 6, radius: 1)`) |
 | **S** | Star: drag from the centre to an outer point, which sets its size and rotation (`n-star((0, 0), 5, radius: 1, angle: 54deg)`); a click makes one pointing up. Inner radius, points and more are in the inspector |
 | **U** | Arc: drag from the centre to where it starts (or click both), then move to sweep it either way and click to finish |

@@ -53,6 +53,18 @@ export interface Call {
   /** The innermost loop around the call. */
   loop_id: number | null;
   conditional: boolean;
+  /** The connector it draws, when it's a `line` between two anchors. */
+  connector: Connector | null;
+}
+
+/** How a connector runs between its anchors. */
+export type Route = "straight" | "elbow";
+
+export interface Connector {
+  route: Route;
+  /** The anchors it runs between, as written (`a.south`). */
+  from: string;
+  to: string;
 }
 
 export interface Variable {
@@ -110,6 +122,8 @@ export type Edit =
   | { kind: "insert-library"; canvas: number | null; module: string; text: string }
   | { kind: "paste"; canvas: number | null; text: string; dx: number; dy: number }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
+  | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route }
+  | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "rotate"; call: number; angle: number; x: number; y: number }
   | { kind: "unrotate"; call: number }

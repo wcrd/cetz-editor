@@ -23,9 +23,11 @@ import {
   type Layer,
   type Patch,
   type Range,
+  type Route,
 } from "./scene";
+import { pickAnchor } from "./connectors";
 
-export type Tool = "select" | "line" | "arrow" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
+export type Tool = "select" | "line" | "arrow" | "connector" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
 
 /** What the code pane exposes to the editor. */
 export interface CodeHandle {
@@ -89,6 +91,8 @@ export class Prefs {
   infinite = $state(true);
   /** Rulers in canvas units along the canvas's top and left edges. */
   showRulers = $state(true);
+  /** How the connector tool routes new connectors. */
+  route = $state<Route>("elbow");
 }
 
 interface Draft {
@@ -145,6 +149,8 @@ export class Editor {
   set tool(v) { this.prefs.tool = v; }
   get snap() { return this.prefs.snap; }
   set snap(v) { this.prefs.snap = v; }
+  get route() { return this.prefs.route; }
+  set route(v) { this.prefs.route = v; }
   /** The active canvas's grid step: from its file's comment, else the default. */
   gridStep = $derived.by(() => {
     const grid = this.prefs.gridInFile ? this.scene.canvases.find((c) => c.id === this.activeCanvas)?.grid : null;
@@ -416,6 +422,51 @@ export class Editor {
       const what = points.length === 1 ? `Deleted ${this.pointLabel(points[0])}` : `Deleted ${points.length} points`;
       this.flash(kept > 0 ? `${what} · ${kept} use${kept === 1 ? "" : "s"} kept as coordinates` : what);
     }
+  }
+
+  // --- Connectors ------------------------------------------------------------
+
+  /** A shape's anchors on the page, by name. */
+  anchorsOf(id: number): Record<string, [number, number]> {
+    const probe = this.probes.find((p) => p.id === id);
+    if (!probe) return {};
+    const frame = { origin: probe.origin, length: probe.length };
+    const out: Record<string, [number, number]> = {};
+    for (const [name, v] of Object.entries(probe.anchors)) if (isVec(v)) out[name] = this.toPage(frame, v);
+    return out;
+  }
+
+  /**
+   * The anchors a connector between two shapes joins (see `pickAnchor`).
+   * An end given an anchor keeps it, and the other end faces that point.
+   */
+  connectorAnchors(from: number, to: number, route: Route, fromAnchor?: string, toAnchor?: string): [string, string] | undefined {
+    const [fromBox, toBox] = [this.boundsOf(from), this.boundsOf(to)];
+    if (!fromBox || !toBox) return undefined;
+    const [fromAnchors, toAnchors] = [this.anchorsOf(from), this.anchorsOf(to)];
+    const at = (p: [number, number] | undefined, box: typeof fromBox) => (p ? { x0: p[0], y0: p[1], x1: p[0], y1: p[1] } : box);
+    const a = fromAnchor ?? pickAnchor(fromBox, fromAnchors, at(toAnchor ? toAnchors[toAnchor] : undefined, toBox), route);
+    const b = toAnchor ?? pickAnchor(toBox, toAnchors, at(fromAnchor ? fromAnchors[fromAnchor] : undefined, fromBox), route);
+    return a && b ? [a, b] : undefined;
+  }
+
+  /**
+   * Reroutes connectors as straight or elbowed, re-picking the anchors of
+   * the shapes they join (by name, at the top level) to suit the new route.
+   */
+  reroute(ids: number[], route: Route): boolean {
+    const shape = (anchor: string) => {
+      const name = anchor.includes(".") ? anchor.slice(0, anchor.lastIndexOf(".")) : anchor;
+      return this.calls.find((c) => c.name === name && c.parent === null)?.id;
+    };
+    const edits: Edit[] = ids.flatMap((id) => {
+      const connector = this.callById.get(id)?.connector;
+      if (!connector) return [];
+      const [from, to] = [shape(connector.from), shape(connector.to)];
+      const anchors = from !== undefined && to !== undefined ? this.connectorAnchors(from, to, route) : undefined;
+      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null }];
+    });
+    return edits.length > 0 && this.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
   }
 
   // --- Align and distribute ---------------------------------------------------

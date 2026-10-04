@@ -8,7 +8,7 @@
   import { applyChange, parseText, type Change } from "./props";
   import { optFor, optionsFor, wrappedOptions } from "./schema";
   import TextField from "./TextField.svelte";
-  import { baseName, STATE_CALLS, type Arg, type Call } from "./scene";
+  import { baseName, STATE_CALLS, type Arg, type Call, type Route } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -30,6 +30,11 @@
     { how: "bottom", title: "Align bottom edges", icon: "M3 20h18M7 6h4v10H7zM14 10h4v6h-4z" },
     { how: "across", title: "Space evenly across (3 or more)", icon: "M3 4v16M21 4v16M9 8h6v8H9z" },
     { how: "down", title: "Space evenly down (3 or more)", icon: "M4 3h16M4 21h16M8 9h8v6H8z" },
+  ];
+
+  const ROUTES: { route: Route; label: string; title: string }[] = [
+    { route: "straight", label: "Straight", title: "A straight arrow between the nearest anchors (again to re-pick them)" },
+    { route: "elbow", label: "Elbow", title: "Right-angled, leaving and entering square to the shapes (again to re-pick sides)" },
   ];
 
   const COMMON_KEYS = ["stroke", "fill", "mark", "radius", "padding", "frame", "anchor", "angle", "name"];
@@ -169,9 +174,14 @@
     {#if call.in_loop}<p class="note">Inside a loop: edits apply to every iteration.</p>{/if}
     {#if call.conditional}<p class="note">Inside an <code>if</code>: only drawn when its condition holds.</p>{/if}
 
+    {#if call.connector}
+      {@render routes([call])}
+    {/if}
+
     <section>
       {#each call.args as arg, i (i)}
-        {#if arg.key === null}
+        <!-- A connector's corners follow its ends; Route rewrites them. -->
+        {#if arg.key === null && !(call.connector && arg.value.type === "expr")}
           <div class="row">
             <span class="label">{label(call, arg, i)}</span>
             {#if arg.point !== null && editor.pointById.get(arg.point)}
@@ -248,6 +258,9 @@
     <!-- Rotated shapes' scopes edit as their shapes. -->
     {@const shapes = ids.map((id) => editor.wrappedShape(id)?.id ?? id)}
     {@const calls = shapes.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
+    {#if calls.some((c) => c.connector)}
+      {@render routes(calls.filter((c) => c.connector))}
+    {/if}
     {@const opts = sharedOptions(calls)}
     {#if opts.groups.length === 0 && opts.other.length === 0}<p class="note">These shapes have no options in common.</p>{/if}
     {#each opts.groups as group (group.title)}
@@ -270,6 +283,19 @@
       </div>
     </section>
   {/if}
+  {#snippet routes(connectors: Call[])}
+    <section class="route">
+      <div class="row">
+        <span class="label">Route</span>
+        <div class="choices" role="group" aria-label="Route">
+          {#each ROUTES as r (r.route)}
+            {@const on = connectors.every((c) => c.connector?.route === r.route)}
+            <button class:active={on} aria-pressed={on} title={r.title} onclick={() => editor.reroute(connectors.map((c) => c.id), r.route)}>{r.label}</button>
+          {/each}
+        </div>
+      </div>
+    </section>
+  {/snippet}
   <datalist id="cetz-keys">
     {#each COMMON_KEYS as key}<option value={key}></option>{/each}
   </datalist>
@@ -395,6 +421,14 @@
     fill: none;
     stroke: currentColor;
     stroke-width: 1.5;
+  }
+  .choices {
+    display: flex;
+    gap: 3px;
+  }
+  .choices button.active {
+    background: color-mix(in srgb, var(--accent) 18%, var(--button-bg));
+    border-color: var(--accent);
   }
   button.small {
     padding: 1px 6px;

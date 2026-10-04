@@ -7,6 +7,7 @@
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, STATE_CALLS, type Call, type Edit, type Range } from "./scene";
   import { num } from "./format";
+  import { COMPASS, routePoints } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
 
@@ -64,7 +65,9 @@
     | { kind: "reshape"; reshape: Reshape; edit?: Edit }
     | { kind: "sweep"; end: ArcEnd; sweep: number; angle?: number; edit?: Edit }
     | { kind: "grow"; grow: Grow; from: number; factor: number; edit?: Edit }
-    | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
+    | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] }
+    /** Drawing a connector from one shape to another; `at` is the pointer. */
+    | { kind: "connect"; from: End; to?: End; at: Point };
   let drag = $state<Drag>();
 
   const pageSize = $derived.by(() => {
@@ -1226,7 +1229,7 @@
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
     if (!isJoinTool()) joining = undefined;
-    if (editor.tool !== "point" && !isJoinTool() && !isLineTool()) toolHover = undefined;
+    if (editor.tool !== "point" && !isJoinTool() && !isLineTool() && editor.tool !== "connector") toolHover = undefined;
   });
 
   /**
@@ -1366,6 +1369,13 @@
       joinAt(p, e.detail >= 2);
       return;
     }
+    if (e.button === 0 && !spaceHeld && editor.tool === "connector") {
+      const from = connectEndAt(p);
+      if (from) drag = { kind: "connect", from, at: p };
+      else editor.flash("Start a connector on a shape");
+      toolHover = undefined;
+      return;
+    }
     if (e.button === 0 && !spaceHeld && arcing) {
       arcClick(arcing, p);
       return;
@@ -1482,6 +1492,14 @@
     }
     if (!drag && (editor.tool === "point" || isJoinTool())) {
       toolHover = toolTarget(p, isJoinTool());
+      return;
+    }
+    // The connector tool shows the shape (or anchor) a press would start from.
+    if (!drag && editor.tool === "connector") {
+      const end = connectEndAt(p);
+      editor.hoverSource = "canvas";
+      editor.hovered = end?.target;
+      toolHover = endHover(end);
       return;
     }
     // Line tools preview where a press would start: just the snap, no ghost.
@@ -1663,6 +1681,12 @@
         editor.previewEdit(drag.edit);
         break;
       }
+      case "connect":
+        drag.to = connectEndAt(p, drag.from.target);
+        drag.at = p;
+        editor.hovered = drag.to?.target;
+        toolHover = endHover(drag.to);
+        break;
       case "create": {
         if (mods.angle && isLineTool()) {
           const from = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -1721,6 +1745,10 @@
         break;
       case "create":
         create(d);
+        break;
+      case "connect":
+        toolHover = undefined;
+        addConnector(d);
         break;
     }
   }
@@ -2017,6 +2045,79 @@
     }
   }
 
+  // --- Connector tool ----------------------------------------------------------
+
+  /** One end of a connector being drawn: a shape, and the anchor it was snapped to, if any. */
+  type End = { target: number; anchor?: string };
+
+  /**
+   * The shape a connector joins for a press of `p`. Text placed on a named
+   * shape (a node's label) stands for that shape, and lines aren't joined.
+   */
+  function host(id: number): number | undefined {
+    const call = editor.callById.get(id);
+    if (!call || baseName(call.callee) === "line") return undefined;
+    const on = call.args.find((a) => a.key === null);
+    if (baseName(call.callee) === "content" && on?.value.type === "str" && !on.value.value.includes(".")) {
+      const name = on.value.value;
+      return editor.calls.find((c) => c.name === name && c.parent === null)?.id ?? id;
+    }
+    return id;
+  }
+
+  /** Shapes a connector can join: those with anchors to snap to. */
+  const connectables = $derived([...new Set(snapTargets.map((t) => host(t.target)).filter((id) => id !== undefined))]);
+
+  /**
+   * The connector end at `p`: a compass anchor within reach (not a centre,
+   * which an arrow would end inside), else the smallest shape under the
+   * pointer, its anchor picked on release.
+   */
+  function connectEndAt(p: Point, exclude?: number): End | undefined {
+    let best: End | undefined;
+    let bestDist = mods.free ? 0 : 8 / editor.zoom;
+    for (const t of snapTargets) {
+      const dist = Math.hypot(t.point[0] - p[0], t.point[1] - p[1]);
+      if (dist < bestDist && t.target !== exclude && COMPASS.includes(t.anchor) && host(t.target) === t.target) {
+        [best, bestDist] = [{ target: t.target, anchor: t.anchor }, dist];
+      }
+    }
+    if (best) return best;
+    let bestArea = Infinity;
+    for (const id of connectables) {
+      const b = id === exclude ? undefined : editor.boundsOf(id);
+      if (!b || p[0] < b.x0 || p[0] > b.x1 || p[1] < b.y0 || p[1] > b.y1) continue;
+      const area = (b.x1 - b.x0) * (b.y1 - b.y0);
+      if (area < bestArea) [best, bestArea] = [{ target: id }, area];
+    }
+    return best;
+  }
+
+  /** The snap marker for a connector end on an anchor. */
+  function endHover(end: End | undefined): { page: Point; snap: Snap } | undefined {
+    const q = end?.anchor !== undefined ? editor.anchorsOf(end.target)[end.anchor] : undefined;
+    return end && q ? { page: q, snap: { point: q, target: end.target, anchor: end.anchor } } : undefined;
+  }
+
+  /** The anchors and page path of the connector a drag would draw, once it's over a second shape. */
+  function connectorRoute(d: Extract<Drag, { kind: "connect" }>) {
+    if (!d.to) return undefined;
+    const anchors = editor.connectorAnchors(d.from.target, d.to.target, editor.route, d.from.anchor, d.to.anchor);
+    if (!anchors) return undefined;
+    const [a, b] = [editor.anchorsOf(d.from.target)[anchors[0]], editor.anchorsOf(d.to.target)[anchors[1]]];
+    return { anchors, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route) : [] };
+  }
+
+  function addConnector(d: Extract<Drag, { kind: "connect" }>) {
+    const route = connectorRoute(d);
+    if (!d.to || !route) return;
+    const [from_anchor, to_anchor] = route.anchors;
+    const canvas = editor.canvasOfCall.get(d.from.target) ?? null;
+    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route })) {
+      editor.tool = "select";
+    }
+  }
+
   /** Corner radius of a node the node tool draws. */
   const NODE_RADIUS = 0.2;
 
@@ -2044,6 +2145,14 @@
       if (pointer) return radiusGuide(frame, transform, center, pointer);
       const c = editor.toPage(frame, transformPoint(transform, center));
       return `M${c[0] - 3},${c[1]} h6 M${c[0]},${c[1] - 3} v6`;
+    }
+    if (drag?.kind === "connect") {
+      const points = connectorRoute(drag)?.points;
+      if (points?.length) return points.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
+      // Not over a second shape yet: from the first toward the pointer.
+      const box = editor.boundsOf(drag.from.target);
+      const a = drag.from.anchor !== undefined ? editor.anchorsOf(drag.from.target)[drag.from.anchor] : box && [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
+      return a && `M${a[0]},${a[1]} L${drag.at[0]},${drag.at[1]}`;
     }
     if (drag?.kind !== "create") return undefined;
     const a = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -2099,7 +2208,7 @@
    * it), so you can see what an end could snap to before you get there.
    */
   const anchorHints = $derived.by(() => {
-    if (!isLineTool() || !pointer || mods.free || (drag && drag.kind !== "create")) return [];
+    if (!(isLineTool() || editor.tool === "connector") || !pointer || mods.free || (drag && drag.kind !== "create" && drag.kind !== "connect")) return [];
     const p: Point = [(pointer[0] - editor.pan[0]) / editor.zoom, (pointer[1] - editor.pan[1]) / editor.zoom];
     const reach = 40 / editor.zoom;
     const near = new Set<number>();
