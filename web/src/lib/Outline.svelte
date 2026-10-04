@@ -91,18 +91,44 @@
   /** Calls with children: groups, scopes and the like. */
   const groups = $derived(new Set(editor.calls.flatMap((c) => (c.parent === null ? [] : [c.parent]))));
 
-  /** Every call outside a folded group, with its nesting depth. */
-  const rows = $derived(
-    editor.calls.flatMap((call) => {
+  /**
+   * Text placed on another shape by its name, like a node's
+   * `content("node", [..])` or `content("node.north", [..])`, keyed to that
+   * shape: an earlier one in the same block that isn't a group.
+   */
+  const hostOf = $derived.by(() => {
+    const named = new Map(editor.calls.flatMap((c) => (c.name ? [[c.name, c] as const] : [])));
+    const hosts = new Map<number, number>();
+    for (const call of editor.calls) {
+      if (baseName(call.callee) !== "content" || call.in_loop || groups.has(call.id)) continue;
+      const at = call.args.find((a) => a.key === null)?.value;
+      const host = at?.type === "str" ? named.get(at.value.split(".")[0]) : undefined;
+      if (host && host.parent === call.parent && !groups.has(host.id) && host.range.start < call.range.start) hosts.set(call.id, host.id);
+    }
+    return hosts;
+  });
+
+  /** Every call outside a folded group, with its nesting depth; text placed on a shape comes under it. */
+  const rows = $derived.by(() => {
+    const placed = new Map<number, Call[]>();
+    for (const [text, host] of hostOf) placed.set(host, [...(placed.get(host) ?? []), editor.callById.get(text)!]);
+    const out: { call: Call; depth: number }[] = [];
+    const add = (call: Call, depth: number) => {
+      out.push({ call, depth });
+      for (const text of placed.get(call.id) ?? []) add(text, depth + 1);
+    };
+    for (const call of editor.calls) {
+      if (hostOf.has(call.id)) continue;
       let depth = 0;
       let hidden = false;
       for (let p = call.parent; p !== null; p = editor.callById.get(p)?.parent ?? null) {
         depth++;
         hidden ||= editor.collapsed.has(p);
       }
-      return hidden ? [] : [{ call, depth }];
-    }),
-  );
+      if (!hidden) add(call, depth);
+    }
+    return out;
+  });
 
   /** Points a call defines itself, e.g. `anchor("C", (5, 5))`, not those of its children. */
   function definedBy(call: Call): Point[] {

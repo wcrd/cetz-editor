@@ -144,6 +144,8 @@ editable here, other values show a summary and jump to the code) and
 **Shapes** (every draw call). Calls in loops show how many shapes they drew
 (`line ×4`) and expand into those repetitions, read-only and labelled by the
 points they connect (`A → E`); hover or click one to highlight just it.
+Text placed on a shape by its name, like a node's `content("node", [..])`,
+is listed under that shape, wherever it is in the code.
 Hover a shape or point and click its × to delete it, as Delete would; a
 deleted point's other uses keep its position as coordinates.
 
