@@ -802,12 +802,20 @@ export class Editor {
     return call.parent === (this.scope ?? null);
   }
 
-  /** The selectable call a probe belongs to (itself or its nearest selectable ancestor). */
+  /**
+   * The call a click on a probe picks: inside the entered group, the child
+   * of it that holds the probe; anywhere else, the top-level call, so
+   * clicking outside the group can leave it.
+   */
   selectableFor(id: number): number | undefined {
-    let call = this.callById.get(id);
-    while (call && !this.isSelectable(call)) {
-      call = call.parent === null ? undefined : this.callById.get(call.parent);
+    const parentOf = (c: Call) => (c.parent === null ? undefined : this.callById.get(c.parent));
+    let inside = false;
+    for (let c = this.callById.get(id); c && this.scope !== undefined; c = parentOf(c)) {
+      if (c.parent === this.scope) inside = true;
     }
+    const level = inside ? this.scope! : null;
+    let call = this.callById.get(id);
+    while (call && call.parent !== level) call = parentOf(call);
     return call?.id;
   }
 

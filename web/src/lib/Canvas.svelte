@@ -1237,6 +1237,7 @@
     const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id");
     if (hit === null || hit === undefined) return canvasMenu();
     const id = Number(hit);
+    if (!editor.isSelectable(editor.callById.get(id)!)) editor.scope = undefined;
     if (!editor.selected.includes(id)) {
       editor.selection = [id];
       editor.pointSelection = [];
@@ -1555,7 +1556,12 @@
     const hit = target.closest("[data-id]")?.getAttribute("data-id");
     if (hit !== null && hit !== undefined) {
       const id = Number(hit);
-      if (e.shiftKey) {
+      // A shape outside the entered group leaves it, and is picked on its own.
+      if (editor.scope !== undefined && !editor.isSelectable(editor.callById.get(id)!)) {
+        editor.scope = undefined;
+        editor.selection = [id];
+        editor.pointSelection = [];
+      } else if (e.shiftKey) {
         editor.selection = editor.selected.includes(id) ? editor.selected.filter((s) => s !== id) : [...editor.selected, id];
       } else if (!editor.selected.includes(id)) {
         editor.selection = [id];
@@ -1717,7 +1723,8 @@
         for (const probe of editor.probes) {
           const id = editor.selectableFor(probe.id);
           const b = probeBounds(probe);
-          if (id === undefined || !b) continue;
+          // Inside an entered group, only its children.
+          if (id === undefined || !b || !editor.isSelectable(editor.callById.get(id)!)) continue;
           const [ax, ay] = editor.toPage(frameOf(probe), [b.x0, b.y1]);
           const [bx, by] = editor.toPage(frameOf(probe), [b.x1, b.y0]);
           if (ax <= x1 && bx >= x0 && ay <= y1 && by >= y0) hits.add(id);
@@ -1851,6 +1858,10 @@
       case "connect":
         toolHover = undefined;
         addConnector(d);
+        break;
+      case "marquee":
+        // A plain click on empty canvas leaves an entered group.
+        if (d.base.length === 0 && d.start[0] === d.end[0] && d.start[1] === d.end[1]) editor.scope = undefined;
         break;
     }
   }
