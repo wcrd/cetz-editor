@@ -1,5 +1,4 @@
 <script lang="ts">
-  import fixture from "../../fixtures/zone_diagram.typ?raw";
   import Canvas from "./lib/Canvas.svelte";
   import CodeEditor from "./lib/CodeEditor.svelte";
   import Inspector from "./lib/Inspector.svelte";
@@ -14,11 +13,11 @@
   import Resizer from "./lib/Resizer.svelte";
   import { Tabs } from "./lib/tabs.svelte";
 
-  // Restore the last session's tabs in this browser; otherwise start on the sample.
+  // Restore the last session's tabs in this browser; otherwise start on a new document.
   const tabs = new Tabs();
   const session = loadSession();
   if (session) restoreSession(tabs, session);
-  else tabs.open(fixture, "zone_diagram.typ");
+  else tabs.openNew();
   $effect(() => () => tabs.dispose());
 
   /** The document in the active tab. */
