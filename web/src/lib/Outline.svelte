@@ -658,7 +658,8 @@
     </ul>
   {/if}
 
-  <h3>
+  <!-- A rule sets the drawing apart from the definitions above it. -->
+  <h3 class:divided={variables.length > 0 || editor.scene.functions.length > 0}>
     Shapes
     {#if editor.scope !== undefined}
       <button class="link" onclick={() => (editor.scope = undefined)}
@@ -692,6 +693,11 @@
     letter-spacing: 0.04em;
     color: var(--muted);
     margin: 6px 4px 4px;
+  }
+  h3.divided {
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 10px;
   }
   ul {
     list-style: none;
