@@ -331,11 +331,17 @@ impl EditorWorld {
 /// Collects the probe metadata from a compiled document as a JSON array.
 fn probes_json(doc: &PagedDocument) -> String {
     let label = Label::new(PicoStr::intern("__cetz-editor-probe")).unwrap();
-    let values: Vec<_> = doc
-        .introspector()
+    let introspector = doc.introspector();
+    let values: Vec<serde_json::Value> = introspector
         .query(&Selector::Label(label))
         .iter()
-        .filter_map(|c| c.to_packed::<MetadataElem>().map(|m| m.value.clone()))
+        .filter_map(|c| {
+            let mut value = serde_json::to_value(&c.to_packed::<MetadataElem>()?.value).ok()?;
+            // Where the probe, at canvas (0, 0), landed: the canvas origin.
+            let at = introspector.position(c.location()?)?;
+            value["origin"] = serde_json::json!({ "page": at.page.get(), "x": at.point.x.to_pt(), "y": at.point.y.to_pt() });
+            Some(value)
+        })
         .collect();
     serde_json::to_string(&values).unwrap_or_else(|_| "[]".into())
 }

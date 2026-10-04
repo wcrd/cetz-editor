@@ -522,7 +522,10 @@
           {#if c.fixed}<span class="tag" title="Its sides are fixed: moving its shapes keeps them">fixed</span>{/if}
         {:else}
           <span class="name">{call.callee}</span>
-          {#if many}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
+          {#if many}
+            {@const more = instances.some((p) => p.truncated)}
+            <span class="pill" title={more ? `Shapes this call drew: the first ${instances.length} are listed` : "Shapes this call drew"}>×{instances.length}{more ? "+" : ""}</span>
+          {/if}
           <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
         {/if}
       </button>

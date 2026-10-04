@@ -26,10 +26,24 @@
 
 #let __cetz_probe_compass = ("east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east")
 
-#let __cetz_probe(id, elements) = {
+// How many repetitions of a call in a loop the probe records. Every probe
+// costs memory, and a fractal can draw tens of thousands of shapes from one
+// call: past this, the browser runs out.
+#let __cetz_probe_limit = 500
+
+// `looped`: the call is in a loop. Its unnamed shapes record only the
+// anchors the editor uses for them, since asking CeTZ for every anchor of
+// thousands of shapes takes seconds and gigabytes, and only the first
+// `__cetz_probe_limit` are recorded at all (counted in the context, which
+// CeTZ passes from shape to shape).
+#let __cetz_probe(id, elements, looped: false) = {
   if type(elements) != array { return elements }
   elements.map(el => if type(el) != function { el } else { ctx => {
+    let counts = ctx.at("cetz-editor-probes", default: (:))
+    let count = counts.at(str(id), default: 0)
+    if looped and count >= __cetz_probe_limit { return el(ctx) }
     let (ctx, ..element) = el(ctx)
+    if looped { ctx.insert("cetz-editor-probes", counts + ((str(id)): count + 1)) }
     let drawables = element.at("drawables", default: ())
     if type(drawables) == dictionary { drawables = (drawables,) }
 
@@ -79,7 +93,9 @@
       // A path's start, mid and end are points along it, and CeTZ fails an
       // assertion when it has no length (a line from a point to itself).
       let no-length = outline-points.all(p => p == outline-points.first())
+      let few = looped and element.at("name", default: none) == none
       for name in names {
+        if few and name not in ("default", "center") { continue }
         if open-arc and name in __cetz_probe_compass { continue }
         if open-path and name == "centroid" { continue }
         if no-centroid and name in ("centroid", "default") { continue }
@@ -117,6 +133,8 @@
       // Maps the call's own coordinates to canvas coordinates (4x4, rows).
       transform: ctx.transform,
       length: ctx.length / 1pt,
+      // The last repetition recorded: later ones may have been drawn too.
+      truncated: looped and count + 1 == __cetz_probe_limit,
     )
     let probe = (
       type: "content",
@@ -129,12 +147,11 @@
       // children's segments (`merge-path`) leave it out.
       segments: (((0.0, 0.0, 0.0), false, ()),),
       tags: ("no-bounds", "debug", "cetz-editor-probe"),
-      // The probe sits at canvas coordinate (0, 0), so its position on the
-      // page is where the canvas origin landed.
-      body: context {
-        let p = here().position()
-        [#metadata((..info, origin: (page: p.page, x: p.x / 1pt, y: p.y / 1pt)))<__cetz-editor-probe>]
-      },
+      // The probe sits at canvas coordinate (0, 0), so where it lands on
+      // the page is where the canvas origin did: the compiler reads that
+      // from its position (asking with `context` here costs a lot of
+      // memory in diagrams with thousands of shapes).
+      body: [#metadata(info)<__cetz-editor-probe>],
     )
     element.drawables = drawables + (probe,)
     (ctx: ctx, ..element)

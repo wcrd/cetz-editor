@@ -47,17 +47,19 @@ pub fn instrument(source: &str) -> Instrumented {
     let root = typst_syntax::parse(source);
     let mut spans = Vec::new();
     walk::for_each_canvas(&LinkedNode::new(&root), &mut |_, body| {
-        walk::for_each_call(body, walk::Context::default(), &mut |call, _| spans.push(call.range()));
+        walk::for_each_call(body, walk::Context::default(), &mut |call, ctx| spans.push((call.range(), ctx.in_loop)));
     });
     for function in walk::drawing_functions(&LinkedNode::new(&root)) {
-        walk::for_each_function_call(&function, &mut |call, _| spans.push(call.range()));
+        walk::for_each_function_call(&function, &mut |call, ctx| spans.push((call.range(), ctx.in_loop)));
     }
-    spans.sort_unstable_by_key(|r| r.start);
+    spans.sort_unstable_by_key(|(r, _)| r.start);
     spans.dedup();
 
     let mut edits: Vec<(usize, String)> = vec![(0, PREAMBLE.to_string())];
-    for span in &spans {
-        edits.push((span.start, format!("__cetz_probe({}, ", span.start)));
+    for (span, looped) in &spans {
+        // Loops can draw thousands of shapes, so the probe records less of each.
+        let looped = if *looped { "looped: true, " } else { "" };
+        edits.push((span.start, format!("__cetz_probe({}, {looped}", span.start)));
         edits.push((span.end, ")".to_string()));
     }
     // Stable sort keeps a closing `)` before an opening wrap at the same offset.
@@ -73,7 +75,7 @@ pub fn instrument(source: &str) -> Instrumented {
         last = at;
     }
     text.push_str(&source[last..]);
-    let calls = spans.iter().map(|r| r.start).collect();
+    let calls = spans.iter().map(|(r, _)| r.start).collect();
     Instrumented { text, insertions, calls }
 }
 
@@ -118,6 +120,17 @@ mod tests {
         assert!(out.text.contains(&format!(
             "__cetz_probe({g}, group(name: \"g\", {{ __cetz_probe({c}, circle((0, 0))) }}))"
         )));
+    }
+
+    #[test]
+    fn marks_calls_in_loops() {
+        let src = "#canvas({\n  for x in (0, 1) { circle((x, 0)) }\n  rect((0, 0), (1, 1))\n})";
+        let out = instrument(src);
+        let (c, r) = (src.find("circle(").unwrap(), src.find("rect(").unwrap());
+        assert!(out.text.contains(&format!("__cetz_probe({c}, looped: true, circle((x, 0)))")), "{}", out.text);
+        assert!(out.text.contains(&format!("__cetz_probe({r}, rect(")));
+        let at = out.text.find("circle((x").unwrap();
+        assert_eq!(out.to_original(at), c);
     }
 
     #[test]
