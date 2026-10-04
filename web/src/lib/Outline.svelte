@@ -3,6 +3,7 @@
   // definitions, editable when they're literal points), the functions the
   // canvases draw with, with their calls, and shapes (the draw calls; groups
   // fold, loops expand into the repetitions CeTZ drew, read-only).
+  import { untrack } from "svelte";
   import type { Editor } from "./editor.svelte";
   import { endShape, ROUTE_ICONS } from "./connectors";
   import { num } from "./format";
@@ -14,6 +15,16 @@
   /** Variables folded closed, and loops unfolded, by the user. */
   let folded = $state(new Set<string>());
   let unfolded = $state(new Set<number>());
+  /** Functions opened, by name, which edits don't move: they start closed. */
+  let openFunctions = $state(new Set<string>());
+
+  // Entering a function, from the canvas or the code, opens it here.
+  $effect(() => {
+    const fn = editor.scopeFunction === undefined ? undefined : editor.functionById.get(editor.scopeFunction);
+    untrack(() => {
+      if (fn && !openFunctions.has(fn.name)) openFunctions = new Set([...openFunctions, fn.name]);
+    });
+  });
 
   // --- Renaming points ----------------------------------------------------
 
@@ -625,10 +636,10 @@
     <h3>Functions</h3>
     <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
       {#each editor.scene.functions as fn (fn.id)}
-        {@const open = !editor.collapsed.has(fn.id)}
+        {@const open = openFunctions.has(fn.name)}
         <li>
           <div class="row shape function" class:hovered={editor.hovered === fn.id} class:entered={editor.scopeFunction === fn.id}>
-            <button class="chevron-button" onclick={() => (editor.collapsed = toggle(editor.collapsed, fn.id))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
+            <button class="chevron-button" onclick={() => (openFunctions = toggle(openFunctions, fn.name))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
               <span class="chevron" class:open>›</span>
             </button>
             <button

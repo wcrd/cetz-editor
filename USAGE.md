@@ -116,10 +116,11 @@ names would clash.
 
 **Functions.** A function the canvas draws with, like
 `let plate(x) = { rect(..); content(..) }` used as `plate(4)`, gets its own
-entry under Functions in the outline, listing the calls in its body and how
-many times each is drawn. Double-click a use on the canvas, or click the
-function in the outline, to enter it: a click then selects that shape in every
-copy, and the inspector edits the function's code, so every copy changes.
+entry under Functions in the outline. It starts folded: open it to list the
+calls in its body and how many times each is drawn. Double-click a use on the
+canvas, or click the function in the outline, to enter it (which opens it): a
+click then selects that shape in every copy, and the inspector edits the
+function's code, so every copy changes.
 Coordinates worked out from the function's parameters (`(x, 0)`) have no
 handles and don't move by dragging; edit them in the inspector or the code.
 
