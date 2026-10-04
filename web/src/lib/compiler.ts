@@ -30,10 +30,11 @@ export type CompileRequest = { kind: "compile"; id: number; source: string };
 export type ExportRequest = { kind: "export"; id: number; source: string; format: ExportFormat; pixelPerPt: number };
 export type WorkerRequest = CompileRequest | ExportRequest;
 
+/** `crashed`: the worker's WebAssembly died, and it must be replaced. */
 export type WorkerMessage =
   | { id: number; kind: "fetching"; packages: string[] }
-  | ({ id: number; kind: "done" } & CompileResult)
-  | { id: number; kind: "exported"; data?: Uint8Array; error?: string };
+  | ({ id: number; kind: "done"; crashed?: boolean } & CompileResult)
+  | { id: number; kind: "exported"; data?: Uint8Array; error?: string; crashed?: boolean };
 
 export type CompilerStatus =
   | { kind: "loading" }
@@ -48,38 +49,62 @@ export type CompilerStatus =
  * reported, to the callback of the request they answer.
  */
 export class TypstCompiler {
-  #worker = new Worker(new URL("./compiler.worker.ts", import.meta.url), { type: "module" });
+  #worker = this.#spawn();
   #latest = 0;
   #reported = 0;
+  /** The newest compile request, to resend to a replacement worker. */
+  #newest?: CompileRequest;
   #callbacks = new Map<number, (status: CompilerStatus, request: number) => void>();
   #exports = 0;
   #exported = new Map<number, { resolve: (data: Uint8Array) => void; reject: (err: Error) => void }>();
 
-  constructor() {
-    this.#worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
-      if (e.data.kind === "exported") {
-        const { id, data, error } = e.data;
-        const pending = this.#exported.get(id);
-        this.#exported.delete(id);
-        if (data) pending?.resolve(data);
-        else pending?.reject(new Error(error ?? "export failed"));
-        return;
-      }
-      const { id, ...status } = e.data;
-      if (id < this.#reported) return;
-      this.#reported = id;
-      const onStatus = this.#callbacks.get(id);
-      if (status.kind === "done") {
-        // Coalesced requests before this one will never be answered.
-        for (const key of this.#callbacks.keys()) if (key <= id) this.#callbacks.delete(key);
-      }
-      onStatus?.(status, id);
+  #spawn(): Worker {
+    const worker = new Worker(new URL("./compiler.worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
+      this.#receive(e.data);
+      // After answering, so the request that crashed it isn't sent again.
+      if (e.data.kind !== "fetching" && e.data.crashed) this.#restart();
     };
+    return worker;
+  }
+
+  #receive(message: WorkerMessage) {
+    if (message.kind === "exported") {
+      const { id, data, error } = message;
+      const pending = this.#exported.get(id);
+      this.#exported.delete(id);
+      if (data) pending?.resolve(data);
+      else pending?.reject(new Error(error ?? "export failed"));
+      return;
+    }
+    const { id, ...status } = message;
+    if ("crashed" in status) delete status.crashed;
+    if (id < this.#reported) return;
+    this.#reported = id;
+    const onStatus = this.#callbacks.get(id);
+    if (status.kind === "done") {
+      // Coalesced requests before this one will never be answered.
+      for (const key of this.#callbacks.keys()) if (key <= id) this.#callbacks.delete(key);
+    }
+    onStatus?.(status, id);
+  }
+
+  /**
+   * Replaces a worker whose WebAssembly died: nothing it was still doing
+   * will finish, so exports fail and the newest compile goes to the new one.
+   */
+  #restart() {
+    this.#worker.terminate();
+    this.#worker = this.#spawn();
+    for (const pending of this.#exported.values()) pending.reject(new Error("the compiler crashed"));
+    this.#exported.clear();
+    if (this.#newest && this.#newest.id > this.#reported) this.#worker.postMessage(this.#newest);
   }
 
   compile(source: string, onStatus: (status: CompilerStatus, request: number) => void): number {
     const request: CompileRequest = { kind: "compile", id: ++this.#latest, source };
     this.#callbacks.set(request.id, onStatus);
+    this.#newest = request;
     this.#worker.postMessage(request);
     return request.id;
   }
