@@ -526,14 +526,26 @@
    * A rect's (or grid's) other two corners and its four edges, which move
    * parts of its two literal corners. `edit` takes where it's dragged, local.
    */
-  /** `bend`: an elbow connector's bend handle, at `ratio` of the way, which `at` places for another ratio. */
-  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined; bend?: { ratio: number; at: (ratio: number) => Point } };
+  /**
+   * A handle that shows what it's set to while dragged (a connector's bend
+   * or step out): its `value` now, where `at` puts it for another, and how
+   * to `read` one off the edit the drag would make.
+   */
+  type Readout = {
+    key: string;
+    value: number;
+    at: (value: number) => Point;
+    read: (edit: Edit | undefined) => number | undefined;
+    label: (value: number) => string;
+    hint: (value: number) => string;
+  };
+  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined; readout?: Readout };
 
   const reshapes = $derived.by((): Reshape[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
-    if (call && probe && !call.in_loop && call.connector?.bend != null) return bendHandles(call, probe);
+    if (call && probe && !call.in_loop && call.connector) return connectorHandles(call, probe);
     if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
     const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
     if (at.length < 2 || at.some((i) => call.args[i].point !== null)) return [];
@@ -559,28 +571,54 @@
   });
 
   /**
-   * The handle on an elbow connector's middle segment: dragged along the
-   * way the connector runs, it moves where it crosses over, in steps of 5%
-   * of the way (⌘: free), keeping clear of the ends.
+   * Handles on a selected elbow connector. One on its middle segment,
+   * dragged along the way the connector runs, moves where it crosses over,
+   * in steps of 5% of the way (⌘: free), keeping clear of the ends. On a
+   * detour, one where each end steps out sets how far both do, in grid
+   * steps (⌘: free).
    */
-  function bendHandles(call: Call, probe: Probe): Reshape[] {
+  function connectorHandles(call: Call, probe: Probe): Reshape[] {
     const connector = call.connector;
     const at = (anchor: string): Point | undefined => {
       const id = editor.connectorEnd(anchor);
       return id === undefined ? undefined : editor.anchorsOf(id)[anchor.slice(anchor.lastIndexOf(".") + 1)];
     };
     const [a, b] = connector ? [at(connector.from), at(connector.to)] : [];
-    if (!connector || connector.bend === null || !a || !b) return [];
+    if (!connector || connector.route !== "elbow" || !a || !b) return [];
+    const handles: Reshape[] = [];
+    const stub = connector.stub ?? STUB;
+    const [da, db] = [outward(connector.from), outward(connector.to)];
+    if (connector.detour) {
+      for (const [key, end, d] of [["stub-from", a, da], ["stub-to", b, db]] as const) {
+        const place = (v: number): Point => [end[0] + d[0] * v * probe.length, end[1] + d[1] * v * probe.length];
+        const edit = (p: Point): Edit | undefined => {
+          const q = localToPage(probe, p);
+          const raw = ((q[0] - end[0]) * d[0] + (q[1] - end[1]) * d[1]) / probe.length;
+          const step = editor.gridStep;
+          const value = mods.free ? Math.max(0.05, raw) : Math.max(step, Math.round(raw / step) * step);
+          return Math.abs(value - stub) < 1e-9 ? undefined : { kind: "set-stub", call: call.id, stub: Math.round(value * 1e4) / 1e4 };
+        };
+        const readout: Readout = {
+          key,
+          value: stub,
+          at: place,
+          read: (e) => (e?.kind === "set-stub" ? e.stub : undefined),
+          label: (v) => num(v),
+          hint: (v) => `step out ${num(v)}`,
+        };
+        handles.push({ point: place(stub), edge: true, probe, edit, readout });
+      }
+    }
+    if (connector.bend === null) return handles;
     const bend = connector.bend;
     // Out of a north or south side a plain elbow runs up or down, so it
     // crosses over at a height; a detour's middle segment runs across.
     const axis = vertical(connector.from) !== connector.detour ? 1 : 0;
     const other = 1 - axis;
     const span = b[axis] - a[axis];
-    if (Math.abs(span) < 1e-9) return [];
-    const stub = connector.detour ? (connector.stub ?? STUB) * probe.length : 0;
-    const [da, db] = [outward(connector.from), outward(connector.to)];
-    const across = (a[other] + da[other] * stub + b[other] + db[other] * stub) / 2;
+    if (Math.abs(span) < 1e-9) return handles;
+    const out = connector.detour ? stub * probe.length : 0;
+    const across = (a[other] + da[other] * out + b[other] + db[other] * out) / 2;
     const place = (t: number): Point => {
       const q: Point = [0, 0];
       q[axis] = a[axis] + t * span;
@@ -592,15 +630,23 @@
       const ratio = Math.min(0.95, Math.max(0.05, mods.free ? raw : Math.round(raw * 20) / 20));
       return Math.abs(ratio - bend) < 1e-9 ? undefined : { kind: "bend", call: call.id, ratio };
     };
-    return [{ point: place(bend), edge: true, probe, edit, bend: { ratio: bend, at: place } }];
+    const readout: Readout = {
+      key: "bend",
+      value: bend,
+      at: place,
+      read: (e) => (e?.kind === "bend" ? e.ratio : undefined),
+      label: (v) => `${num(v * 100)}%`,
+      hint: (v) => `bend ${num(v * 100)}% of the way`,
+    };
+    return [...handles, { point: place(bend), edge: true, probe, edit, readout }];
   }
 
-  /** While a bend handle is dragged: where it is now, and how far along as a percentage. */
-  const bending = $derived.by(() => {
-    const bend = drag?.kind === "reshape" ? drag.reshape.bend : undefined;
-    if (drag?.kind !== "reshape" || !bend) return undefined;
-    const ratio = drag.edit?.kind === "bend" ? drag.edit.ratio : bend.ratio;
-    return { point: bend.at(ratio), percent: num(ratio * 100) };
+  /** While a handle with a readout is dragged: which one, where it is now, and what it reads. */
+  const reading = $derived.by(() => {
+    const r = drag?.kind === "reshape" ? drag.reshape.readout : undefined;
+    if (drag?.kind !== "reshape" || !r) return undefined;
+    const value = r.read(drag.edit) ?? r.value;
+    return { key: r.key, point: r.at(value), label: r.label(value), hint: r.hint(value) };
   });
 
   function reshapeAt(p: Point): Reshape | undefined {
@@ -1787,10 +1833,14 @@
         // A click (no drag) on one of several selected points picks just it.
         else if (d.group?.length) editor.pointSelection = [d.point];
         break;
+      case "reshape":
+        // A step out set by dragging is the distance for detours from now on, as the inspector's is.
+        if (d.edit?.kind === "set-stub") editor.prefs.stub = d.edit.stub;
+        editor.endDrag(d.edit);
+        break;
       case "handle":
       case "rotate":
       case "radius":
-      case "reshape":
       case "sweep":
       case "grow":
         editor.endDrag(d.edit);
@@ -2498,11 +2548,12 @@
         {/if}
 
         {#each reshapes as r, i (i)}
-          <!-- A bend handle follows the drag, labelled with how far along it is. -->
-          {@const at = r.bend && bending ? bending.point : r.point}
+          <!-- A handle with a readout follows the drag, labelled with what it's set to. -->
+          {@const live = r.readout && reading?.key === r.readout.key ? reading : undefined}
+          {@const at = live ? live.point : r.point}
           <circle class="handle" class:edge={r.edge} cx={at[0]} cy={at[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
-          {#if r.bend && bending}
-            <text class="bend-label" x={at[0] + 8 / editor.zoom} y={at[1] - 8 / editor.zoom} font-size={11 / editor.zoom} stroke-width={3 / editor.zoom}>{bending.percent}%</text>
+          {#if live}
+            <text class="readout" x={at[0] + 8 / editor.zoom} y={at[1] - 8 / editor.zoom} font-size={11 / editor.zoom} stroke-width={3 / editor.zoom}>{live.label}</text>
           {/if}
         {/each}
 
@@ -2680,8 +2731,8 @@
       <div class="hint">{drag.end.end} {num(drag.angle ?? drag.end[drag.end.end])}° · ⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no rounding</div>
     {:else if drag?.kind === "radius"}
       <div class="hint">radius {num(drag.r)}{drag.reach.stretchy ? ` · ${isMac ? "⌥" : "Alt"} ellipse` : ""} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
-    {:else if bending}
-      <div class="hint">bend {bending.percent}% of the way · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if reading}
+      <div class="hint">{reading.hint} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
@@ -2857,7 +2908,7 @@
     stroke-width: 1.5;
     cursor: grab;
   }
-  .bend-label {
+  .readout {
     fill: var(--accent);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-weight: 600;
