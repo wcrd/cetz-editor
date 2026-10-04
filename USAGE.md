@@ -23,6 +23,7 @@ Press **?** in the app for a quick version of this guide.
 | Drag the round knobs on an arc's ends | Turn that end around the centre, keeping the other end put; writes whichever of `start`, `stop` and `delta` the arc uses (⇧: 15° steps). The start knob shows on arcs placed by their centre (`anchor: "origin"`, as the arc tool draws them) |
 | Drag the knob off a selected group, scope or call to your own function's bottom-right corner | Scale it about its centre (or its rotation's pivot) in steps of 0.05 (⇧: quarters, ⌘: free). It goes in the same scope as a rotation, `scope({ rotate(..); scale(..); shape })`; back at 1 the `scale` goes, and the scope when nothing's left. Text and stroke widths don't scale. CeTZ's own shapes resize with their own handles instead, so they only get the knob once they're scaled, to change or undo it |
 | Drag the knob above a selected shape | Rotate it (⇧: 15° steps, which include level and upright). Polygons, stars and text set their own `angle:`; anything else is wrapped once in `scope({ rotate(30deg, origin: ..) .. })` around its centre, and later turns edit that `rotate`; turning it back to 0° removes the scope again. Selecting the scope selects the shape: its handles, inspector and Ungroup work as before |
+| ⌘-click a selected line or curve through points | Add a point there; ⌘-click one of its points to remove it (it keeps at least two, three when closed) |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
 | Double-click a group | Enter it to select its children (Esc to leave) |
 | Double-click text | Edit it in place: its `[markup]` or string, as source. Enter saves (⇧Enter for a new line), Esc cancels, clicking away saves. The text tool (**T**) opens it straight away |
@@ -82,7 +83,9 @@ the points and grid toggles; while joining, Finish, Close and Cancel.
 through points (`catmull`, `hobby`), for **Add point here** (on the nearest
 segment, or for a curve where the drawn curve passes; on the grid when
 snapping), **Continue from start/end** and **Close/Open path**; right-click
-one of its points to remove it or carry on from it. With a line selected,
+one of its points to remove it or carry on from it. Quicker: with it
+selected, ⌘-click (Ctrl-click) the path to add a point there, or one of its
+points to remove it; the cursor shows + or − while ⌘ is held. With a line selected,
 starting the join tool (a curve: the curve tool, **K**) on either end also
 carries on from there: the new points go into the same call, and clicking the
 other end closes it.

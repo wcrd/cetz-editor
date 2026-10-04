@@ -993,6 +993,25 @@
     return { call, probe, verts, closed, tool };
   }
 
+  /**
+   * What ⌘-click (Ctrl-click off macOS) would do to the one selected path:
+   * remove the point under the pointer, or add one on the path where it's
+   * clicked. A path keeps at least two points, or three when closed.
+   */
+  function vertexEditAt(grab: Grab | undefined, hit: number | undefined): { remove: { call: number; arg: number; keep: number } } | { add: number } | undefined {
+    if (editor.tool !== "select" || editor.selected.length !== 1) return undefined;
+    const path = editablePath(editor.selected[0]);
+    if (!path) return undefined;
+    if (grab) {
+      if (!("handle" in grab) || grab.handle.call !== path.call.id || !path.verts.includes(grab.handle.arg)) return undefined;
+      const keep = path.closed ? 3 : 2;
+      return path.verts.length > keep ? { remove: { call: path.call.id, arg: grab.handle.arg, keep } } : undefined;
+    }
+    return hit === path.call.id ? { add: path.call.id } : undefined;
+  }
+  /** What ⌘-click would do where the pointer is, for the cursor. */
+  const vertexEdit = $derived(mods.free && !drag ? vertexEditAt(nearGrab, editor.hovered) : undefined);
+
   /** Starts continuing an open line from its first or last vertex with the join tool. */
   function continueLine(id: number, start: boolean) {
     const path = editablePath(id);
@@ -1197,8 +1216,8 @@
       ],
       ...(editor.calls.some((c) => baseName(c.callee) === "anchor") ? [[{ label: "Gather anchors at top", run: () => editor.gatherAnchors() }]] : []),
       [
-        { label: editor.showPoints ? "Hide points" : "Show points", keys: "P", run: () => (editor.showPoints = !editor.showPoints) },
-        { label: editor.showGrid ? "Hide grid" : "Show grid", keys: "G", run: () => (editor.showGrid = !editor.showGrid) },
+        { label: editor.showPoints ? "Hide points" : "Show points", keys: "⇧P", run: () => (editor.showPoints = !editor.showPoints) },
+        { label: editor.showGrid ? "Hide grid" : "Show grid", keys: "⇧G", run: () => (editor.showGrid = !editor.showGrid) },
       ],
     ];
   }
@@ -1391,6 +1410,13 @@
 
     const target = e.target as Element;
     const grab = grabAt(p);
+    const hitId = target.closest("[data-id]")?.getAttribute("data-id");
+    const vertex = e.button === 0 && mods.free ? vertexEditAt(grab, hitId ? Number(hitId) : undefined) : undefined;
+    if (vertex) {
+      if ("remove" in vertex) editor.edit({ kind: "remove-arg", ...vertex.remove });
+      else addVertexAt(vertex.add, p);
+      return;
+    }
     if (grab && "handle" in grab) {
       const { call, arg } = grab.handle;
       const probe = probeOf.get(call);
@@ -2147,8 +2173,17 @@
     if (e.key === " ") spaceHeld = false;
   }
 
+  /** A minus sign, for ⌘-clicking a path's point away. */
+  const REMOVE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><circle cx="10" cy="10" r="7" fill="white" stroke="black"/><path d="M6.5 10h7" stroke="black" stroke-width="2"/></svg>',
+  )}") 10 10, pointer`;
+
   const cursor = $derived(
-    drag?.kind === "rotate"
+    vertexEdit
+      ? "add" in vertexEdit
+        ? "copy"
+        : REMOVE_CURSOR
+      : drag?.kind === "rotate"
       ? "grabbing"
       : drag?.kind === "pan" || spaceHeld || nearGrab || nearSpin || nearGrow || nearReach || nearReshape || nearArcEnd
       ? "grab"
