@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::edit::num;
 use crate::scene::{Arg, Value};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,6 +21,9 @@ pub struct Connector {
     /// The anchors it runs between, as written (`"a.south"`, `"g.b.north"`).
     pub from: String,
     pub to: String,
+    /// How far from `from` to `to` (0 to 1) a two-corner elbow crosses
+    /// over, when it's written as a plain percentage.
+    pub bend: Option<f64>,
 }
 
 /// The connector a `line` call draws, if it is one: its first and last
@@ -41,14 +45,23 @@ pub fn detect(callee: &str, args: &[Arg]) -> Option<Connector> {
         1 | 2 if corners.iter().all(|a| matches!(a.value, Value::Expr) && (a.text.contains("\"|-\"") || a.text.contains("\"-|\""))) => Route::Elbow,
         _ => return None,
     };
-    Some(Connector { route, from, to })
+    let bend = (corners.len() == 2).then(|| bend(&corners[0].text, &from)).flatten();
+    Some(Connector { route, from, to, bend })
+}
+
+/// The `50%` in a corner `("a.south", "|-", ("a.south", 50%, "b.north"))`.
+fn bend(corner: &str, from: &str) -> Option<f64> {
+    let start = corner.rfind(&format!("({from:?}, "))? + from.len() + 4;
+    let (percent, _) = corner[start..].split_once('%')?;
+    percent.trim().parse::<f64>().ok().map(|p| p / 100.0)
 }
 
 /// The positional arguments (source text) of a connector between two
 /// anchors. An elbow leaves and enters each shape square to the side it's
 /// on: two corners halfway along when both sides face the same way (south
-/// to north), one where the two directions meet otherwise (east to north).
-pub fn vertices(from: &str, to: &str, route: Route) -> Vec<String> {
+/// to north), `bend` (0 to 1) of the way along, or one where the two
+/// directions meet otherwise (east to north).
+pub fn vertices(from: &str, to: &str, route: Route, bend: f64) -> Vec<String> {
     let (a, b) = (format!("{from:?}"), format!("{to:?}"));
     if route == Route::Straight {
         return vec![a, b];
@@ -57,7 +70,7 @@ pub fn vertices(from: &str, to: &str, route: Route) -> Vec<String> {
     match (vertical(from), vertical(to)) {
         (true, true) | (false, false) => {
             let turn = if vertical(from) { "|-" } else { "-|" };
-            let mid = format!("({a}, 50%, {b})");
+            let mid = format!("({a}, {}%, {b})", num(bend * 100.0));
             vec![a.clone(), corner(&a, turn, &mid), corner(&b, turn, &mid), b]
         }
         (true, false) => vec![a.clone(), corner(&a, "|-", &b), b],
@@ -85,9 +98,9 @@ mod tests {
 
     #[test]
     fn elbows_turn_where_the_sides_meet() {
-        assert_eq!(vertices("a.south", "b.north", Route::Straight), [r#""a.south""#, r#""b.north""#]);
+        assert_eq!(vertices("a.south", "b.north", Route::Straight, 0.5), [r#""a.south""#, r#""b.north""#]);
         assert_eq!(
-            vertices("a.south", "b.north", Route::Elbow),
+            vertices("a.south", "b.north", Route::Elbow, 0.5),
             [
                 r#""a.south""#,
                 r#"("a.south", "|-", ("a.south", 50%, "b.north"))"#,
@@ -95,9 +108,9 @@ mod tests {
                 r#""b.north""#,
             ]
         );
-        assert_eq!(vertices("a.east", "b.west", Route::Elbow)[1], r#"("a.east", "-|", ("a.east", 50%, "b.west"))"#);
-        assert_eq!(vertices("a.east", "b.north", Route::Elbow), [r#""a.east""#, r#"("a.east", "-|", "b.north")"#, r#""b.north""#]);
-        assert_eq!(vertices("a.south", "b.west", Route::Elbow)[1], r#"("a.south", "|-", "b.west")"#);
+        assert_eq!(vertices("a.east", "b.west", Route::Elbow, 0.25)[1], r#"("a.east", "-|", ("a.east", 25%, "b.west"))"#);
+        assert_eq!(vertices("a.east", "b.north", Route::Elbow, 0.5), [r#""a.east""#, r#"("a.east", "-|", "b.north")"#, r#""b.north""#]);
+        assert_eq!(vertices("a.south", "b.west", Route::Elbow, 0.5)[1], r#"("a.south", "|-", "b.west")"#);
     }
 
     #[test]

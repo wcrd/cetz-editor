@@ -65,6 +65,8 @@ export interface Connector {
   /** The anchors it runs between, as written (`a.south`). */
   from: string;
   to: string;
+  /** How far from `from` to `to` (0 to 1) a two-corner elbow crosses over. */
+  bend: number | null;
 }
 
 export interface Variable {
@@ -124,6 +126,7 @@ export type Edit =
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
   | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route }
   | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null }
+  | { kind: "bend"; call: number; ratio: number }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "rotate"; call: number; angle: number; x: number; y: number }
   | { kind: "unrotate"; call: number }

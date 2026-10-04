@@ -95,8 +95,11 @@ pub enum Edit {
     AddConnector { canvas: Option<usize>, from: usize, from_anchor: String, to: usize, to_anchor: String, route: Route },
     /// Rewrite a connector's route as straight or elbowed, moving its ends
     /// to other anchors of the same shapes when `from_anchor` or `to_anchor`
-    /// is given.
+    /// is given. An elbow crosses over halfway again.
     Reroute { call: usize, route: Route, from_anchor: Option<String>, to_anchor: Option<String> },
+    /// Move where a two-corner elbow connector crosses over: `ratio` (0 to
+    /// 1) of the way from its start to its end.
+    Bend { call: usize, ratio: f64 },
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
@@ -466,7 +469,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             };
             let from = end(*from, from_anchor, &mut patches)?;
             let to = end(*to, to_anchor, &mut patches)?;
-            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route).join(", "));
+            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route, 0.5).join(", "));
             created.push((patches.len(), prefix.len()));
             patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
         }
@@ -475,12 +478,15 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let connector = call.connector.as_ref().ok_or("only a connector can be rerouted")?;
             let from = from_anchor.as_deref().map_or(connector.from.clone(), |a| route::with_anchor(&connector.from, a));
             let to = to_anchor.as_deref().map_or(connector.to.clone(), |a| route::with_anchor(&connector.to, a));
-            let positional: Vec<&scene::Arg> = call.args.iter().filter(|a| a.key.is_none()).collect();
-            let (first, last) = (positional.first().ok_or("no points")?, positional.last().ok_or("no points")?);
-            if call.args.iter().any(|a| a.key.is_some() && first.range.start < a.range.start && a.range.end < last.range.end) {
-                return Err("a connector's points must come before its named arguments".into());
+            patches.push(patch(connector_points(call)?, route::vertices(&from, &to, *route, 0.5).join(", ")));
+        }
+        Edit::Bend { call, ratio } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().filter(|c| c.bend.is_some()).ok_or("only an elbow with two corners can bend")?;
+            if !(0.0..=1.0).contains(ratio) {
+                return Err("a bend must be between its two ends".into());
             }
-            patches.push(patch(first.range.start..last.range.end, route::vertices(&from, &to, *route).join(", ")));
+            patches.push(patch(connector_points(call)?, route::vertices(&connector.from, &connector.to, Route::Elbow, *ratio).join(", ")));
         }
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
@@ -935,6 +941,16 @@ fn connect_after(source: &str, scene: &Scene, call: usize, arg: usize, target: u
     let out = apply(&moved.source, &Edit::Connect { call, arg, target, anchor: anchor.to_string() })?;
     let created = vec![map_offset(&out.patches, call)];
     Ok(EditResult { patches: vec![diff(source, &out.source)], source: out.source, created })
+}
+
+/// The range of a connector's points, from its start anchor to its end.
+fn connector_points(call: &Call) -> Result<Range<usize>, String> {
+    let positional: Vec<&scene::Arg> = call.args.iter().filter(|a| a.key.is_none()).collect();
+    let (first, last) = (positional.first().ok_or("no points")?, positional.last().ok_or("no points")?);
+    if call.args.iter().any(|a| a.key.is_some() && first.range.start < a.range.start && a.range.end < last.range.end) {
+        return Err("a connector's points must come before its named arguments".into());
+    }
+    Ok(first.range.start..last.range.end)
 }
 
 /// Where an offset lands after the patches (each from the same source).
@@ -2637,6 +2653,15 @@ mod tests {
         let side = reroute(&elbow, Route::Elbow, Some("east"));
         assert!(side.contains(r#"line("a.east", ("a.east", "-|", "b.north"), "b.north", mark"#), "{side}");
         assert_eq!(reroute(&elbow, Route::Straight, None), src);
+
+        // Bending moves where it crosses over; rerouting puts it back halfway.
+        let line_at = elbow.find("line(").unwrap();
+        assert_eq!(scene::parse(&elbow).call(line_at).unwrap().connector.as_ref().unwrap().bend, Some(0.5));
+        let bent = apply(&elbow, &Edit::Bend { call: line_at, ratio: 0.25 }).unwrap().source;
+        assert!(bent.contains(r#"("a.south", "|-", ("a.south", 25%, "b.north")), ("b.north", "|-", ("a.south", 25%, "b.north"))"#), "{bent}");
+        assert_eq!(scene::parse(&bent).call(line_at).unwrap().connector.as_ref().unwrap().bend, Some(0.25));
+        assert_eq!(reroute(&bent, Route::Elbow, None), elbow);
+        assert!(apply(src, &Edit::Bend { call: line, ratio: 0.25 }).is_err(), "a straight connector doesn't bend");
 
         let plain = src.replace(r#""a.south", "b.north""#, "(0, 0), (1, 1)");
         let line = plain.find("line(").unwrap();

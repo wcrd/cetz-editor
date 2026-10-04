@@ -36,7 +36,8 @@
       <p>
         <kbd>E</kbd> draws an arrow from one shape to another, elbowed or straight; press <kbd>E</kbd> again to switch. Its ends
         name the shapes' anchors and an elbow's corners are worked out from them, so CeTZ re-routes it when a shape moves. The
-        inspector's Route switches a selected one and re-picks its sides.
+        inspector's Route switches a selected one and re-picks its sides. Drag the dot on a selected elbow's middle segment to
+        move where it crosses over.
       </p>
     </section>
 

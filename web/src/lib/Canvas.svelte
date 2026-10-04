@@ -532,6 +532,7 @@
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
+    if (call && probe && !call.in_loop && call.connector?.bend != null) return bendHandles(call, probe);
     if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
     const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
     if (at.length < 2 || at.some((i) => call.args[i].point !== null)) return [];
@@ -555,6 +556,35 @@
     ];
     return items.map(([q, edge, edit]) => ({ point: localToPage(probe, q), edge, probe, edit }));
   });
+
+  /**
+   * The handle on a two-corner elbow connector's middle segment: dragged
+   * along the way the connector runs, it moves where it crosses over, in
+   * steps of 5% of the way (⌘: free), keeping clear of the ends.
+   */
+  function bendHandles(call: Call, probe: Probe): Reshape[] {
+    const connector = call.connector;
+    const at = (anchor: string): Point | undefined => {
+      const dot = anchor.lastIndexOf(".");
+      const id = editor.calls.find((c) => c.name === anchor.slice(0, dot) && c.parent === null)?.id;
+      return id === undefined ? undefined : editor.anchorsOf(id)[anchor.slice(dot + 1)];
+    };
+    const [a, b] = connector ? [at(connector.from), at(connector.to)] : [];
+    if (!connector || connector.bend === null || !a || !b) return [];
+    const bend = connector.bend;
+    // Out of a north or south side it runs up or down, so it crosses over at a height.
+    const down = !/(east|west)$/.test(connector.from);
+    const axis = down ? 1 : 0;
+    const span = b[axis] - a[axis];
+    if (Math.abs(span) < 1e-9) return [];
+    const point: Point = down ? [(a[0] + b[0]) / 2, a[1] + bend * span] : [a[0] + bend * span, (a[1] + b[1]) / 2];
+    const edit = (p: Point): Edit | undefined => {
+      const raw = (localToPage(probe, p)[axis] - a[axis]) / span;
+      const ratio = Math.min(0.95, Math.max(0.05, mods.free ? raw : Math.round(raw * 20) / 20));
+      return Math.abs(ratio - bend) < 1e-9 ? undefined : { kind: "bend", call: call.id, ratio };
+    };
+    return [{ point, edge: true, probe, edit }];
+  }
 
   function reshapeAt(p: Point): Reshape | undefined {
     return reshapes.find((r) => Math.hypot(p[0] - r.point[0], p[1] - r.point[1]) * editor.zoom < 7);
