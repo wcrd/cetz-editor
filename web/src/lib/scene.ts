@@ -129,6 +129,7 @@ export type Edit =
   | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route }
   | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null; keep_bend?: boolean }
   | { kind: "set-fixed"; call: number; fixed: boolean }
+  | { kind: "reconnect"; call: number; to_end: boolean; target: number; from_anchor: string; to_anchor: string; fixed: boolean }
   | { kind: "bend"; call: number; ratio: number }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "rotate"; call: number; angle: number; x: number; y: number }

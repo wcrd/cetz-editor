@@ -5,7 +5,7 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame, Tool } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, STATE_CALLS, type Call, type Edit, type Range } from "./scene";
+  import { baseName, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
   import { num } from "./format";
   import { COMPASS, routePoints } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
@@ -1626,6 +1626,11 @@
       }
       case "handle": {
         const d = drag;
+        const connector = editor.callById.get(d.call)?.connector;
+        if (connector) {
+          reconnectDrag(d, connector, p);
+          break;
+        }
         // A shape's only point moves the shape: show it there at once, as a
         // move does, rather than waiting for each compile.
         const shift = (to: Point): [number, number] => {
@@ -2145,6 +2150,40 @@
     if (!anchors) return undefined;
     const [a, b] = [editor.anchorsOf(d.from.target)[anchors[0]], editor.anchorsOf(d.to.target)[anchors[1]]];
     return { anchors, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route) : [] };
+  }
+
+  /**
+   * Dragging a connector's start or end handle reconnects that end: onto a
+   * shape's anchor, which pins the connector's sides, or onto a shape's
+   * body, picking sides as a new connector does (the other end's too,
+   * unless pinned). Off any shape, it snaps back on release.
+   */
+  function reconnectDrag(d: Extract<Drag, { kind: "handle" }>, connector: Connector, p: Point) {
+    const positional = editor.callById.get(d.call)?.args.flatMap((a, i) => (a.key === null ? [i] : [])) ?? [];
+    const toEnd = d.arg === positional[positional.length - 1];
+    const kept = toEnd ? connector.from : connector.to;
+    const other = editor.connectorEnd(kept);
+    const end = connectEndAt(p, other);
+    editor.hovered = end?.target;
+    d.at = p;
+    d.snap = undefined;
+    d.edit = undefined;
+    const keptSide = connector.fixed ? kept.slice(kept.lastIndexOf(".") + 1) : undefined;
+    const anchors =
+      end &&
+      other !== undefined &&
+      (toEnd
+        ? editor.connectorAnchors(other, end.target, connector.route, keptSide, end.anchor)
+        : editor.connectorAnchors(end.target, other, connector.route, end.anchor, keptSide));
+    if (!end || !anchors) {
+      editor.endDrag();
+      return;
+    }
+    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined };
+    if (!editor.previewEdit(edit)) return editor.endDrag();
+    d.edit = edit;
+    d.snap = endHover(end)?.snap;
+    d.at = editor.anchorsOf(end.target)[anchors[toEnd ? 1 : 0]] ?? p;
   }
 
   function addConnector(d: Extract<Drag, { kind: "connect" }>) {

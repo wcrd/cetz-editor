@@ -104,6 +104,13 @@ pub enum Edit {
         #[serde(default)]
         keep_bend: bool,
     },
+    /// Move one end of a connector (its start, or its end with `to_end`) to
+    /// another call, naming that call if it has no name, joining the anchors
+    /// given for both ends and keeping its route and bend. With `fixed`, the
+    /// connector is pinned too. CeTZ knows names in drawing order, so a
+    /// connector drawn before its new shape moves to the end of the canvas;
+    /// `created` then holds it.
+    Reconnect { call: usize, to_end: bool, target: usize, from_anchor: String, to_anchor: String, fixed: bool },
     /// Pin a connector's sides (`fixed`) with a `// cetz-editor: fixed`
     /// comment line above it, or unpin them, removing the comment. The
     /// editor re-picks an unpinned connector's sides when its shapes move.
@@ -495,6 +502,58 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             let to = to_anchor.as_deref().map_or(connector.to.clone(), |a| route::with_anchor(&connector.to, a));
             let bend = if *keep_bend { connector.bend.unwrap_or(0.5) } else { 0.5 };
             patches.push(patch(connector_points(call)?, route::vertices(&from, &to, *route, bend).join(", ")));
+        }
+        Edit::Reconnect { call, to_end, target, from_anchor, to_anchor, fixed } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().ok_or("only a connector can be reconnected")?;
+            let target = find_call(&scene, *target)?;
+            let canvas = scene.canvas_of(call.id).ok_or("the connector isn't in a canvas")?;
+            if target.id == call.id || !canvas.calls.iter().any(|c| c.id == target.id) {
+                return Err("a connector can only join shapes in its own canvas".into());
+            }
+            let moves = !defined_before(&scene, &target.range, call.range.start);
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            let used_at = if moves { at } else { call.range.start };
+            let path = path_from(&scene, target.parent, &(used_at..used_at)).ok_or("can't connect to a shape in a group with no name")?;
+            let name = match &target.name {
+                Some(name) => name.clone(),
+                None => {
+                    let name = unique_name(&scene, base_name(&target.callee));
+                    set_named(target, "name", Some(&format!("{name:?}")), &mut patches)?;
+                    name
+                }
+            };
+            let (from, to) = if *to_end {
+                (route::with_anchor(&connector.from, from_anchor), format!("{path}{name}.{to_anchor}"))
+            } else {
+                (format!("{path}{name}.{from_anchor}"), route::with_anchor(&connector.to, to_anchor))
+            };
+            let points = route::vertices(&from, &to, connector.route, connector.bend.unwrap_or(0.5)).join(", ");
+            let range = connector_points(call)?;
+            let pinned = *fixed || connector.fixed;
+            if !moves {
+                patches.push(patch(range, points));
+                if pinned && !connector.fixed {
+                    let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+                    let indent = &source[line_start..call.range.start];
+                    if !indent.trim().is_empty() {
+                        return Err("put the connector on a line of its own to fix its sides".into());
+                    }
+                    patches.push(patch(line_start..line_start, format!("{indent}// cetz-editor: fixed\n")));
+                }
+            } else {
+                // Its text, with the new points, goes to the end of the canvas, its pin with it.
+                let mut text = source[call.range.clone()].to_string();
+                text.replace_range(range.start - call.range.start..range.end - call.range.start, &points);
+                if let Some(comment) = scene::fixed_comment(source, call.range.start) {
+                    patches.push(patch(comment, String::new()));
+                }
+                patches.push(patch(statement_range(source, &call.range), String::new()));
+                let indent = prefix.trim_start_matches('\n');
+                let comment = if pinned { format!("// cetz-editor: fixed\n{indent}") } else { String::new() };
+                created.push((patches.len(), prefix.len() + comment.len()));
+                patches.push(patch(at..at, format!("{prefix}{comment}{text}{suffix}")));
+            }
         }
         Edit::SetFixed { call, fixed } => {
             let call = find_call(&scene, *call)?;
@@ -2659,6 +2718,43 @@ mod tests {
         assert!(out.source.contains(r#"line("rect.south", "rect-2.north", mark: (end: ">"))"#), "{}", out.source);
 
         assert!(apply(src, &edit(a, a, Route::Straight)).is_err());
+    }
+
+    #[test]
+    fn reconnect_moves_an_end_keeping_route_and_bend() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1), name: "a")
+  rect((3, -3), (5, -2), name: "b")
+  rect((6, 0), (8, 1))
+  line("a.south", ("a.south", "|-", ("a.south", 30%, "b.north")), ("b.north", "|-", ("a.south", 30%, "b.north")), "b.north", mark: (end: ">"))
+  rect((0, -6), (2, -5), name: "late")
+})
+"#;
+        let line = src.find("line(").unwrap();
+        let c = src.find("rect((6, 0)").unwrap();
+        let reconnect = |target: usize, to_end, from_anchor: &str, to_anchor: &str, fixed| Edit::Reconnect {
+            call: line,
+            to_end,
+            target,
+            from_anchor: from_anchor.into(),
+            to_anchor: to_anchor.into(),
+            fixed,
+        };
+        // To a shape drawn before it: rewritten in place, the shape named.
+        let out = apply(src, &reconnect(c, true, "south", "north", false)).unwrap().source;
+        assert!(out.contains(r#"rect((6, 0), (8, 1), name: "rect")"#), "{out}");
+        assert!(out.contains(r#"line("a.south", ("a.south", "|-", ("a.south", 30%, "rect.north")), ("rect.north", "|-", ("a.south", 30%, "rect.north")), "rect.north", mark"#), "{out}");
+        // Onto an anchor: pinned.
+        let out = apply(src, &reconnect(c, false, "west", "north", true)).unwrap().source;
+        assert!(out.contains("  // cetz-editor: fixed\n  line(\"rect.west\", (\"rect.west\", \"-|\", \"b.north\")"), "{out}");
+        // To a shape drawn after it: moved to the end, after that shape.
+        let late = src.find("rect((0, -6)").unwrap();
+        let out = apply(src, &reconnect(late, true, "south", "north", true)).unwrap();
+        assert!(out.source.ends_with("  rect((0, -6), (2, -5), name: \"late\")\n  // cetz-editor: fixed\n  line(\"a.south\", (\"a.south\", \"|-\", (\"a.south\", 30%, \"late.north\")), (\"late.north\", \"|-\", (\"a.south\", 30%, \"late.north\")), \"late.north\", mark: (end: \">\"))\n})\n"), "{}", out.source);
+        assert!(out.source[out.created[0]..].starts_with("line("));
+        assert!(apply(src, &reconnect(line, true, "south", "north", false)).is_err());
     }
 
     #[test]

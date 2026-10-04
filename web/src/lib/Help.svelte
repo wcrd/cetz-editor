@@ -38,7 +38,8 @@
         name the shapes' anchors and an elbow's corners are worked out from them, so CeTZ re-routes it when a shape moves. The
         inspector's Route switches a selected one and re-picks its sides. Drag the dot on a selected elbow's middle segment to
         move where it crosses over, or set it as a percentage in the inspector's Bend. Moving shapes re-picks their connectors'
-        sides, unless Sides is Fixed.
+        sides, unless Sides is Fixed. Drag a connector's end handle onto another shape to reconnect it; dropping it on an anchor
+        pins it.
       </p>
     </section>
 
