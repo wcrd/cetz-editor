@@ -578,7 +578,7 @@
     const other = 1 - axis;
     const span = b[axis] - a[axis];
     if (Math.abs(span) < 1e-9) return [];
-    const stub = connector.detour ? STUB * probe.length : 0;
+    const stub = connector.detour ? (connector.stub ?? STUB) * probe.length : 0;
     const [da, db] = [outward(connector.from), outward(connector.to)];
     const across = (a[other] + da[other] * stub + b[other] + db[other] * stub) / 2;
     const place = (t: number): Point => {
@@ -2157,7 +2157,7 @@
     const anchors = editor.connectorAnchors(d.from.target, d.to.target, editor.route, d.from.anchor, d.to.anchor);
     if (!anchors) return undefined;
     const [a, b] = [editor.anchorsOf(d.from.target)[anchors[0]], editor.anchorsOf(d.to.target)[anchors[1]]];
-    const stub = STUB * editor.frameFor(editor.canvasOfCall.get(d.from.target)).length;
+    const stub = editor.prefs.stub * editor.frameFor(editor.canvasOfCall.get(d.from.target)).length;
     const detour = editor.connectorDetour(d.from.target, d.to.target, anchors, editor.route);
     return { anchors, detour, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route, { stub }) : [] };
   }
@@ -2192,7 +2192,7 @@
     const detour = toEnd
       ? editor.connectorDetour(other!, end.target, anchors, connector.route)
       : editor.connectorDetour(end.target, other!, anchors, connector.route);
-    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined, detour };
+    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined, detour, stub: connector.stub ?? editor.prefs.stub };
     if (!editor.previewEdit(edit)) return editor.endDrag();
     d.edit = edit;
     d.snap = endHover(end)?.snap;
@@ -2204,7 +2204,7 @@
     if (!d.to || !route) return;
     const [from_anchor, to_anchor] = route.anchors;
     const canvas = editor.canvasOfCall.get(d.from.target) ?? null;
-    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route, detour: route.detour, fixed: d.from.anchor !== undefined || d.to.anchor !== undefined })) {
+    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route, detour: route.detour, stub: editor.prefs.stub, fixed: d.from.anchor !== undefined || d.to.anchor !== undefined })) {
       editor.tool = "select";
     }
   }

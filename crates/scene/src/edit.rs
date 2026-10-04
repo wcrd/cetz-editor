@@ -103,6 +103,9 @@ pub enum Edit {
         route: Route,
         #[serde(default)]
         detour: bool,
+        /// How far a detour steps out (default `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
         #[serde(default)]
         fixed: bool,
     },
@@ -118,6 +121,9 @@ pub enum Edit {
         keep_bend: bool,
         #[serde(default)]
         detour: bool,
+        /// How far a detour steps out (default: as it does now, else `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
     },
     /// Move one end of a connector (its start, or its end with `to_end`) to
     /// another call, naming that call if it has no name, joining the anchors
@@ -134,7 +140,12 @@ pub enum Edit {
         fixed: bool,
         #[serde(default)]
         detour: bool,
+        /// How far a detour steps out (default: as it does now, else `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
     },
+    /// Set how far a detouring elbow connector steps out from each side.
+    SetStub { call: usize, stub: f64 },
     /// Pin a connector's sides (`fixed`) with a `// cetz-editor: fixed`
     /// comment line above it, or unpin them, removing the comment. The
     /// editor re-picks an unpinned connector's sides when its shapes move.
@@ -485,7 +496,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             };
             patches.push(patch(arg.value_range.clone(), format!("{:?}", format!("{name}.{anchor}"))));
         }
-        Edit::AddConnector { canvas, from, from_anchor, to, to_anchor, route, detour, fixed } => {
+        Edit::AddConnector { canvas, from, from_anchor, to, to_anchor, route, detour, stub, fixed } => {
             if from == to {
                 return Err("a connector needs two different shapes".into());
             }
@@ -515,20 +526,20 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             };
             let from = end(*from, from_anchor, &mut patches)?;
             let to = end(*to, to_anchor, &mut patches)?;
-            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route, 0.5, *detour).join(", "));
+            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route, 0.5, detour.then(|| stub.unwrap_or(route::STUB))).join(", "));
             let pin = if *fixed { format!("// cetz-editor: fixed\n{}", prefix.trim_start_matches('\n')) } else { String::new() };
             created.push((patches.len(), prefix.len() + pin.len()));
             patches.push(patch(at..at, format!("{prefix}{pin}{text}{suffix}")));
         }
-        Edit::Reroute { call, route, from_anchor, to_anchor, keep_bend, detour } => {
+        Edit::Reroute { call, route, from_anchor, to_anchor, keep_bend, detour, stub } => {
             let call = find_call(&scene, *call)?;
             let connector = call.connector.as_ref().ok_or("only a connector can be rerouted")?;
             let from = from_anchor.as_deref().map_or(connector.from.clone(), |a| route::with_anchor(&connector.from, a));
             let to = to_anchor.as_deref().map_or(connector.to.clone(), |a| route::with_anchor(&connector.to, a));
             let bend = if *keep_bend { connector.bend.unwrap_or(0.5) } else { 0.5 };
-            patches.push(patch(connector_points(call)?, route::vertices(&from, &to, *route, bend, *detour).join(", ")));
+            patches.push(patch(connector_points(call)?, route::vertices(&from, &to, *route, bend, detour.then(|| stub.or(connector.stub).unwrap_or(route::STUB))).join(", ")));
         }
-        Edit::Reconnect { call, to_end, target, from_anchor, to_anchor, fixed, detour } => {
+        Edit::Reconnect { call, to_end, target, from_anchor, to_anchor, fixed, detour, stub } => {
             let call = find_call(&scene, *call)?;
             let connector = call.connector.as_ref().ok_or("only a connector can be reconnected")?;
             let target = find_call(&scene, *target)?;
@@ -553,7 +564,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             } else {
                 (format!("{path}{name}.{from_anchor}"), route::with_anchor(&connector.to, to_anchor))
             };
-            let points = route::vertices(&from, &to, connector.route, connector.bend.unwrap_or(0.5), *detour).join(", ");
+            let points = route::vertices(&from, &to, connector.route, connector.bend.unwrap_or(0.5), detour.then(|| stub.or(connector.stub).unwrap_or(route::STUB))).join(", ");
             let range = connector_points(call)?;
             let pinned = *fixed || connector.fixed;
             if !moves {
@@ -604,7 +615,16 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             if !(0.0..=1.0).contains(ratio) {
                 return Err("a bend must be between its two ends".into());
             }
-            patches.push(patch(connector_points(call)?, route::vertices(&connector.from, &connector.to, Route::Elbow, *ratio, connector.detour).join(", ")));
+            patches.push(patch(connector_points(call)?, route::vertices(&connector.from, &connector.to, Route::Elbow, *ratio, connector.detour.then(|| connector.stub.unwrap_or(route::STUB))).join(", ")));
+        }
+        Edit::SetStub { call, stub } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().filter(|c| c.detour).ok_or("only a detouring elbow steps out")?;
+            if !(*stub > 0.0) {
+                return Err("a step out must be more than 0".into());
+            }
+            let points = route::vertices(&connector.from, &connector.to, Route::Elbow, connector.bend.unwrap_or(0.5), Some(*stub));
+            patches.push(patch(connector_points(call)?, points.join(", ")));
         }
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
@@ -2731,7 +2751,7 @@ mod tests {
         let a = src.find("rect((0, 0)").unwrap();
         let b = src.find("rect((0, -3)").unwrap();
         let c = src.find("rect((4, 0)").unwrap();
-        let edit = |from, to, route| Edit::AddConnector { canvas: None, from, from_anchor: "south".into(), to, to_anchor: "north".into(), route, detour: false, fixed: false };
+        let edit = |from, to, route| Edit::AddConnector { canvas: None, from, from_anchor: "south".into(), to, to_anchor: "north".into(), route, detour: false, stub: None, fixed: false };
         let out = apply(src, &edit(a, b, Route::Elbow)).unwrap();
         assert!(out.source.contains(r#"rect((0, 0), (2, 1), name: "rect")"#), "{}", out.source);
         assert!(out.source.contains(r#"line("rect.south", ("rect.south", "|-", ("rect.south", 50%, "g.b.north")), ("g.b.north", "|-", ("rect.south", 50%, "g.b.north")), "g.b.north", mark: (end: ">"))"#), "{}", out.source);
@@ -2744,7 +2764,7 @@ mod tests {
 
         assert!(apply(src, &edit(a, a, Route::Straight)).is_err());
 
-        let pinned = Edit::AddConnector { canvas: None, from: a, from_anchor: "south".into(), to: c, to_anchor: "north".into(), route: Route::Straight, detour: false, fixed: true };
+        let pinned = Edit::AddConnector { canvas: None, from: a, from_anchor: "south".into(), to: c, to_anchor: "north".into(), route: Route::Straight, detour: false, stub: None, fixed: true };
         let out = apply(src, &pinned).unwrap();
         assert!(out.source.contains("  // cetz-editor: fixed\n  line(\"rect.south\", \"rect-2.north\""), "{}", out.source);
         assert!(out.source[out.created[0]..].starts_with("line("));
@@ -2772,6 +2792,7 @@ mod tests {
             to_anchor: to_anchor.into(),
             fixed,
             detour: false,
+            stub: None,
         };
         // To a shape drawn before it: rewritten in place, the shape named.
         let out = apply(src, &reconnect(c, true, "south", "north", false)).unwrap().source;
@@ -2804,7 +2825,7 @@ mod tests {
 
         let reroute = |src: &str, route, from_anchor: Option<&str>| {
             let line = src.find("line(").unwrap();
-            apply(src, &Edit::Reroute { call: line, route, from_anchor: from_anchor.map(Into::into), to_anchor: None, keep_bend: false, detour: false }).unwrap().source
+            apply(src, &Edit::Reroute { call: line, route, from_anchor: from_anchor.map(Into::into), to_anchor: None, keep_bend: false, detour: false, stub: None }).unwrap().source
         };
         let elbow = reroute(src, Route::Elbow, None);
         let call = scene::parse(&elbow).call(line).unwrap().clone();
@@ -2830,21 +2851,28 @@ mod tests {
         assert!(bent.contains(r#"("a.south", "|-", ("a.south", 25%, "b.north")), ("b.north", "|-", ("a.south", 25%, "b.north"))"#), "{bent}");
         assert_eq!(scene::parse(&bent).call(line_at).unwrap().connector.as_ref().unwrap().bend, Some(0.25));
         assert_eq!(reroute(&bent, Route::Elbow, None), elbow);
-        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: Some("east".into()), to_anchor: None, keep_bend: true, detour: false }).unwrap().source;
+        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: Some("east".into()), to_anchor: None, keep_bend: true, detour: false, stub: None }).unwrap().source;
         assert!(kept.contains(r#"line("a.east", ("a.east", "-|", "b.north")"#), "an L has no bend to keep: {kept}");
-        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: true, detour: false }).unwrap().source;
+        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: true, detour: false, stub: None }).unwrap().source;
         assert_eq!(kept, bent);
         assert!(apply(src, &Edit::Bend { call: line, ratio: 0.25 }).is_err(), "a straight connector doesn't bend");
 
         // A detour reads back as one, bend and all, and bends as one.
-        let detour = apply(src, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: true }).unwrap().source;
+        let detour = apply(src, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: true, stub: None }).unwrap().source;
         let c = scene::parse(&detour).call(line).unwrap().connector.clone().unwrap();
         assert!(c.detour && c.route == Route::Elbow && c.bend == Some(0.5), "{detour}");
         let bent = apply(&detour, &Edit::Bend { call: line, ratio: 0.25 }).unwrap().source;
         assert!(bent.contains(r#"((rel: (0, -0.5), to: "a.south"), "-|", ("a.south", 25%, "b.north"))"#), "{bent}");
+        // Its step out can change, and stays through a bend.
+        let far = apply(&bent, &Edit::SetStub { call: line, stub: 1.0 }).unwrap().source;
+        let c = scene::parse(&far).call(line).unwrap().connector.clone().unwrap();
+        assert_eq!((c.stub, c.bend), (Some(1.0), Some(0.25)), "{far}");
+        let rebent = apply(&far, &Edit::Bend { call: line, ratio: 0.5 }).unwrap().source;
+        assert!(rebent.contains(r#"(rel: (0, -1), to: "a.south")"#), "{rebent}");
+        assert!(apply(src, &Edit::SetStub { call: line, stub: 1.0 }).is_err(), "a plain elbow has no step out");
 
         let plain = src.replace(r#""a.south", "b.north""#, "(0, 0), (1, 1)");
         let line = plain.find("line(").unwrap();
-        assert!(apply(&plain, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: false }).is_err());
+        assert!(apply(&plain, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: false, stub: None }).is_err());
     }
 }

@@ -162,6 +162,18 @@
     editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
   }
 
+  /**
+   * Sets how far detouring connectors step out from their sides, which also
+   * becomes the distance for detours written from now on.
+   */
+  function setStub(calls: Call[], input: HTMLInputElement) {
+    const n = Number(input.value);
+    if (input.value.trim() === "" || !Number.isFinite(n) || n <= 0) return;
+    editor.prefs.stub = n;
+    const edits: Edit[] = calls.map((c) => ({ kind: "set-stub", call: c.id, stub: n }));
+    editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement && e.shiftKey)) {
       (e.target as HTMLElement).blur();
@@ -301,6 +313,7 @@
   {#snippet routes(connectors: Call[])}
     <!-- Only an elbow with two corners has a bend to move. -->
     {@const bendable = connectors.filter((c) => c.connector?.bend != null)}
+    {@const detours = connectors.filter((c) => c.connector?.detour)}
     <section class="route">
       <div class="row">
         <span class="label">Route</span>
@@ -321,6 +334,23 @@
           {/each}
         </div>
       </div>
+      {#if detours.length > 0}
+        {@const stubs = [...new Set(detours.map((c) => num(c.connector?.stub ?? editor.prefs.stub)))]}
+        <div class="row">
+          <span class="label">Step out</span>
+          <label class="percent" title="How far it steps out from each side before going around; new detours use it too">
+            <input
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={stubs.length === 1 ? stubs[0] : ""}
+              placeholder={stubs.length > 1 ? "mixed" : ""}
+              onchange={(e) => setStub(detours, e.currentTarget)}
+              onkeydown={onKey}
+            />
+          </label>
+        </div>
+      {/if}
       {#if bendable.length > 0}
         {@const bends = [...new Set(bendable.map((c) => num((c.connector?.bend ?? 0) * 100)))]}
         <div class="row">

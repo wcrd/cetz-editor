@@ -25,7 +25,7 @@ import {
   type Range,
   type Route,
 } from "./scene";
-import { endShape, needsDetour, pickAnchor } from "./connectors";
+import { endShape, needsDetour, pickAnchor, STUB } from "./connectors";
 
 /** The anchor a connector's end joins (`south` of `"g.a.south"`). */
 const sideOf = (anchor: string) => anchor.slice(anchor.lastIndexOf(".") + 1);
@@ -96,6 +96,8 @@ export class Prefs {
   showRulers = $state(true);
   /** How the connector tool routes new connectors. */
   route = $state<Route>("elbow");
+  /** How far a detouring elbow steps out from each side, unless it already has its own. */
+  stub = $state(STUB);
 }
 
 interface Draft {
@@ -485,11 +487,11 @@ export class Editor {
       const both = from !== undefined && to !== undefined;
       if (connector.fixed) {
         const detour = both && this.connectorDetour(from, to, [sideOf(connector.from), sideOf(connector.to)], route);
-        return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route, detour }];
+        return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route, detour, stub: connector.stub ?? this.prefs.stub }];
       }
       const anchors = both ? this.connectorAnchors(from, to, route) : undefined;
       const detour = both && anchors !== undefined && this.connectorDetour(from, to, anchors, route);
-      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null, detour }];
+      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null, detour, stub: connector.stub ?? this.prefs.stub }];
     });
     return edits.length > 0 && this.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
   }
@@ -545,7 +547,7 @@ export class Editor {
       if (!anchors) return [];
       const detour = this.connectorDetour(from, to, anchors, c.route, shift);
       if (anchors[0] === kept[0] && anchors[1] === kept[1] && detour === c.detour) return [];
-      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: c.fixed ? null : anchors[0], to_anchor: c.fixed ? null : anchors[1], keep_bend: true, detour }];
+      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: c.fixed ? null : anchors[0], to_anchor: c.fixed ? null : anchors[1], keep_bend: true, detour, stub: c.stub ?? this.prefs.stub }];
     });
     return reroutes.length ? { kind: "batch", edits: [edit, ...reroutes] } : edit;
   }

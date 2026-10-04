@@ -149,6 +149,23 @@
     }
   }
 
+  // How far detouring connectors step out, as last set in the inspector; remembered in this browser.
+  const STUB_KEY = "cetz-editor:stub";
+  try {
+    const stub = Number(localStorage.getItem(STUB_KEY));
+    if (stub > 0) tabs.prefs.stub = stub;
+  } catch {
+    // Default distance.
+  }
+  $effect(() => {
+    const stub = tabs.prefs.stub;
+    try {
+      localStorage.setItem(STUB_KEY, String(stub));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  });
+
   // Rulers, on unless turned off in this browser.
   const RULERS_KEY = "cetz-editor:rulers";
   try {
