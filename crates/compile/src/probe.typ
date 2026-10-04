@@ -56,9 +56,24 @@
         }
       }
       let open-path = "centroid" in names and __cetz_probe_open(drawables)
+      // A closed line's or path's centroid (also its default anchor) only
+      // exists when its own points share one z, and CeTZ panics otherwise.
+      // Ask only when the points' canvas z still tells us that: under a 3D
+      // transform (`ortho`) it might not.
+      let no-centroid = if "centroid" in names and outline != none {
+        let (origin, _, segments) = outline.segments.first()
+        // Up to three points always have one, closing segment aside.
+        let closing = segments.len() > 0 and segments.last().last() == origin
+        let few = segments.len() - int(closing) <= 2 and segments.all(s => s.first() == "l")
+        let zrow = ctx.transform.at(2)
+        let planar = zrow.at(0) == 0 and zrow.at(1) == 0 and zrow.at(2) != 0
+        let zs = (origin,) + segments.map(s => s.slice(1)).join()
+        not few and not (planar and zs.all(p => p.at(2, default: 0) == origin.at(2, default: 0)))
+      } else { false }
       for name in names {
         if open-arc and name in __cetz_probe_compass { continue }
         if open-path and name == "centroid" { continue }
+        if no-centroid and name in ("centroid", "default") { continue }
         let corner = name.starts-with("corner-") and ring != none and ring.len() == corners
         let edge = name.starts-with("edge-") and ring != none and ring.len() == corners
         anchors.insert(name, if corner {
@@ -98,8 +113,12 @@
       pos: (0.0, 0.0, 0.0),
       width: 0.0,
       height: 0.0,
-      segments: (),
-      tags: ("no-bounds", "cetz-editor-probe"),
+      // One point, like the border CeTZ gives its own content: `ortho` sorts
+      // drawables by their segments' depth and fails on none. Tagged
+      // `debug`, like CeTZ's own bounding boxes, so paths that merge their
+      // children's segments (`merge-path`) leave it out.
+      segments: (((0.0, 0.0, 0.0), false, ()),),
+      tags: ("no-bounds", "debug", "cetz-editor-probe"),
       // The probe sits at canvas coordinate (0, 0), so its position on the
       // page is where the canvas origin landed.
       body: context {
