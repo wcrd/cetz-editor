@@ -410,16 +410,17 @@ mod tests {
         assert_eq!(out.missing_packages, ["@preview/cetz:0.5.2"]);
     }
 
-    /// Compiles every `.typ` fixture using packages from the local Typst
-    /// cache (populated by `typst compile` / `just render`).
+    /// Compiles every `.typ` fixture and bundled example using packages from
+    /// the local Typst cache (populated by `typst compile` / `just render`).
     #[test]
     fn compiles_fixtures_from_local_package_cache() {
         let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
             eprintln!("skipping: no local Typst package cache");
             return;
         };
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
-        for entry in std::fs::read_dir(fixtures).unwrap() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = [root.join("fixtures"), root.join("examples/cetz-gallery")];
+        for entry in dirs.iter().flat_map(|dir| std::fs::read_dir(dir).unwrap()) {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|e| e != "typ") {
                 continue;
