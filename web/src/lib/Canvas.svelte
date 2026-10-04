@@ -1743,7 +1743,8 @@
   function startTextEdit(id: number, at: Point, select = false): boolean {
     const call = editor.callById.get(id);
     if (!call || baseName(call.callee) !== "content" || call.in_loop) return false;
-    const arg = call.args.findIndex((a) => a.key === null && (a.value.type === "content" || a.value.type === "str"));
+    // The body is the last positional argument: the position before it can be a name, a string too.
+    const arg = call.args.reduce((last, a, i) => (a.key === null ? i : last), -1);
     const value = call.args[arg]?.value;
     if (value?.type === "content") textEdit = { call: id, arg, str: false, text: editor.index.slice(value.inner.start, value.inner.end), at, select };
     else if (value?.type === "str") textEdit = { call: id, arg, str: true, text: value.value, at, select };
@@ -1918,6 +1919,14 @@
             ? `rect(${a}, ${endRef ?? pt(x1, y1)})`
             : `rect(${pt(Math.min(x0, x1), Math.min(y0, y1))}, ${pt(Math.max(x0, x1), Math.max(y0, y1))})`;
         break;
+      case "node": {
+        if (tiny) [x1, y1] = [x0 + 2, y0 - 1];
+        const lo = pt(Math.min(x0, x1), Math.min(y0, y1));
+        const hi = pt(Math.max(x0, x1), Math.max(y0, y1));
+        const at = editor.toPage(d.frame, transformPoint(d.transform, [(x0 + x1) / 2, (y0 + y1) / 2]));
+        insertNode(`rect(${lo}, ${hi}, radius: ${NODE_RADIUS}, name: "node")\ncontent("node", [Text])`, at);
+        return;
+      }
       case "circle": {
         const r = tiny ? 0.5 : Math.hypot(x1 - x0, y1 - y0);
         text = `circle(${a}, radius: ${num(r)})`;
@@ -1981,6 +1990,23 @@
     }
   }
 
+  /** Corner radius of a node the node tool draws. */
+  const NODE_RADIUS = 0.2;
+
+  /**
+   * Adds a node, a rounded rect with text placed on it by name, and opens
+   * the text for typing. It goes in as a paste, which renames `node` (and
+   * the text's reference to it) if the drawing already has one.
+   */
+  function insertNode(text: string, at: Point) {
+    if (!editor.chain([{ kind: "paste", canvas: editor.activeCanvas ?? null, text, dx: 0, dy: 0 }])) return;
+    editor.tool = "select";
+    const [rect, label] = editor.selected;
+    if (label === undefined) return;
+    editor.selection = [rect];
+    startTextEdit(label, at, true);
+  }
+
   const preview = $derived.by(() => {
     if (arcing) {
       const { center, frame, transform, r, start, sweep, pointer } = arcing;
@@ -2001,6 +2027,13 @@
         return `M${a[0]},${a[1]} L${b[0]},${b[1]}`;
       case "rect":
         return `M${a[0]},${a[1]} H${b[0]} V${b[1]} H${a[0]} Z`;
+      case "node": {
+        const [l, r, t, btm] = [Math.min(a[0], b[0]), Math.max(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+        const unit = editor.toPage(drag.frame, transformPoint(drag.transform, [drag.start[0] + NODE_RADIUS, drag.start[1]]));
+        const k = Math.min(Math.hypot(unit[0] - a[0], unit[1] - a[1]), (r - l) / 2, (btm - t) / 2);
+        const arc = (x: number, y: number) => `A${k},${k} 0 0 1 ${x},${y}`;
+        return `M${l + k},${t} H${r - k} ${arc(r, t + k)} V${btm - k} ${arc(r - k, btm)} H${l + k} ${arc(l, btm - k)} V${t + k} ${arc(l + k, t)} Z`;
+      }
       case "circle": {
         const r = Math.hypot(b[0] - a[0], b[1] - a[1]);
         return `M${a[0] - r},${a[1]} a${r},${r} 0 1,0 ${2 * r},0 a${r},${r} 0 1,0 ${-2 * r},0`;

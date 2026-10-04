@@ -33,7 +33,7 @@
 
     <section>
       <h3>Text</h3>
-      <p>Double-click text to edit it where it is; <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. New text from <kbd>T</kbd> opens ready to type.</p>
+      <p>Double-click text to edit it where it is; <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. New text from <kbd>T</kbd> opens ready to type, and so does a node from <kbd>N</kbd>: a rounded rect with its text placed on it by name, so the text moves with it.</p>
     </section>
     <section>
       <h3>Smart guides</h3>

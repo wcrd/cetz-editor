@@ -7,6 +7,7 @@ Press **?** in the app for a quick version of this guide.
 | | |
 |---|---|
 | **V** / **L** / **A** / **R** / **C** / **T** | Select, line, arrow, rectangle, circle, text tools |
+| **N** | Node: drag out a rounded rect with text on it, written as `rect(.., radius: 0.2, name: "node")` and `content("node", [Text])`, so the text follows the rect. The text opens ready to type |
 | **G** | Polygon: drag from the centre to a corner, which sets its size and rotation (`polygon((0, 0), 6, radius: 1)`) |
 | **S** | Star: drag from the centre to an outer point, which sets its size and rotation (`n-star((0, 0), 5, radius: 1, angle: 54deg)`); a click makes one pointing up. Inner radius, points and more are in the inspector |
 | **U** | Arc: drag from the centre to where it starts (or click both), then move to sweep it either way and click to finish |

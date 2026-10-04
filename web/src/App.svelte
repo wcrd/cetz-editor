@@ -180,6 +180,7 @@
     { id: "line", label: "Line", key: "L", icon: "M5 19L19 5" },
     { id: "arrow", label: "Arrow", key: "A", icon: "M5 19L19 5M11 5h8v8" },
     { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
+    { id: "node", label: "Node", key: "N", icon: "M7 6h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3zM9 12h6" },
     { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
     { id: "polygon", label: "Polygon", key: "G", icon: "M8 5h8l4 7-4 7H8l-4-7z" },
     { id: "star", label: "Star", key: "S", icon: "M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6l-5.4 2.9 1.2-6-4.5-4.2 6.1-.7z" },
