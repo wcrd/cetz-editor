@@ -106,3 +106,8 @@ natively, so it stays responsive when compiles lag.
   can't always find them. Polygon and star corners and edges are read off
   their outlines, as CeTZ 0.5.2's star can't compute its own.
 - The compiler module is about 43 MB (17 MB gzipped), mostly embedded fonts.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The CeTZ gallery examples in
+`examples/cetz-gallery` are LGPL-3.0, as noted there.
