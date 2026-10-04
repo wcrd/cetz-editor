@@ -809,6 +809,10 @@ export class Editor {
    */
   selectableFor(id: number): number | undefined {
     const parentOf = (c: Call) => (c.parent === null ? undefined : this.callById.get(c.parent));
+    // The entered group's own outline (and its enclosing groups') would cover its children.
+    for (let c = this.scope === undefined ? undefined : this.callById.get(this.scope); c; c = parentOf(c)) {
+      if (c.id === id) return undefined;
+    }
     let inside = false;
     for (let c = this.callById.get(id); c && this.scope !== undefined; c = parentOf(c)) {
       if (c.parent === this.scope) inside = true;

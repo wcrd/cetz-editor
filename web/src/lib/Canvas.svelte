@@ -1878,7 +1878,9 @@
     }
     // A shape's own handle (text's sits in its middle) counts as the shape.
     const onHandle = grab && "handle" in grab ? (editor.selectableFor(grab.handle.call) ?? grab.handle.call) : undefined;
-    const hit = (e.target as Element).closest("[data-id]")?.getAttribute("data-id") ?? onHandle;
+    // The press captured the pointer, so the event's target is the viewport: look under the pointer.
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const hit = under?.closest("[data-id]")?.getAttribute("data-id") ?? onHandle;
     if (hit === null || hit === undefined) {
       editor.scope = undefined;
       return;
