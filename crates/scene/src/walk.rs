@@ -1,5 +1,8 @@
-//! Finds CeTZ canvas bodies and the draw calls in them. Shared by the scene
-//! parser and the instrumenter so both agree on what a draw call is.
+//! Finds CeTZ canvas bodies, the functions they draw with, and the draw calls
+//! in both. Shared by the scene parser and the instrumenter so both agree on
+//! what a draw call is.
+
+use std::collections::BTreeSet;
 
 use typst_syntax::{LinkedNode, SyntaxKind};
 
@@ -7,7 +10,8 @@ use typst_syntax::{LinkedNode, SyntaxKind};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Context {
     /// Offset of the enclosing draw call, for calls in block arguments
-    /// such as `group({ ... })`.
+    /// such as `group({ ... })`; for a statement of a drawing function's
+    /// body, the function's `let` binding.
     pub parent: Option<usize>,
     /// Inside a `for`/`while` body: the call may produce several instances.
     pub in_loop: bool,
@@ -15,6 +19,85 @@ pub struct Context {
     pub loop_id: Option<usize>,
     /// Inside an `if`/`else` body.
     pub conditional: bool,
+    /// Offset of the `let` binding of the drawing function the call is in.
+    pub function: Option<usize>,
+}
+
+/// A function that draws: `let plate(x) = { rect(..); .. }`, called as a
+/// statement from a canvas body or from another such function. Its draw
+/// calls run once per use.
+#[derive(Debug, Clone)]
+pub struct Function<'a> {
+    /// The whole `let` binding.
+    pub binding: LinkedNode<'a>,
+    pub name: String,
+    /// The parameter list, parentheses included.
+    pub params: Option<LinkedNode<'a>>,
+    /// The expression after `=`: a block, or a single call like `group({..})`.
+    pub body: LinkedNode<'a>,
+}
+
+/// Every drawing function in the file (see `Function`), in source order.
+pub fn drawing_functions<'a>(root: &LinkedNode<'a>) -> Vec<Function<'a>> {
+    let mut all = Vec::new();
+    collect_functions(root, &mut all);
+    // Names called as statements: from the canvases first, then from the
+    // functions those reach, until nothing new turns up.
+    let mut called = BTreeSet::new();
+    for_each_canvas(root, &mut |_, body| for_each_call(body, Context::default(), &mut |call, _| called.extend(ident_callee(call))));
+    let mut drawing = vec![false; all.len()];
+    loop {
+        let mut grew = false;
+        for (i, function) in all.iter().enumerate() {
+            if !drawing[i] && called.contains(&function.name) {
+                drawing[i] = true;
+                grew = true;
+                walk_stmt(&function.body, Context::default(), &mut |call, _| {
+                    called.extend(ident_callee(call));
+                });
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    all.into_iter().zip(drawing).filter_map(|(f, d)| d.then_some(f)).collect()
+}
+
+/// Visits every statement-level draw call in a drawing function's body.
+pub fn for_each_function_call<'a>(function: &Function<'a>, f: &mut impl FnMut(&LinkedNode<'a>, Context)) {
+    let id = function.binding.offset();
+    walk_stmt(&function.body, Context { parent: Some(id), function: Some(id), ..Context::default() }, f);
+}
+
+/// `let f(..) = body` and `let f = (..) => body`.
+fn collect_functions<'a>(node: &LinkedNode<'a>, out: &mut Vec<Function<'a>>) {
+    if node.kind() == SyntaxKind::LetBinding {
+        let parts: Vec<_> = node.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Let | SyntaxKind::Eq)).collect();
+        let found = match parts.as_slice() {
+            [closure] if closure.kind() == SyntaxKind::Closure => {
+                closure.children().find(|c| c.kind() == SyntaxKind::Ident).map(|name| (name.get().leaf_text().to_string(), closure.clone()))
+            }
+            [name, closure] if name.kind() == SyntaxKind::Ident && closure.kind() == SyntaxKind::Closure => {
+                Some((name.get().leaf_text().to_string(), closure.clone()))
+            }
+            _ => None,
+        };
+        if let Some((name, closure)) = found {
+            let params = closure.children().find(|c| c.kind() == SyntaxKind::Params);
+            if let Some(body) = closure.children().filter(|c| !c.kind().is_trivia()).last() {
+                out.push(Function { binding: node.clone(), name, params, body });
+            }
+        }
+    }
+    for child in node.children() {
+        collect_functions(&child, out);
+    }
+}
+
+/// The name a call calls, when it's a plain identifier (`plate(..)`).
+pub fn ident_callee(call: &LinkedNode) -> Option<String> {
+    callee(call).filter(|c| c.kind() == SyntaxKind::Ident).map(|c| c.get().leaf_text().to_string())
 }
 
 /// Finds `canvas(..., { body })` / `cetz.canvas(...)` calls and visits the

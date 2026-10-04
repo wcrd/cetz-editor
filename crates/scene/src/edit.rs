@@ -320,7 +320,7 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
             patches.push(patch(range.clone(), if p.name_quoted { format!("{name:?}") } else { name.clone() }));
             // Uses of the old name: `"old"` (an anchor it defines), `old`, or `var.old`.
             let renamed_anchor = p.name_quoted || p.anchors.iter().any(|a| *a == old);
-            for arg in scene.canvases.iter().flat_map(|c| &c.calls).flat_map(|c| &c.args).filter(|a| a.point == Some(*point)) {
+            for arg in scene.calls().flat_map(|c| &c.args).filter(|a| a.point == Some(*point)) {
                 // The definition itself: its value, and (for `anchor("C", ..)`) its name.
                 if arg.value_range == p.range || arg.value_range == range {
                     continue;
@@ -426,7 +426,12 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 if let Some(comment) = scene::fixed_comment(source, call.range.start).filter(|_| call.connector.is_some()) {
                     patches.push(patch(comment, String::new()));
                 }
-                patches.push(patch(statement_range(source, &call.range), String::new()));
+                if whole_body(&scene, call) {
+                    // A function that was only this call is left drawing nothing.
+                    patches.push(patch(call.range.clone(), "{}".into()));
+                } else {
+                    patches.push(patch(statement_range(source, &call.range), String::new()));
+                }
             }
         }
         Edit::Insert { canvas, text } => {
@@ -629,6 +634,15 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
                 let copy = duplicate_text(source, &scene, call, *dx, *dy)?;
+                if whole_body(&scene, call) {
+                    // `let f() = line(..)` becomes a block holding both.
+                    let indent = indent_at(source, call.range.start);
+                    let inner = |text: &str| text.replace('\n', "\n  ");
+                    let head = format!("{{\n{indent}  {}\n{indent}  ", inner(&source[call.range.clone()]));
+                    created.push((patches.len(), head.len()));
+                    patches.push(patch(call.range.clone(), format!("{head}{}\n{indent}}}", inner(&copy))));
+                    continue;
+                }
                 let line = statement_range(source, &call.range);
                 let (sep, at) = if line.start < call.range.start || line.end > call.range.end {
                     // The call has its own line: copy it onto the next one.
@@ -745,6 +759,12 @@ fn find_arg(scene: &Scene, call: usize, arg: usize) -> Result<&scene::Arg, Strin
     find_call(scene, call)?.args.get(arg).ok_or_else(|| format!("call at {call} has no argument {arg}"))
 }
 
+/// Whether the call is the whole body of a drawing function, as in
+/// `let f(..) = line(..)`, rather than a statement in a block.
+fn whole_body(scene: &Scene, call: &Call) -> bool {
+    call.function.and_then(|f| scene.function(f)).is_some_and(|f| f.body == call.range)
+}
+
 /// The selected calls, minus any nested inside another selected call.
 fn outermost<'a>(scene: &'a Scene, ids: &[usize]) -> Result<Vec<&'a Call>, String> {
     let calls: Vec<&Call> = ids.iter().map(|&id| find_call(scene, id)).collect::<Result<_, _>>()?;
@@ -827,7 +847,7 @@ fn delete_points(source: &str, scene: &Scene, ids: &[usize], patches: &mut Vec<P
     let doomed: Vec<&crate::Point> =
         ids.iter().map(|&id| scene.point(id).ok_or_else(|| format!("no shared point at offset {id}"))).collect::<Result<_, _>>()?;
     let is_doomed = |id: Option<usize>| id.is_some_and(|id| doomed.iter().any(|p| p.id == id));
-    let calls: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).collect();
+    let calls: Vec<&Call> = scene.calls().collect();
     let mut removed: Vec<Range<usize>> = Vec::new();
 
     // `anchor("A", ..)` calls that define or name a doomed point go entirely.
@@ -1009,7 +1029,7 @@ fn next_key(scene: &Scene, keys: &[String]) -> String {
 
 fn name_taken(scene: &Scene, name: &str) -> bool {
     scene.points.iter().any(|p| p.anchors.iter().any(|a| a == name) || p.path == name)
-        || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(name))
+        || scene.calls().any(|c| c.name.as_deref() == Some(name))
         || scene.variables.iter().any(|v| v.name == name)
 }
 
@@ -1067,7 +1087,7 @@ fn connect_after(source: &str, scene: &Scene, call: usize, arg: usize, target: u
     // Only the moved call (and what's in it) changes places, so the target
     // keeps its place among all the other calls.
     let others = |scene: &Scene, moved: &Range<usize>| -> Vec<usize> {
-        let mut ids: Vec<usize> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| !(moved.start <= c.range.start && c.range.end <= moved.end)).map(|c| c.id).collect();
+        let mut ids: Vec<usize> = scene.calls().filter(|c| !(moved.start <= c.range.start && c.range.end <= moved.end)).map(|c| c.id).collect();
         ids.sort_unstable();
         ids
     };
@@ -1235,7 +1255,7 @@ fn unique_name(scene: &Scene, base: &str) -> String {
 
 /// Like `unique_name`, also skipping names the edit has just given out.
 fn unique_name_avoiding(scene: &Scene, base: &str, given: &[String]) -> String {
-    let taken = |n: &str| given.iter().any(|g| g == n) || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
+    let taken = |n: &str| given.iter().any(|g| g == n) || scene.calls().any(|c| c.name.as_deref() == Some(n));
     if !taken(base) {
         return base.to_string();
     }
@@ -1388,9 +1408,9 @@ fn group(source: &str, scene: &Scene, ids: &[usize], patches: &mut Vec<Patch>, c
     // References to the grouped shapes from outside now go through the group.
     let moved: Vec<String> = calls.iter().filter_map(|c| element_name(c)).collect();
     let inside = |r: &Range<usize>| calls.iter().any(|c| c.range.start <= r.start && r.end <= c.range.end);
-    let canvas = scene.canvas_of(first.id).ok_or("shapes outside a canvas")?;
+    let (body, _) = scene.block_of(first.id).ok_or("shapes outside a canvas")?;
     let mut strs = Vec::new();
-    if let Some(body) = find_node(&root, &canvas.body, SyntaxKind::CodeBlock) {
+    if let Some(body) = find_node(&root, &body, SyntaxKind::CodeBlock).or_else(|| find_node(&root, &body, SyntaxKind::FuncCall)) {
         strings(&body, &mut strs);
     }
     for (range, value) in strs {
@@ -1444,15 +1464,15 @@ fn ungroup(
         .ok_or("this group has no { } body to unwrap")?;
     let stmts: Vec<LinkedNode> =
         walk::block_code(&block).map(|code| code.children().filter(|c| !matches!(c.kind(), SyntaxKind::Space | SyntaxKind::Semicolon)).collect()).unwrap_or_default();
-    let children: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent == Some(group.id)).collect();
+    let children: Vec<&Call> = scene.calls().filter(|c| c.parent == Some(group.id)).collect();
 
     let after = node.parent().is_some_and(|code| code.children().any(|s| s.offset() > group.range.start && !is_trivia(s.kind()) && s.kind() != SyntaxKind::LetBinding));
     if let Some(c) = children.iter().find(|c| changes_state(c)).filter(|_| after) {
         return Err(format!("can't ungroup: its {}(..) would apply to the shapes after the group", base_name(&c.callee)));
     }
     let names: Vec<String> = children.iter().filter_map(|c| element_name(c)).collect();
-    let canvas = scene.canvas_of(group.id).ok_or("group is outside a canvas")?;
-    let outside = canvas.calls.iter().filter(|c| c.parent == group.parent && c.id != group.id).filter_map(|c| element_name(c));
+    let (body, calls) = scene.block_of(group.id).ok_or("group is outside a canvas")?;
+    let outside = calls.iter().filter(|c| c.parent == group.parent && c.id != group.id).filter_map(|c| element_name(c));
     if let Some(clash) = outside.chain(released.iter().cloned()).find(|n| names.contains(n)) {
         return Err(format!("can't ungroup: another shape is already named \"{clash}\""));
     }
@@ -1461,7 +1481,7 @@ fn ungroup(
     if let Some(g) = &group.name {
         let within = |r: &Range<usize>| group.range.start <= r.start && r.end <= group.range.end;
         let mut strs = Vec::new();
-        if let Some(body) = find_node(&root, &canvas.body, SyntaxKind::CodeBlock) {
+        if let Some(body) = find_node(&root, &body, SyntaxKind::CodeBlock).or_else(|| find_node(&root, &body, SyntaxKind::FuncCall)) {
             strings(&body, &mut strs);
         }
         for (range, value) in strs.into_iter().filter(|(r, _)| !within(r)) {
@@ -1527,7 +1547,7 @@ fn ungroup(
 /// transforms in order, and the shape.
 fn wrapped<'a>(scene: &'a Scene, scope: &Call) -> Option<(&'a Call, Vec<&'a Call>, &'a Call)> {
     let scope = scene.call(scope.id).filter(|s| base_name(&s.callee) == "scope" && !s.in_loop)?;
-    let mut children: Vec<&Call> = scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| c.parent == Some(scope.id)).collect();
+    let mut children: Vec<&Call> = scene.calls().filter(|c| c.parent == Some(scope.id)).collect();
     children.sort_by_key(|c| c.id);
     let (&shape, transforms) = children.split_last()?;
     let kinds: Vec<&str> = transforms.iter().map(|t| base_name(&t.callee)).collect();
@@ -1928,7 +1948,7 @@ fn defined_names(scene: &Scene, range: &Range<usize>) -> Vec<String> {
 /// The calls in `range` that aren't nested in another call there.
 fn top_calls<'s>(scene: &'s Scene, range: &Range<usize>) -> Vec<&'s Call> {
     let calls: Vec<&Call> =
-        scene.canvases.iter().flat_map(|c| &c.calls).filter(|c| range.start <= c.range.start && c.range.end <= range.end).collect();
+        scene.calls().filter(|c| range.start <= c.range.start && c.range.end <= range.end).collect();
     calls.iter().filter(|c| !c.parent.is_some_and(|p| calls.iter().any(|o| o.id == p))).copied().collect()
 }
 
@@ -2239,6 +2259,38 @@ mod tests {
         assert!(out.source.contains("{ circle((x, 0)); circle((x, 0)) }"));
     }
 
+    #[test]
+    fn edits_reach_into_drawing_functions() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#let plate(x) = {
+  rect((x, 0), (x + 1, 5), stroke: red)
+}
+#canvas({
+  import draw: *
+  let face(..a) = line(..a.pos(), close: true)
+  plate(0)
+  plate(3)
+  face((0, 0), (1, 0), (0, 1))
+})"#;
+        let scene = crate::parse(src);
+        let rect = scene.functions[0].calls[0].id;
+        let out = apply(src, &Edit::SetNamed { call: rect, key: "stroke".into(), text: Some("blue".into()) }).unwrap();
+        assert!(out.source.contains("rect((x, 0), (x + 1, 5), stroke: blue)"), "{}", out.source);
+
+        // A function that is one call keeps a body when it's deleted or copied.
+        let line = scene.functions[1].calls[0].id;
+        let out = apply(src, &Edit::Delete { calls: vec![line] }).unwrap();
+        assert!(out.source.contains("let face(..a) = {}\n"), "{}", out.source);
+        let out = apply(src, &Edit::Duplicate { calls: vec![line], dx: 1.0, dy: 0.0 }).unwrap();
+        assert!(
+            out.source.contains("let face(..a) = {\n    line(..a.pos(), close: true)\n    line(..a.pos(), close: true)\n  }\n"),
+            "{}",
+            out.source
+        );
+        assert_eq!(&out.source[out.created[0]..out.created[0] + 4], "line");
+        assert_ne!(out.created[0], line);
+    }
+
     /// Every edit on every call of every fixture keeps the file valid.
     #[test]
     fn edits_on_fixtures_keep_source_valid() {
@@ -2250,14 +2302,14 @@ mod tests {
             }
             let src = std::fs::read_to_string(&path).unwrap();
             let scene = crate::parse(&src);
-            let count = |s: &Scene| s.canvases.iter().map(|c| c.calls.len()).sum::<usize>();
+            let count = |s: &Scene| s.calls().count();
             let total = count(&scene);
             if let Ok(out) = apply(&src, &Edit::GatherAnchors) {
                 let summary = crate::summarize(&out.source);
                 assert!(summary.errors.is_empty(), "gathering anchors in {path:?}: {:?}\n{}", summary.errors, out.source);
                 assert_eq!(count(&crate::parse(&out.source)), total);
             }
-            for call in scene.canvases.iter().flat_map(|c| &c.calls) {
+            for call in scene.calls() {
                 let edits = [
                     Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5, detach: false },
                     Edit::Move { calls: vec![call.id], dx: 0.5, dy: -0.5, detach: true },
