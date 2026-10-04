@@ -526,7 +526,8 @@
    * A rect's (or grid's) other two corners and its four edges, which move
    * parts of its two literal corners. `edit` takes where it's dragged, local.
    */
-  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined };
+  /** `bend`: an elbow connector's bend handle, at `ratio` of the way, which `at` places for another ratio. */
+  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined; bend?: { ratio: number; at: (ratio: number) => Point } };
 
   const reshapes = $derived.by((): Reshape[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
@@ -577,14 +578,22 @@
     const axis = down ? 1 : 0;
     const span = b[axis] - a[axis];
     if (Math.abs(span) < 1e-9) return [];
-    const point: Point = down ? [(a[0] + b[0]) / 2, a[1] + bend * span] : [a[0] + bend * span, (a[1] + b[1]) / 2];
+    const place = (t: number): Point => (down ? [(a[0] + b[0]) / 2, a[1] + t * span] : [a[0] + t * span, (a[1] + b[1]) / 2]);
     const edit = (p: Point): Edit | undefined => {
       const raw = (localToPage(probe, p)[axis] - a[axis]) / span;
       const ratio = Math.min(0.95, Math.max(0.05, mods.free ? raw : Math.round(raw * 20) / 20));
       return Math.abs(ratio - bend) < 1e-9 ? undefined : { kind: "bend", call: call.id, ratio };
     };
-    return [{ point, edge: true, probe, edit }];
+    return [{ point: place(bend), edge: true, probe, edit, bend: { ratio: bend, at: place } }];
   }
+
+  /** While a bend handle is dragged: where it is now, and how far along as a percentage. */
+  const bending = $derived.by(() => {
+    const bend = drag?.kind === "reshape" ? drag.reshape.bend : undefined;
+    if (drag?.kind !== "reshape" || !bend) return undefined;
+    const ratio = drag.edit?.kind === "bend" ? drag.edit.ratio : bend.ratio;
+    return { point: bend.at(ratio), percent: num(ratio * 100) };
+  });
 
   function reshapeAt(p: Point): Reshape | undefined {
     return reshapes.find((r) => Math.hypot(p[0] - r.point[0], p[1] - r.point[1]) * editor.zoom < 7);
@@ -2437,7 +2446,12 @@
         {/if}
 
         {#each reshapes as r, i (i)}
-          <circle class="handle" class:edge={r.edge} cx={r.point[0]} cy={r.point[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+          <!-- A bend handle follows the drag, labelled with how far along it is. -->
+          {@const at = r.bend && bending ? bending.point : r.point}
+          <circle class="handle" class:edge={r.edge} cx={at[0]} cy={at[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+          {#if r.bend && bending}
+            <text class="bend-label" x={at[0] + 8 / editor.zoom} y={at[1] - 8 / editor.zoom} font-size={11 / editor.zoom} stroke-width={3 / editor.zoom}>{bending.percent}%</text>
+          {/if}
         {/each}
 
         {#each arcEnds as k (k.end)}
@@ -2614,6 +2628,8 @@
       <div class="hint">{drag.end.end} {num(drag.angle ?? drag.end[drag.end.end])}° · ⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no rounding</div>
     {:else if drag?.kind === "radius"}
       <div class="hint">radius {num(drag.r)}{drag.reach.stretchy ? ` · ${isMac ? "⌥" : "Alt"} ellipse` : ""} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if bending}
+      <div class="hint">bend {bending.percent}% of the way · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
@@ -2788,6 +2804,14 @@
     stroke: white;
     stroke-width: 1.5;
     cursor: grab;
+  }
+  .bend-label {
+    fill: var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: var(--bg, white);
+    pointer-events: none;
   }
   .point text {
     fill: var(--point);
