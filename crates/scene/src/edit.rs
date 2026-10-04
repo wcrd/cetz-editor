@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use typst_syntax::{LinkedNode, SyntaxKind};
 
+use crate::route::{self, Route};
 use crate::scene::{self, Call, Scene, Value};
 use crate::walk;
 
@@ -87,6 +88,15 @@ pub enum Edit {
     /// moves to just after it (in front of it), when that's allowed as
     /// `Reorder`; `created` then holds the moved call.
     Connect { call: usize, arg: usize, target: usize, anchor: String },
+    /// Draw a connector, an arrow from one call's anchor to another's,
+    /// straight or elbowed (see `route`), at the end of a canvas (default:
+    /// the first), naming either call first if it has no name. `created`
+    /// holds the line.
+    AddConnector { canvas: Option<usize>, from: usize, from_anchor: String, to: usize, to_anchor: String, route: Route },
+    /// Rewrite a connector's route as straight or elbowed, moving its ends
+    /// to other anchors of the same shapes when `from_anchor` or `to_anchor`
+    /// is given.
+    Reroute { call: usize, route: Route, from_anchor: Option<String>, to_anchor: Option<String> },
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
@@ -425,6 +435,52 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 }
             };
             patches.push(patch(arg.value_range.clone(), format!("{:?}", format!("{name}.{anchor}"))));
+        }
+        Edit::AddConnector { canvas, from, from_anchor, to, to_anchor, route } => {
+            if from == to {
+                return Err("a connector needs two different shapes".into());
+            }
+            let canvas = match canvas {
+                Some(id) => scene.canvases.iter().find(|c| c.id == *id),
+                None => scene.canvases.first(),
+            }
+            .ok_or("no canvas to draw a connector in")?;
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            let mut fresh = Vec::new();
+            let mut end = |id: usize, anchor: &str, patches: &mut Vec<Patch>| -> Result<String, String> {
+                let target = find_call(&scene, id)?;
+                if !canvas.calls.iter().any(|c| c.id == id) {
+                    return Err("a connector's shapes must be in its canvas".into());
+                }
+                let path = path_from(&scene, target.parent, &(at..at)).ok_or("can't connect to a shape in a group with no name")?;
+                let name = match &target.name {
+                    Some(name) => name.clone(),
+                    None => {
+                        let name = unique_name_avoiding(&scene, base_name(&target.callee), &fresh);
+                        set_named(target, "name", Some(&format!("{name:?}")), patches)?;
+                        fresh.push(name.clone());
+                        name
+                    }
+                };
+                Ok(format!("{path}{name}.{anchor}"))
+            };
+            let from = end(*from, from_anchor, &mut patches)?;
+            let to = end(*to, to_anchor, &mut patches)?;
+            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route).join(", "));
+            created.push((patches.len(), prefix.len()));
+            patches.push(patch(at..at, format!("{prefix}{text}{suffix}")));
+        }
+        Edit::Reroute { call, route, from_anchor, to_anchor } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().ok_or("only a connector can be rerouted")?;
+            let from = from_anchor.as_deref().map_or(connector.from.clone(), |a| route::with_anchor(&connector.from, a));
+            let to = to_anchor.as_deref().map_or(connector.to.clone(), |a| route::with_anchor(&connector.to, a));
+            let positional: Vec<&scene::Arg> = call.args.iter().filter(|a| a.key.is_none()).collect();
+            let (first, last) = (positional.first().ok_or("no points")?, positional.last().ok_or("no points")?);
+            if call.args.iter().any(|a| a.key.is_some() && first.range.start < a.range.start && a.range.end < last.range.end) {
+                return Err("a connector's points must come before its named arguments".into());
+            }
+            patches.push(patch(first.range.start..last.range.end, route::vertices(&from, &to, *route).join(", ")));
         }
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
@@ -1020,7 +1076,12 @@ fn insertion_point(source: &str, canvas: &scene::Canvas) -> (usize, String, Stri
 
 /// `base`, `base-2`, `base-3`, ... whichever isn't taken in the scene.
 fn unique_name(scene: &Scene, base: &str) -> String {
-    let taken = |n: &str| scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
+    unique_name_avoiding(scene, base, &[])
+}
+
+/// Like `unique_name`, also skipping names the edit has just given out.
+fn unique_name_avoiding(scene: &Scene, base: &str, given: &[String]) -> String {
+    let taken = |n: &str| given.iter().any(|g| g == n) || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
     if !taken(base) {
         return base.to_string();
     }
@@ -2521,5 +2582,64 @@ mod tests {
         assert_eq!(num(-0.00001), "0");
         assert_eq!(num(1.23456), "1.2346");
         assert_eq!(num(0.1 + 0.2), "0.3");
+    }
+
+    #[test]
+    fn add_connector_names_its_shapes_and_draws_after_them() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1))
+  group(name: "g", { rect((0, -3), (2, -2), name: "b") })
+  rect((4, 0), (5, 1))
+})
+"#;
+        let a = src.find("rect((0, 0)").unwrap();
+        let b = src.find("rect((0, -3)").unwrap();
+        let c = src.find("rect((4, 0)").unwrap();
+        let edit = |from, to, route| Edit::AddConnector { canvas: None, from, from_anchor: "south".into(), to, to_anchor: "north".into(), route };
+        let out = apply(src, &edit(a, b, Route::Elbow)).unwrap();
+        assert!(out.source.contains(r#"rect((0, 0), (2, 1), name: "rect")"#), "{}", out.source);
+        assert!(out.source.contains(r#"line("rect.south", ("rect.south", "|-", ("rect.south", 50%, "g.b.north")), ("g.b.north", "|-", ("rect.south", 50%, "g.b.north")), "g.b.north", mark: (end: ">"))"#), "{}", out.source);
+        assert!(out.source[out.created[0]..].starts_with("line("));
+
+        // Two unnamed shapes get two different names.
+        let out = apply(src, &edit(a, c, Route::Straight)).unwrap();
+        assert!(out.source.contains(r#"name: "rect")"#) && out.source.contains(r#"name: "rect-2")"#), "{}", out.source);
+        assert!(out.source.contains(r#"line("rect.south", "rect-2.north", mark: (end: ">"))"#), "{}", out.source);
+
+        assert!(apply(src, &edit(a, a, Route::Straight)).is_err());
+    }
+
+    #[test]
+    fn reroute_switches_between_straight_and_elbow() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1), name: "a")
+  rect((3, -3), (5, -2), name: "b")
+  line("a.south", "b.north", mark: (end: ">"), stroke: red)
+})
+"#;
+        let line = src.find("line(").unwrap();
+        let scene = scene::parse(src);
+        assert_eq!(scene.call(line).unwrap().connector.as_ref().map(|c| c.route), Some(Route::Straight));
+
+        let reroute = |src: &str, route, from_anchor: Option<&str>| {
+            let line = src.find("line(").unwrap();
+            apply(src, &Edit::Reroute { call: line, route, from_anchor: from_anchor.map(Into::into), to_anchor: None }).unwrap().source
+        };
+        let elbow = reroute(src, Route::Elbow, None);
+        let call = scene::parse(&elbow).call(line).unwrap().clone();
+        assert_eq!(call.connector.map(|c| c.route), Some(Route::Elbow), "{elbow}");
+        assert!(elbow.contains(r#""b.north", mark: (end: ">"), stroke: red)"#));
+
+        let side = reroute(&elbow, Route::Elbow, Some("east"));
+        assert!(side.contains(r#"line("a.east", ("a.east", "-|", "b.north"), "b.north", mark"#), "{side}");
+        assert_eq!(reroute(&elbow, Route::Straight, None), src);
+
+        let plain = src.replace(r#""a.south", "b.north""#, "(0, 0), (1, 1)");
+        let line = plain.find("line(").unwrap();
+        assert!(apply(&plain, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None }).is_err());
     }
 }

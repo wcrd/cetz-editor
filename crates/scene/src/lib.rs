@@ -5,6 +5,7 @@ pub mod expr;
 mod highlight;
 mod instrument;
 mod points;
+pub mod route;
 mod scene;
 mod walk;
 

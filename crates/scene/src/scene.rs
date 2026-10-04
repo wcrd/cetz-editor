@@ -8,6 +8,7 @@ use serde::Serialize;
 use typst_syntax::{LinkedNode, SyntaxKind, ast};
 
 use crate::points::{self, Point};
+use crate::route::{self, Connector};
 use crate::walk::{self, Context};
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,8 @@ pub struct Call {
     /// The innermost loop around the call.
     pub loop_id: Option<usize>,
     pub conditional: bool,
+    /// The connector it draws, when it's a `line` between two anchors.
+    pub connector: Option<Connector>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,6 +274,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         Value::Str { value } => Some(value.clone()),
         _ => None,
     });
+    let connector = route::detect(&callee, &args);
     Call {
         id: call.offset(),
         range: call.range(),
@@ -282,6 +286,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         in_loop: ctx.in_loop,
         loop_id: ctx.loop_id,
         conditional: ctx.conditional,
+        connector,
     }
 }
 
