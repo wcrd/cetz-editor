@@ -6,6 +6,7 @@
   import Outline from "./lib/Outline.svelte";
   import GridStep from "./lib/GridStep.svelte";
   import Help from "./lib/Help.svelte";
+  import { ROUTE_ICONS } from "./lib/connectors";
   import type { Editor, Tool } from "./lib/editor.svelte";
   import type { ExportFormat } from "./lib/compiler";
   import { exportFile, loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
@@ -133,11 +134,6 @@
   } catch {
     // Default route.
   }
-  /** A connector with a circle at each end: stepped for elbows, diagonal for straight. */
-  const ROUTE_ICONS = {
-    elbow: "M7 6h5v12h5M7 6a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
-    straight: "M6.4 17.6L17.6 6.4M7 19a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 5a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
-  };
   /** Picks the connector tool, or with it already picked, switches straight and elbow connectors. */
   function connectorTool() {
     if (editor.tool !== "connector") {

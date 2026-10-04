@@ -12,6 +12,17 @@ const SIDES = ["north", "south", "east", "west"];
 /** The anchors a connector can join, the ones on a shape's outline. */
 export const COMPASS = ["east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east"];
 
+/** A connector's icon, a line with a circle at each end: stepped for elbows, diagonal for straight. */
+export const ROUTE_ICONS: Record<Route, string> = {
+  elbow: "M7 6h5v12h5M7 6a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
+  straight: "M6.4 17.6L17.6 6.4M7 19a2 2 0 1 1-4 0a2 2 0 1 1 4 0M21 5a2 2 0 1 1-4 0a2 2 0 1 1 4 0",
+};
+
+/** The shape a connector's end (`"g.a.south"`) names, without its anchor (`g.a`). */
+export function endShape(anchor: string): string {
+  return anchor.includes(".") ? anchor.slice(0, anchor.lastIndexOf(".")) : anchor;
+}
+
 const center = (b: Box): Point => [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
 
 /**

@@ -25,7 +25,7 @@ import {
   type Range,
   type Route,
 } from "./scene";
-import { pickAnchor } from "./connectors";
+import { endShape, pickAnchor } from "./connectors";
 
 export type Tool = "select" | "line" | "arrow" | "connector" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
 
@@ -488,7 +488,7 @@ export class Editor {
 
   /** The top-level shape a connector's end (`"a.south"`) names. */
   connectorEnd(anchor: string): number | undefined {
-    const name = anchor.includes(".") ? anchor.slice(0, anchor.lastIndexOf(".")) : anchor;
+    const name = endShape(anchor);
     return this.calls.find((c) => c.name === name && c.parent === null)?.id;
   }
 
