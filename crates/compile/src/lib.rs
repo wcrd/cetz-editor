@@ -469,6 +469,40 @@ mod tests {
         assert_point(&probes[2]["anchors"]["center"], [1.0, 3.0]);
     }
 
+    /// A drawing function's calls report once per use, under their own
+    /// offset, as well as under the use's.
+    #[test]
+    fn probes_calls_inside_drawing_functions() {
+        let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
+            eprintln!("skipping: no local Typst package cache");
+            return;
+        };
+        let source = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\
+            #import draw: *\n\
+            #let plate(x) = {\n  rect((x, 0), (x + 1, 2))\n  content((x, 3), [+])\n}\n\
+            #let pair(x) = group({ circle((x, 0)); circle((x + 1, 0)) })\n\
+            #canvas({\n  plate(0)\n  plate(4)\n  pair(8)\n})";
+        let mut world = EditorWorld::new();
+        world.set_main_probed(source);
+        let out = compile_with_cache(&mut world, &cache);
+        assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
+        let probes: serde_json::Value = serde_json::from_str(&out.probes.unwrap()).unwrap();
+        let probes = probes.as_array().unwrap();
+        let count = |needle: &str| {
+            let at = source.find(needle).unwrap() as u64;
+            probes.iter().filter(|p| p["id"].as_u64() == Some(at)).collect::<Vec<_>>()
+        };
+        let rects = count("rect(");
+        assert_eq!(rects.len(), 2);
+        assert_point(&rects[0]["anchors"]["north-east"], [1.0, 2.0]);
+        assert_point(&rects[1]["anchors"]["north-east"], [5.0, 2.0]);
+        assert_eq!(count("content(").len(), 2);
+        // Each use reports its rect and its content.
+        assert_eq!(count("plate(0)").len(), 2);
+        assert_eq!(count("circle((x, 0))").len(), 1);
+        assert_eq!(count("group(").len(), 1);
+    }
+
     /// An open arc has no border at some compass directions, and asking
     /// CeTZ for one panics.
     #[test]

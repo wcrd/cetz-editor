@@ -18,8 +18,29 @@ pub struct Scene {
     pub points: Vec<Point>,
     /// Every `let` binding, at the top level or in a canvas.
     pub variables: Vec<Variable>,
-    /// Loops in canvas bodies that contain draw calls.
+    /// Loops in canvas bodies (or drawing functions) that contain draw calls.
     pub loops: Vec<Loop>,
+    /// Functions the canvases draw with (`let plate(x) = { rect(..) }`).
+    pub functions: Vec<Function>,
+}
+
+/// A function whose body draws, used as a statement in a canvas (or in
+/// another such function). Its calls are drawn once per use, so editing one
+/// changes every use.
+#[derive(Debug, Clone, Serialize)]
+pub struct Function {
+    /// Byte offset of the `let` binding: the `parent` of its body's
+    /// statements and the `function` of every call in it.
+    pub id: usize,
+    pub name: String,
+    /// The whole `let` binding.
+    pub range: Range<usize>,
+    /// The parameter list as written, parentheses included.
+    pub params: String,
+    pub body: Range<usize>,
+    pub calls: Vec<Call>,
+    /// Draw calls that call it, wherever they are.
+    pub uses: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +111,8 @@ pub struct Call {
     pub conditional: bool,
     /// The connector it draws, when it's a `line` between two anchors.
     pub connector: Option<Connector>,
+    /// The drawing function the call is in (its `Function::id`).
+    pub function: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,8 +144,17 @@ pub enum Value {
 }
 
 impl Scene {
+    /// Every draw call: the canvases', then the drawing functions'.
+    pub fn calls(&self) -> impl Iterator<Item = &Call> {
+        self.canvases.iter().flat_map(|c| &c.calls).chain(self.functions.iter().flat_map(|f| &f.calls))
+    }
+
     pub fn call(&self, id: usize) -> Option<&Call> {
-        self.canvases.iter().flat_map(|c| &c.calls).find(|c| c.id == id)
+        self.calls().find(|c| c.id == id)
+    }
+
+    pub fn function(&self, id: usize) -> Option<&Function> {
+        self.functions.iter().find(|f| f.id == id)
     }
 
     pub fn point(&self, id: usize) -> Option<&Point> {
@@ -131,6 +163,13 @@ impl Scene {
 
     pub fn canvas_of(&self, call: usize) -> Option<&Canvas> {
         self.canvases.iter().find(|c| c.calls.iter().any(|k| k.id == call))
+    }
+
+    /// The body a call is written in, a canvas's or a drawing function's,
+    /// and the calls in it.
+    pub fn block_of(&self, call: usize) -> Option<(Range<usize>, &[Call])> {
+        let canvas = self.canvas_of(call).map(|c| (c.body.clone(), c.calls.as_slice()));
+        canvas.or_else(|| self.functions.iter().find(|f| f.calls.iter().any(|k| k.id == call)).map(|f| (f.body.clone(), f.calls.as_slice())))
     }
 }
 
@@ -198,11 +237,38 @@ pub fn parse(source: &str) -> Scene {
         let grid = grid_comment(source, canvas.offset()).map(|range| source[range].to_string());
         canvases.push(Canvas { id: canvas.offset(), body: body.range(), calls, grid });
     });
-    let loop_ids: std::collections::BTreeSet<usize> = canvases.iter().flat_map(|c| &c.calls).filter_map(|c| c.loop_id).collect();
+    let mut functions: Vec<Function> = walk::drawing_functions(&linked)
+        .iter()
+        .map(|f| {
+            let mut calls = Vec::new();
+            walk::for_each_function_call(f, &mut |call, ctx| calls.push(parse_call(source, &points, call, ctx)));
+            Function {
+                id: f.binding.offset(),
+                name: f.name.clone(),
+                range: f.binding.range(),
+                params: f.params.as_ref().map(|p| source[p.range()].to_string()).unwrap_or_default(),
+                body: f.body.range(),
+                calls,
+                uses: Vec::new(),
+            }
+        })
+        .collect();
+    let uses: Vec<Vec<usize>> = functions
+        .iter()
+        .map(|f| {
+            let calls = canvases.iter().flat_map(|c| &c.calls).chain(functions.iter().flat_map(|f| &f.calls));
+            calls.filter(|c| c.callee == f.name).map(|c| c.id).collect()
+        })
+        .collect();
+    for (f, uses) in functions.iter_mut().zip(uses) {
+        f.uses = uses;
+    }
+    let loop_ids: std::collections::BTreeSet<usize> =
+        canvases.iter().flat_map(|c| &c.calls).chain(functions.iter().flat_map(|f| &f.calls)).filter_map(|c| c.loop_id).collect();
     collect_loops(source, &linked, &loop_ids, &mut loops);
     let mut variables = Vec::new();
     collect_variables(source, &linked, &canvases, &points, &mut variables);
-    Scene { canvases, points, variables, loops }
+    Scene { canvases, points, variables, loops, functions }
 }
 
 fn collect_loops(source: &str, node: &LinkedNode, ids: &std::collections::BTreeSet<usize>, out: &mut Vec<Loop>) {
@@ -306,6 +372,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         loop_id: ctx.loop_id,
         conditional: ctx.conditional,
         connector,
+        function: ctx.function,
     }
 }
 
@@ -479,8 +546,66 @@ mod tests {
 
     #[test]
     fn ids_match_instrumented_probe_ids() {
-        let scene = parse(SRC);
-        let ids: Vec<_> = scene.canvases[0].calls.iter().map(|c| c.id).collect();
-        assert_eq!(ids, crate::instrument(SRC).calls);
+        for src in [SRC, FUNCTIONS] {
+            let scene = parse(src);
+            let mut ids: Vec<_> = scene.calls().map(|c| c.id).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, crate::instrument(src).calls);
+        }
+    }
+
+    const FUNCTIONS: &str = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#import draw: *
+#let plate(x, is-anode: true) = {
+  let color = if is-anode { red } else { blue }
+  rect((x, 0), (x + 0.5, 5), stroke: color)
+  for ii in range(3) { content((x, ii), [+]) }
+}
+#let dipole(x, y) = group({
+  rect(x, y, name: "minus")
+  content("minus", [--])
+})
+#let row(y) = { dipole((0, y), (1, y)) }
+#let unused() = { circle((0, 0)) }
+#let label(t) = text(t)
+#canvas({
+  let face(..a) = line(..a.pos(), close: true)
+  plate(4, is-anode: false)
+  plate(-0.5)
+  row(1)
+  face((0, 0), (1, 0), (0, 1))
+  content((0, 0), label[x])
+})"#;
+
+    #[test]
+    fn parses_drawing_functions() {
+        let scene = parse(FUNCTIONS);
+        let names: Vec<_> = scene.functions.iter().map(|f| f.name.as_str()).collect();
+        // `unused` is never drawn and `label` is only used as a value.
+        assert_eq!(names, ["plate", "dipole", "row", "face"]);
+
+        let plate = &scene.functions[0];
+        assert_eq!(plate.params, "(x, is-anode: true)");
+        assert_eq!(&FUNCTIONS[plate.range.clone()][..9], "let plate");
+        let callees: Vec<_> = plate.calls.iter().map(|c| c.callee.as_str()).collect();
+        assert_eq!(callees, ["rect", "content"]);
+        assert!(plate.calls.iter().all(|c| c.function == Some(plate.id) && c.parent == Some(plate.id)));
+        assert!(!plate.calls[0].in_loop && plate.calls[1].in_loop);
+        assert_eq!(plate.uses.len(), 2);
+        assert!(plate.uses.iter().all(|&u| scene.canvases[0].calls.iter().any(|c| c.id == u)));
+
+        // A body that is one call: the group's children hang off it.
+        let dipole = &scene.functions[1];
+        let callees: Vec<_> = dipole.calls.iter().map(|c| (c.callee.as_str(), c.parent == Some(dipole.id))).collect();
+        assert_eq!(callees, [("group", true), ("rect", false), ("content", false)]);
+        assert!(dipole.calls.iter().all(|c| c.function == Some(dipole.id)));
+        // Used from another drawing function.
+        assert_eq!(dipole.uses, [scene.functions[2].calls[0].id]);
+
+        // Found by lookups that edits use.
+        let rect = &plate.calls[0];
+        assert_eq!(scene.call(rect.id).map(|c| c.id), Some(rect.id));
+        assert_eq!(scene.block_of(rect.id).map(|(body, _)| body), Some(plate.body.clone()));
+        assert!(scene.canvases[0].calls.iter().all(|c| c.function.is_none()));
     }
 }

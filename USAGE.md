@@ -27,6 +27,7 @@ Press **?** in the app for a quick version of this guide.
 | ⌘-click a selected line or curve through points | Add a point there; ⌘-click one of its points to remove it (it keeps at least two, three when closed) |
 | Drag a handle | Move that coordinate. Drop it on another shape's anchor to write `"name.anchor"` (the target is named if needed) |
 | Double-click a group | Enter it to select its children (selecting one in the outline does too). Esc, or a click outside it, leaves |
+| Double-click a shape drawn by your own function | Enter the function (see **Functions**) to select the shapes it draws |
 | Double-click text | Edit it in place: its `[markup]` or string, as source. Enter saves (⇧Enter for a new line), Esc cancels, clicking away saves. The text tool (**T**) opens it straight away |
 | Arrow keys (Shift: 1 unit) | Nudge by one grid step |
 | ⌘D / Delete | Duplicate / delete |
@@ -112,6 +113,16 @@ back into `"box.east"`. Either command refuses with a message, rather than
 change the drawing, when a transform would stop or start applying to other
 shapes, when something uses the group's own anchors (`"g.north"`), or when
 names would clash.
+
+**Functions.** A function the canvas draws with, like
+`let plate(x) = { rect(..); content(..) }` used as `plate(4)`, gets its own
+entry under Functions in the outline. It starts folded: open it to list the
+calls in its body and how many times each is drawn. Double-click a use on the
+canvas, or click the function in the outline, to enter it (which opens it): a
+click then selects that shape in every copy, and the inspector edits the
+function's code, so every copy changes.
+Coordinates worked out from the function's parameters (`(x, 0)`) have no
+handles and don't move by dragging; edit them in the inspector or the code.
 
 **Grid step.** Type any size into the toolbar's grid field (`0.3`), a
 fraction (`1/3`), or pick a preset. Snapping, the grid and the rulers all

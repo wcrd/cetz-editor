@@ -1,18 +1,30 @@
 <script lang="ts">
   // The document outline, shown when nothing is selected: variables (the
-  // definitions, editable when they're literal points) and shapes (the draw
-  // calls; groups fold, loops expand into the repetitions CeTZ drew, read-only).
+  // definitions, editable when they're literal points), the functions the
+  // canvases draw with, with their calls, and shapes (the draw calls; groups
+  // fold, loops expand into the repetitions CeTZ drew, read-only).
+  import { untrack } from "svelte";
   import type { Editor } from "./editor.svelte";
   import { endShape, ROUTE_ICONS } from "./connectors";
   import { num } from "./format";
   import { isVec, type Probe, type Vec3 } from "./probe";
-  import { baseName, type Call, type Point, type Variable } from "./scene";
+  import { baseName, repeats, type Call, type DrawFunction, type Point, type Variable } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
 
   /** Variables folded closed, and loops unfolded, by the user. */
   let folded = $state(new Set<string>());
   let unfolded = $state(new Set<number>());
+  /** Functions opened, by name, which edits don't move: they start closed. */
+  let openFunctions = $state(new Set<string>());
+
+  // Entering a function, from the canvas or the code, opens it here.
+  $effect(() => {
+    const fn = editor.scopeFunction === undefined ? undefined : editor.functionById.get(editor.scopeFunction);
+    untrack(() => {
+      if (fn && !openFunctions.has(fn.name)) openFunctions = new Set([...openFunctions, fn.name]);
+    });
+  });
 
   // --- Renaming points ----------------------------------------------------
 
@@ -109,16 +121,22 @@
     return hosts;
   });
 
-  /** Every call outside a folded group, with its nesting depth; text placed on a shape comes under it. */
-  const rows = $derived.by(() => {
+  type Row = { call: Call; depth: number };
+
+  /**
+   * The calls outside a folded group (or function), with their nesting
+   * depth; text placed on a shape comes under it. A function's own
+   * statements are one deep, under the function's row.
+   */
+  function rowsOf(calls: Call[]): Row[] {
     const placed = new Map<number, Call[]>();
     for (const [text, host] of hostOf) placed.set(host, [...(placed.get(host) ?? []), editor.callById.get(text)!]);
-    const out: { call: Call; depth: number }[] = [];
+    const out: Row[] = [];
     const add = (call: Call, depth: number) => {
       out.push({ call, depth });
       for (const text of placed.get(call.id) ?? []) add(text, depth + 1);
     };
-    for (const call of editor.calls) {
+    for (const call of calls) {
       if (hostOf.has(call.id)) continue;
       let depth = 0;
       let hidden = false;
@@ -129,7 +147,24 @@
       if (!hidden) add(call, depth);
     }
     return out;
-  });
+  }
+
+  const rows = $derived(rowsOf(editor.calls.filter((c) => c.function === null)));
+  const functionRows = $derived(new Map(editor.scene.functions.map((f) => [f.id, rowsOf(f.calls)])));
+  const allRows = $derived([...rows, ...[...functionRows.values()].flat()]);
+  /** Variables, less the drawing functions: those have their own section. */
+  const variables = $derived(editor.scene.variables.filter((v) => !editor.functionById.has(v.range.start)));
+
+  /** How many times a function is drawn: as often as its first unconditional statement. */
+  function timesDrawn(fn: DrawFunction): number {
+    const first = fn.calls.find((c) => c.parent === fn.id && !c.in_loop && !c.conditional);
+    return first ? (editor.probesById.get(first.id)?.length ?? 0) : fn.uses.length;
+  }
+
+  function enterFunction(fn: DrawFunction) {
+    editor.scope = fn.id;
+    editor.selection = [];
+  }
 
   /** Points a call defines itself, e.g. `anchor("C", (5, 5))`, not those of its children. */
   function definedBy(call: Call): Point[] {
@@ -329,7 +364,7 @@
 
   // --- Reordering by drag --------------------------------------------------
 
-  let list = $state<HTMLUListElement>();
+  let root = $state<HTMLDivElement>();
   /** The row being dragged, and where it would land: before or after a sibling. */
   let dragging = $state<Call>();
   let drop = $state<{ target: number; after: boolean }>();
@@ -347,12 +382,12 @@
   function lastRow(call: Call): number {
     const family = editor.family(call.id);
     let last = call.id;
-    for (const r of rows) if (family.has(r.call.id)) last = r.call.id;
+    for (const r of allRows) if (family.has(r.call.id)) last = r.call.id;
     return last;
   }
 
   function rowEl(id: number): HTMLElement | null | undefined {
-    return list?.querySelector<HTMLElement>(`[data-row="${id}"]`);
+    return root?.querySelector<HTMLElement>(`[data-row="${id}"]`);
   }
 
   function dragOver(e: DragEvent, call: Call) {
@@ -423,11 +458,122 @@
   {/if}
 {/snippet}
 
-<div class="outline">
-  {#if editor.scene.variables.length > 0}
+{#snippet shapeRow({ call, depth }: Row)}
+  {@const instances = editor.probesById.get(call.id) ?? []}
+  {@const looped = call.in_loop}
+  {@const many = repeats(call)}
+  {@const drawsWith = editor.functionOfUse.get(call.id)}
+  {@const kind = kindOf(call)}
+  {@const defined = definedBy(call)}
+  {@const group = groups.has(call.id)}
+  {@const open = group ? !editor.collapsed.has(call.id) : unfolded.has(call.id)}
+  {@const edge = dropEdge(call.id)}
+  <!-- A function's group opens to its shapes, which list their own copies. -->
+  {@const listed = many && !(group && call.function !== null)}
+  <li data-row={call.id} class:drop-before={edge === "before"} class:drop-after={edge === "after"} ondragover={(e) => dragOver(e, call)} ondrop={dropHere}>
+    <div
+      class="row shape"
+      class:hovered={editor.hovered === call.id}
+      class:dragging={dragging?.id === call.id}
+      style:padding-left="{4 + depth * 14}px"
+      draggable="true"
+      title="Drag to change what's drawn in front"
+      role="listitem"
+      ondragstart={(e) => {
+        dragging = call;
+        e.dataTransfer?.setData("text/plain", editor.callText(call));
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      }}
+      ondragend={endDrag}
+    >
+      {#if group}
+        <button class="chevron-button" onclick={() => (editor.collapsed = toggle(editor.collapsed, call.id))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
+          <span class="chevron" class:open>›</span>
+        </button>
+      {:else if many || defined.length > 0}
+        <button class="chevron-button" onclick={() => (unfolded = toggle(unfolded, call.id))} aria-expanded={open} aria-label="Expand">
+          <span class="chevron" class:open>›</span>
+        </button>
+      {:else}
+        <span class="chevron-space"></span>
+      {/if}
+      <button
+        class="shape-button"
+        onclick={() => select(call)}
+        onpointerenter={() => hoverShape(call.id)}
+        onpointerleave={() => (editor.hovered = undefined)}
+      >
+        <span class="icon" title={kind}>
+          <svg viewBox="0 0 24 24"><path d={call.connector ? ROUTE_ICONS[call.connector.route] : ICONS[kind]} style:fill={fillOf(call, kind)} /></svg>
+          {#if looped}
+            <span class="flow" title="Drawn by a loop">↻</span>
+          {:else if call.conditional}
+            <span class="flow" title="Only drawn when its condition holds">⑂</span>
+          {:else if drawsWith}
+            <span class="flow" title="Draws with {drawsWith.name}">ƒ</span>
+          {/if}
+        </span>
+        {#if call.connector}
+          {@const c = call.connector}
+          <span class="name">connector</span>
+          <span class="meta" title="{c.from} → {c.to}">{call.name ? `${call.name}: ` : ""}{endShape(c.from)} → {endShape(c.to)}</span>
+          <span class="tag" title="Route">{c.route}</span>
+          {#if c.bend !== null && Math.abs(c.bend - 0.5) > 1e-9}<span class="tag" title="Where the elbow crosses over">{num(c.bend * 100)}%</span>{/if}
+          {#if c.fixed}<span class="tag" title="Its sides are fixed: moving its shapes keeps them">fixed</span>{/if}
+        {:else}
+          <span class="name">{call.callee}</span>
+          {#if many}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
+          <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
+        {/if}
+      </button>
+      {@render removeButton(call.function !== null ? "Delete from the function (every use)" : looped ? "Delete call (all its repetitions)" : "Delete", () => remove([call.id], []))}
+    </div>
+    {#if open && (defined.length > 0 || listed)}
+      <ul class="children" style:--indent="{depth * 14}px">
+        {#each defined as p (p.id)}
+          <li
+            class="row point child"
+            class:hovered={editor.hoveredPoint === p.id}
+            class:selected={editor.selectedPoints.includes(p.id)}
+            style:padding-left="{42 + depth * 14}px"
+            onpointerenter={() => hoverPoint(p.id)}
+            onpointerleave={() => (editor.hoveredPoint = undefined)}
+          >
+            <span class="name point-name">{@render pointName(p, p.anchors[0] ?? p.path)}</span>
+            <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
+            <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
+            {@render uses(p)}
+          </li>
+        {/each}
+        {#if listed}
+          {#each instances as probe, index (index)}
+            {@const focused = editor.focusedInstance?.call === call.id && editor.focusedInstance.index === index}
+            <li>
+              <button
+                class="row instance"
+                class:focused
+                class:hovered={editor.hoveredInstance?.call === call.id && editor.hoveredInstance.index === index}
+                style:padding-left="{42 + depth * 14}px"
+                title={looped ? "Drawn by the loop; edit its points or the call to change it" : "Drawn by one use of the function"}
+                onclick={() => (editor.focusedInstance = focused ? undefined : { call: call.id, index })}
+                onpointerenter={() => (editor.hoveredInstance = { call: call.id, index })}
+                onpointerleave={() => (editor.hoveredInstance = undefined)}
+              >
+                <span class="meta code">{instanceLabel(probe, index)}</span>
+              </button>
+            </li>
+          {/each}
+        {/if}
+      </ul>
+    {/if}
+  </li>
+{/snippet}
+
+<div class="outline" bind:this={root}>
+  {#if variables.length > 0}
     <h3>Variables</h3>
     <ul>
-      {#each editor.scene.variables as v (v.range.start)}
+      {#each variables as v (v.range.start)}
         {@const points = pointsOf(v)}
         {#if v.kind === "point" && points.length === 1}
           {@const p = points[0]}
@@ -486,118 +632,60 @@
     </ul>
   {/if}
 
-  <h3>
-    Shapes
-    {#if editor.scope !== undefined}<button class="link" onclick={() => (editor.scope = undefined)}>Exit group</button>{/if}
-  </h3>
-  <ul bind:this={list} ondragleave={(e) => !list?.contains(e.relatedTarget as Node) && (drop = undefined)}>
-    {#each rows as { call, depth } (call.id)}
-      {@const instances = editor.probesById.get(call.id) ?? []}
-      {@const looped = call.in_loop}
-      {@const kind = kindOf(call)}
-      {@const defined = definedBy(call)}
-      {@const group = groups.has(call.id)}
-      {@const open = group ? !editor.collapsed.has(call.id) : unfolded.has(call.id)}
-      {@const edge = dropEdge(call.id)}
-      <li data-row={call.id} class:drop-before={edge === "before"} class:drop-after={edge === "after"} ondragover={(e) => dragOver(e, call)} ondrop={dropHere}>
-        <div
-          class="row shape"
-          class:hovered={editor.hovered === call.id}
-          class:dragging={dragging?.id === call.id}
-          style:padding-left="{4 + depth * 14}px"
-          draggable="true"
-          title="Drag to change what's drawn in front"
-          role="listitem"
-          ondragstart={(e) => {
-            dragging = call;
-            e.dataTransfer?.setData("text/plain", editor.callText(call));
-            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-          }}
-          ondragend={endDrag}
-        >
-          {#if group}
-            <button class="chevron-button" onclick={() => (editor.collapsed = toggle(editor.collapsed, call.id))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
+  {#if editor.scene.functions.length > 0}
+    <h3>Functions</h3>
+    <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
+      {#each editor.scene.functions as fn (fn.id)}
+        {@const open = openFunctions.has(fn.name)}
+        <li>
+          <div class="row shape function" class:hovered={editor.hovered === fn.id} class:entered={editor.scopeFunction === fn.id}>
+            <button class="chevron-button" onclick={() => (openFunctions = toggle(openFunctions, fn.name))} aria-expanded={open} aria-label={open ? "Collapse" : "Expand"}>
               <span class="chevron" class:open>›</span>
             </button>
-          {:else if looped || defined.length > 0}
-            <button class="chevron-button" onclick={() => (unfolded = toggle(unfolded, call.id))} aria-expanded={open} aria-label="Expand">
-              <span class="chevron" class:open>›</span>
+            <button
+              class="shape-button"
+              title="Edit its shapes on the canvas: changes apply to every use"
+              onclick={() => enterFunction(fn)}
+              ondblclick={() => {
+                editor.openCode?.();
+                editor.code?.select(fn.range);
+              }}
+              onpointerenter={() => hoverShape(fn.id)}
+              onpointerleave={() => (editor.hovered = undefined)}
+            >
+              <span class="icon var-icon"><svg viewBox="0 0 24 24"><path d={VARIABLE_ICONS.function} /></svg></span>
+              <span class="name">{fn.name}</span>
+              <span class="pill" title="Drawn {timesDrawn(fn)} times, by {fn.uses.length} call{fn.uses.length === 1 ? '' : 's'}">×{timesDrawn(fn)}</span>
+              <span class="meta code">{fn.params}</span>
             </button>
-          {:else}
-            <span class="chevron-space"></span>
-          {/if}
-          <button
-            class="shape-button"
-            onclick={() => select(call)}
-            onpointerenter={() => hoverShape(call.id)}
-            onpointerleave={() => (editor.hovered = undefined)}
-          >
-            <span class="icon" title={kind}>
-              <svg viewBox="0 0 24 24"><path d={call.connector ? ROUTE_ICONS[call.connector.route] : ICONS[kind]} style:fill={fillOf(call, kind)} /></svg>
-              {#if looped}
-                <span class="flow" title="Drawn by a loop">↻</span>
-              {:else if call.conditional}
-                <span class="flow" title="Only drawn when its condition holds">⑂</span>
-              {/if}
-            </span>
-            {#if call.connector}
-              {@const c = call.connector}
-              <span class="name">connector</span>
-              <span class="meta" title="{c.from} → {c.to}">{call.name ? `${call.name}: ` : ""}{endShape(c.from)} → {endShape(c.to)}</span>
-              <span class="tag" title="Route">{c.route}</span>
-              {#if c.bend !== null && Math.abs(c.bend - 0.5) > 1e-9}<span class="tag" title="Where the elbow crosses over">{num(c.bend * 100)}%</span>{/if}
-              {#if c.fixed}<span class="tag" title="Its sides are fixed: moving its shapes keeps them">fixed</span>{/if}
-            {:else}
-              <span class="name">{call.callee}</span>
-              {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
-              <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
-            {/if}
-          </button>
-          {@render removeButton(looped ? "Delete call (all its repetitions)" : "Delete", () => remove([call.id], []))}
-        </div>
-        {#if open && (defined.length > 0 || looped)}
-          <ul class="children" style:--indent="{depth * 14}px">
-            {#each defined as p (p.id)}
-              <li
-                class="row point child"
-                class:hovered={editor.hoveredPoint === p.id}
-                class:selected={editor.selectedPoints.includes(p.id)}
-                style:padding-left="{42 + depth * 14}px"
-                onpointerenter={() => hoverPoint(p.id)}
-                onpointerleave={() => (editor.hoveredPoint = undefined)}
-              >
-                <span class="name point-name">{@render pointName(p, p.anchors[0] ?? p.path)}</span>
-                <label>x <input type="number" step={editor.gridStep} value={num(p.x)} onchange={(e) => setPoint(p.id, "x", e.currentTarget.value)} onkeydown={onKey} /></label>
-                <label>y <input type="number" step={editor.gridStep} value={num(p.y)} onchange={(e) => setPoint(p.id, "y", e.currentTarget.value)} onkeydown={onKey} /></label>
-                {@render uses(p)}
-              </li>
-            {/each}
-            {#if looped}
-              {#each instances as probe, index (index)}
-                {@const focused = editor.focusedInstance?.call === call.id && editor.focusedInstance.index === index}
-                <li>
-                  <button
-                    class="row instance"
-                    class:focused
-                    class:hovered={editor.hoveredInstance?.call === call.id && editor.hoveredInstance.index === index}
-                    style:padding-left="{42 + depth * 14}px"
-                    title="Drawn by the loop; edit its points or the call to change it"
-                    onclick={() => (editor.focusedInstance = focused ? undefined : { call: call.id, index })}
-                    onpointerenter={() => (editor.hoveredInstance = { call: call.id, index })}
-                    onpointerleave={() => (editor.hoveredInstance = undefined)}
-                  >
-                    <span class="meta code">{instanceLabel(probe, index)}</span>
-                  </button>
-                </li>
-              {/each}
-            {/if}
-          </ul>
+          </div>
+        </li>
+        {#if open}
+          {#each functionRows.get(fn.id) ?? [] as row (row.call.id)}
+            {@render shapeRow(row)}
+          {/each}
         {/if}
-      </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <!-- A rule sets the drawing apart from the definitions above it. -->
+  <h3 class:divided={variables.length > 0 || editor.scene.functions.length > 0}>
+    Shapes
+    {#if editor.scope !== undefined}
+      <button class="link" onclick={() => (editor.scope = undefined)}
+        >Exit {editor.functionById.get(editor.scope)?.name ?? "group"}</button
+      >
+    {/if}
+  </h3>
+  <ul ondragleave={(e) => !root?.contains(e.relatedTarget as Node) && (drop = undefined)}>
+    {#each rows as row (row.call.id)}
+      {@render shapeRow(row)}
     {:else}
       <li class="empty">No CeTZ canvas in this file.</li>
     {/each}
   </ul>
+
 </div>
 
 <style>
@@ -616,6 +704,11 @@
     letter-spacing: 0.04em;
     color: var(--muted);
     margin: 6px 4px 4px;
+  }
+  h3.divided {
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 10px;
   }
   ul {
     list-style: none;
@@ -862,6 +955,9 @@
     left: calc(var(--indent) + 25.5px);
     border-left: 1px dotted var(--muted);
     opacity: 0.6;
+  }
+  .row.function.entered .name {
+    color: var(--accent);
   }
   .row.instance {
     position: relative;

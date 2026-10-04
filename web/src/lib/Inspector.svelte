@@ -199,6 +199,13 @@
       {#if editor.isGroup(call.id)}<button title="Put its shapes back in place of the group (⇧⌘G)" onclick={() => editor.ungroupSelection()}>Ungroup</button>{/if}
     </header>
     {#if call.in_loop}<p class="note">Inside a loop: edits apply to every iteration.</p>{/if}
+    {#if call.function !== null && editor.functionById.get(call.function)}
+      {@const fn = editor.functionById.get(call.function)!}
+      {@const copies = editor.probesById.get(call.id)?.length ?? 0}
+      <p class="note">
+        In <code>{fn.name}</code>{#if copies > 1}, drawn {copies} times: edits change every one{:else}: edits change the function{/if}.
+      </p>
+    {/if}
     {#if call.conditional}<p class="note">Inside an <code>if</code>: only drawn when its condition holds.</p>{/if}
 
     {#if call.connector}

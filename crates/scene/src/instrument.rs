@@ -1,5 +1,5 @@
 //! Produces an instrumented copy of a source file in which every draw call in
-//! a CeTZ canvas body is wrapped in `__cetz_probe(<offset>, <call>)`. The probe
+//! a CeTZ canvas body or a drawing function is wrapped in `__cetz_probe(<offset>, <call>)`. The probe
 //! (see `crates/compile/src/probe.typ`) records the geometry CeTZ computes for
 //! that call, keyed by the call's byte offset in the original source.
 //!
@@ -49,6 +49,9 @@ pub fn instrument(source: &str) -> Instrumented {
     walk::for_each_canvas(&LinkedNode::new(&root), &mut |_, body| {
         walk::for_each_call(body, walk::Context::default(), &mut |call, _| spans.push(call.range()));
     });
+    for function in walk::drawing_functions(&LinkedNode::new(&root)) {
+        walk::for_each_function_call(&function, &mut |call, _| spans.push(call.range()));
+    }
     spans.sort_unstable_by_key(|r| r.start);
     spans.dedup();
 
