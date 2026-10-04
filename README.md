@@ -48,6 +48,13 @@ just dev
 | `just test` | Rust tests and a Svelte type-check |
 | `just render` | For testing only. Render `fixtures/` to `generated/` with the Typst and LaTeX CLIs |
 
+If the dev server fails with an error about a WASM module, reinstall the web
+dependencies:
+
+```bash
+pnpm --dir web install --force
+```
+
 The first compile downloads CeTZ from packages.typst.org. After that it's
 cached in the browser.
 
