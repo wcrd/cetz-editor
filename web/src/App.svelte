@@ -96,7 +96,7 @@
   // Infinite canvas view; remembered in this browser like the code panel.
   const INFINITE_KEY = "cetz-editor:infinite";
   try {
-    tabs.prefs.infinite = localStorage.getItem(INFINITE_KEY) === "true";
+    tabs.prefs.infinite = localStorage.getItem(INFINITE_KEY) !== "false";
   } catch {
     // Default view.
   }

@@ -86,7 +86,7 @@ export class Prefs {
   /** Show every shared point's marker, not just the selection's. */
   showPoints = $state(false);
   /** View the page as an endless sheet: no page edge, grid everywhere. */
-  infinite = $state(false);
+  infinite = $state(true);
   /** Rulers in canvas units along the canvas's top and left edges. */
   showRulers = $state(true);
 }
