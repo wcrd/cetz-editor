@@ -44,6 +44,14 @@ fn main() {
         std::process::exit(1);
     };
 
+    // For debugging the probe: print the instrumented copy the editor compiles.
+    if let [flag, path] = args.as_slice()
+        && flag == "--instrument"
+    {
+        print!("{}", cetz_scene::instrument(&std::fs::read_to_string(path).unwrap()).text);
+        return;
+    }
+
     // A worker: check one diagram and print its report as JSON.
     if let [flag, path, name] = args.as_slice()
         && flag == "--one"
@@ -134,6 +142,11 @@ impl Compiler {
         loop {
             let out = self.world.compile();
             if out.missing_packages.is_empty() {
+                // The editor falls back to the plain render when the probe fails.
+                if probed && out.probes.is_none() {
+                    let warning = out.diagnostics.iter().find(|d| !d.error).map_or("", |d| d.message.as_str());
+                    return Err(format!("probe failed: {warning}"));
+                }
                 return match out.diagnostics.iter().find(|d| d.error) {
                     Some(d) => {
                         let file = d.file.as_deref().unwrap_or("main");
