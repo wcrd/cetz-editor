@@ -16,6 +16,7 @@ Use it here: [TBC]()
 - **Code and canvas stay in sync.** Edit from either. Clicking a shape selects its call in the code, and putting the cursor in a call selects its shape. Undo covers edits from both.
 - **Sync to a local file or export to SVG, PNG, PDF.**
 - **Multipage support.** Support for CeTZ with multiple diagrams.
+- **Automatic basic straight & elbow edge routing between shapes**. Auto or fixed connection points with customisable routing.
 
 ## Getting started
 

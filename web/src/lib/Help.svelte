@@ -32,6 +32,19 @@
     </section>
 
     <section>
+      <h3>Connectors</h3>
+      <p>
+        <kbd>E</kbd> draws an arrow from one shape to another, elbowed or straight; press <kbd>E</kbd> again to switch. Its ends
+        name the shapes' anchors and an elbow's corners are worked out from them, so CeTZ re-routes it when a shape moves. The
+        inspector's Route switches a selected one and re-picks its sides. Drag the dot on a selected elbow's middle segment to
+        move where it crosses over, or set it as a percentage in the inspector's Bend. Moving shapes re-picks their connectors'
+        sides, unless Sides is Fixed. Drag a connector's end handle onto another shape to reconnect it; dropping it on an anchor
+        pins it. An elbow whose side faces away from the other end steps out from it first and goes around; drag the
+        dot where it steps out, or set Step out in the inspector, to change how far.
+      </p>
+    </section>
+
+    <section>
       <h3>Text</h3>
       <p>Double-click text to edit it where it is; <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. New text from <kbd>T</kbd> opens ready to type, and so does a node from <kbd>N</kbd>: a rounded rect with its text placed on it by name, so the text moves with it.</p>
     </section>

@@ -8,7 +8,7 @@
   import { applyChange, parseText, type Change } from "./props";
   import { optFor, optionsFor, wrappedOptions } from "./schema";
   import TextField from "./TextField.svelte";
-  import { baseName, STATE_CALLS, type Arg, type Call } from "./scene";
+  import { baseName, STATE_CALLS, type Arg, type Call, type Edit, type Route } from "./scene";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -30,6 +30,16 @@
     { how: "bottom", title: "Align bottom edges", icon: "M3 20h18M7 6h4v10H7zM14 10h4v6h-4z" },
     { how: "across", title: "Space evenly across (3 or more)", icon: "M3 4v16M21 4v16M9 8h6v8H9z" },
     { how: "down", title: "Space evenly down (3 or more)", icon: "M4 3h16M4 21h16M8 9h8v6H8z" },
+  ];
+
+  const ROUTES: { route: Route; label: string; title: string }[] = [
+    { route: "straight", label: "Straight", title: "A straight arrow between the nearest anchors (again to re-pick them, unless its sides are fixed)" },
+    { route: "elbow", label: "Elbow", title: "Right-angled, leaving and entering square to the shapes (again to re-pick sides, unless they're fixed)" },
+  ];
+
+  const SIDES: { fixed: boolean; label: string; title: string }[] = [
+    { fixed: false, label: "Auto", title: "Re-pick the sides it joins when its shapes move" },
+    { fixed: true, label: "Fixed", title: "Keep the sides it joins, marked by a // cetz-editor: fixed comment above it" },
   ];
 
   const COMMON_KEYS = ["stroke", "fill", "mark", "radius", "padding", "frame", "anchor", "angle", "name"];
@@ -142,6 +152,28 @@
     return call.args.find((a) => a.key === key)?.text ?? "";
   }
 
+  /** Sets where elbow connectors cross over, as a percentage of the way between their ends (5–95, as the canvas handle allows). */
+  function setBend(calls: Call[], input: HTMLInputElement) {
+    const n = Number(input.value);
+    if (input.value.trim() === "" || !Number.isFinite(n)) return;
+    const percent = Math.min(95, Math.max(5, n));
+    input.value = num(percent);
+    const edits: Edit[] = calls.map((c) => ({ kind: "bend", call: c.id, ratio: percent / 100 }));
+    editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
+  /**
+   * Sets how far detouring connectors step out from their sides, which also
+   * becomes the distance for detours written from now on.
+   */
+  function setStub(calls: Call[], input: HTMLInputElement) {
+    const n = Number(input.value);
+    if (input.value.trim() === "" || !Number.isFinite(n) || n <= 0) return;
+    editor.prefs.stub = n;
+    const edits: Edit[] = calls.map((c) => ({ kind: "set-stub", call: c.id, stub: n }));
+    editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement && e.shiftKey)) {
       (e.target as HTMLElement).blur();
@@ -169,9 +201,14 @@
     {#if call.in_loop}<p class="note">Inside a loop: edits apply to every iteration.</p>{/if}
     {#if call.conditional}<p class="note">Inside an <code>if</code>: only drawn when its condition holds.</p>{/if}
 
+    {#if call.connector}
+      {@render routes([call])}
+    {/if}
+
     <section>
       {#each call.args as arg, i (i)}
-        {#if arg.key === null}
+        <!-- A connector's corners follow its ends; Route rewrites them. -->
+        {#if arg.key === null && !(call.connector && arg.value.type === "expr")}
           <div class="row">
             <span class="label">{label(call, arg, i)}</span>
             {#if arg.point !== null && editor.pointById.get(arg.point)}
@@ -248,6 +285,9 @@
     <!-- Rotated shapes' scopes edit as their shapes. -->
     {@const shapes = ids.map((id) => editor.wrappedShape(id)?.id ?? id)}
     {@const calls = shapes.map((id) => editor.callById.get(id)).filter((c) => c !== undefined)}
+    {#if calls.some((c) => c.connector)}
+      {@render routes(calls.filter((c) => c.connector))}
+    {/if}
     {@const opts = sharedOptions(calls)}
     {#if opts.groups.length === 0 && opts.other.length === 0}<p class="note">These shapes have no options in common.</p>{/if}
     {#each opts.groups as group (group.title)}
@@ -270,6 +310,68 @@
       </div>
     </section>
   {/if}
+  {#snippet routes(connectors: Call[])}
+    <!-- Only an elbow with two corners has a bend to move. -->
+    {@const bendable = connectors.filter((c) => c.connector?.bend != null)}
+    {@const detours = connectors.filter((c) => c.connector?.detour)}
+    <section class="route">
+      <div class="row">
+        <span class="label">Route</span>
+        <div class="choices" role="group" aria-label="Route">
+          {#each ROUTES as r (r.route)}
+            {@const on = connectors.every((c) => c.connector?.route === r.route)}
+            <button class:active={on} aria-pressed={on} title={r.title} onclick={() => editor.reroute(connectors.map((c) => c.id), r.route)}>{r.label}</button>
+          {/each}
+        </div>
+      </div>
+      <div class="row">
+        <span class="label">Sides</span>
+        <div class="choices" role="group" aria-label="Sides">
+          {#each SIDES as s (s.label)}
+            {@const on = connectors.every((c) => c.connector?.fixed === s.fixed)}
+            {@const edits = connectors.map((c): Edit => ({ kind: "set-fixed", call: c.id, fixed: s.fixed }))}
+            <button class:active={on} aria-pressed={on} title={s.title} onclick={() => editor.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits })}>{s.label}</button>
+          {/each}
+        </div>
+      </div>
+      {#if detours.length > 0}
+        {@const stubs = [...new Set(detours.map((c) => num(c.connector?.stub ?? editor.prefs.stub)))]}
+        <div class="row">
+          <span class="label">Step out</span>
+          <label class="percent" title="How far it steps out from each side before going around; new detours use it too">
+            <input
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={stubs.length === 1 ? stubs[0] : ""}
+              placeholder={stubs.length > 1 ? "mixed" : ""}
+              onchange={(e) => setStub(detours, e.currentTarget)}
+              onkeydown={onKey}
+            />
+          </label>
+        </div>
+      {/if}
+      {#if bendable.length > 0}
+        {@const bends = [...new Set(bendable.map((c) => num((c.connector?.bend ?? 0) * 100)))]}
+        <div class="row">
+          <span class="label">Bend</span>
+          <label class="percent" title="Where the elbow crosses over, as a share of the way from its start to its end">
+            <input
+              type="number"
+              min="5"
+              max="95"
+              step="5"
+              value={bends.length === 1 ? bends[0] : ""}
+              placeholder={bends.length > 1 ? "mixed" : ""}
+              onchange={(e) => setBend(bendable, e.currentTarget)}
+              onkeydown={onKey}
+            />
+            %
+          </label>
+        </div>
+      {/if}
+    </section>
+  {/snippet}
   <datalist id="cetz-keys">
     {#each COMMON_KEYS as key}<option value={key}></option>{/each}
   </datalist>
@@ -395,6 +497,23 @@
     fill: none;
     stroke: currentColor;
     stroke-width: 1.5;
+  }
+  .choices {
+    display: flex;
+    gap: 3px;
+  }
+  .percent {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+  }
+  .percent input {
+    width: 72px;
+  }
+  .choices button.active {
+    background: color-mix(in srgb, var(--accent) 18%, var(--button-bg));
+    border-color: var(--accent);
   }
   button.small {
     padding: 1px 6px;

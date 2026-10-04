@@ -493,6 +493,30 @@ mod tests {
         assert!(group["anchors"].get("north").is_some());
     }
 
+    /// CeTZ 0.5.2 offers a centroid for open lines too, and divides by zero
+    /// finding it when they enclose no area, as elbow connectors often do:
+    /// points in a row, or a Z.
+    #[test]
+    fn probes_open_lines_without_a_centroid() {
+        let Some(cache) = typst_package_cache().filter(|p| p.exists()) else {
+            eprintln!("skipping: no local Typst package cache");
+            return;
+        };
+        let source = "#import \"@preview/cetz:0.5.2\": canvas, draw\n\
+            #canvas({\n  import draw: *\n  line((0, 0), (0, -1), (0, -1), (0, -2), mark: (end: \">\"))\n  \
+            line((6.5, 0), (6.5, -2), (5.5, -2), (5.5, -4), mark: (end: \">\"))\n  line((0, 0), (2, 0), (2, 1), close: true)\n})";
+        let mut world = EditorWorld::new();
+        world.set_main_probed(source);
+        let out = compile_with_cache(&mut world, &cache);
+        assert!(out.diagnostics.iter().all(|d| !d.error), "{:?}", out.diagnostics);
+        let probes: serde_json::Value = serde_json::from_str(&out.probes.unwrap()).unwrap();
+        let [flat, zed, closed] = probes.as_array().unwrap().as_slice() else { panic!("expected three probes") };
+        assert!(flat["anchors"].get("centroid").is_none());
+        assert_point(&flat["anchors"]["end"], [0.0, -2.0]);
+        assert!(zed["anchors"].get("centroid").is_none());
+        assert!(closed["anchors"].get("centroid").is_some());
+    }
+
     /// CeTZ 0.5.2's n-star panics on its own corner and edge anchors, so the
     /// probe reads them off the outline, as it does for polygons.
     #[test]

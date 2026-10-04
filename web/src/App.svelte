@@ -6,6 +6,7 @@
   import Outline from "./lib/Outline.svelte";
   import GridStep from "./lib/GridStep.svelte";
   import Help from "./lib/Help.svelte";
+  import { ROUTE_ICONS } from "./lib/connectors";
   import type { Editor, Tool } from "./lib/editor.svelte";
   import type { ExportFormat } from "./lib/compiler";
   import { exportFile, loadSession, newDocument, openDropped, openFile, restoreSession, save, saveSession } from "./lib/files";
@@ -126,6 +127,45 @@
     }
   }
 
+  // How new connectors route; remembered in this browser.
+  const ROUTE_KEY = "cetz-editor:route";
+  try {
+    tabs.prefs.route = localStorage.getItem(ROUTE_KEY) === "straight" ? "straight" : "elbow";
+  } catch {
+    // Default route.
+  }
+  /** Picks the connector tool, or with it already picked, switches straight and elbow connectors. */
+  function connectorTool() {
+    if (editor.tool !== "connector") {
+      editor.tool = "connector";
+      return;
+    }
+    editor.route = editor.route === "elbow" ? "straight" : "elbow";
+    editor.flash(`New connectors: ${editor.route}`);
+    try {
+      localStorage.setItem(ROUTE_KEY, editor.route);
+    } catch {
+      // Not remembered; that's fine.
+    }
+  }
+
+  // How far detouring connectors step out, as last set in the inspector; remembered in this browser.
+  const STUB_KEY = "cetz-editor:stub";
+  try {
+    const stub = Number(localStorage.getItem(STUB_KEY));
+    if (stub > 0) tabs.prefs.stub = stub;
+  } catch {
+    // Default distance.
+  }
+  $effect(() => {
+    const stub = tabs.prefs.stub;
+    try {
+      localStorage.setItem(STUB_KEY, String(stub));
+    } catch {
+      // Not remembered; that's fine.
+    }
+  });
+
   // Rulers, on unless turned off in this browser.
   const RULERS_KEY = "cetz-editor:rulers";
   try {
@@ -179,6 +219,7 @@
     { id: "select", label: "Select", key: "V", icon: "M5 3l13 8-6 1.5L9 19z" },
     { id: "line", label: "Line", key: "L", icon: "M5 19L19 5" },
     { id: "arrow", label: "Arrow", key: "A", icon: "M5 19L19 5M11 5h8v8" },
+    { id: "connector", label: "Connector", key: "E", icon: "" },
     { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
     { id: "node", label: "Node", key: "N", icon: "M7 6h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3zM9 12h6" },
     { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
@@ -360,6 +401,10 @@
       }
     }
     const tool = tools.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+    if (tool?.id === "connector") {
+      connectorTool();
+      return;
+    }
     if (tool) {
       editor.tool = tool.id;
       return;
@@ -468,12 +513,12 @@
           <button
             class="tool"
             class:active={editor.tool === t.id}
-            title="{t.label} ({t.key})"
+            title={t.id === "connector" ? `Connector, ${editor.route} (${t.key}; again to switch)` : `${t.label} (${t.key})`}
             aria-label={t.label}
             aria-pressed={editor.tool === t.id}
-            onclick={() => (editor.tool = t.id)}
+            onclick={() => (t.id === "connector" ? connectorTool() : (editor.tool = t.id))}
           >
-            <svg viewBox="0 0 24 24"><path d={t.icon} /></svg>
+            <svg viewBox="0 0 24 24"><path d={t.id === "connector" ? ROUTE_ICONS[editor.route] : t.icon} /></svg>
             <kbd aria-hidden="true">{t.key}</kbd>
           </button>
         {/each}

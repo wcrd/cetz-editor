@@ -8,6 +8,7 @@ use serde::Serialize;
 use typst_syntax::{LinkedNode, SyntaxKind, ast};
 
 use crate::points::{self, Point};
+use crate::route::{self, Connector};
 use crate::walk::{self, Context};
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,8 @@ pub struct Call {
     /// The innermost loop around the call.
     pub loop_id: Option<usize>,
     pub conditional: bool,
+    /// The connector it draws, when it's a `line` between two anchors.
+    pub connector: Option<Connector>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,6 +161,25 @@ pub fn grid_comment(source: &str, canvas: usize) -> Option<Range<usize>> {
             let value = step.trim();
             let at = start + line.len() - step.trim_start().len();
             return (!value.is_empty()).then(|| at..at + value.len());
+        }
+        line_start = start;
+    }
+    None
+}
+
+/// The `// cetz-editor: fixed` comment line right above the call at
+/// `call` (among the comment lines there), which pins a connector's sides:
+/// the range of the whole line, its line break included.
+pub fn fixed_comment(source: &str, call: usize) -> Option<Range<usize>> {
+    let mut line_start = source[..call].rfind('\n').map_or(0, |i| i + 1);
+    if !source[line_start..call].trim().is_empty() {
+        return None;
+    }
+    while line_start > 0 {
+        let start = source[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
+        let comment = source[start..line_start - 1].trim_start().strip_prefix("//")?;
+        if comment.trim_start().strip_prefix("cetz-editor:").is_some_and(|rest| rest.trim() == "fixed") {
+            return Some(start..line_start);
         }
         line_start = start;
     }
@@ -271,6 +293,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         Value::Str { value } => Some(value.clone()),
         _ => None,
     });
+    let connector = route::detect(&callee, &args).map(|c| Connector { fixed: fixed_comment(source, call.offset()).is_some(), ..c });
     Call {
         id: call.offset(),
         range: call.range(),
@@ -282,6 +305,7 @@ fn parse_call(source: &str, points: &[Point], call: &LinkedNode, ctx: Context) -
         in_loop: ctx.in_loop,
         loop_id: ctx.loop_id,
         conditional: ctx.conditional,
+        connector,
     }
 }
 

@@ -14,6 +14,16 @@
   rgb(fill.sample(50%)).to-hex()
 } else { none }
 
+// Whether the element's outline is an open path. CeTZ 0.5.2 lists a
+// `centroid` anchor for every line, open or not (it checks `close != none`,
+// and `close` is `false`), and works it out by dividing by the area the
+// points enclose: zero for points in a row or a Z like an elbow connector.
+// It only means anything for a closed line, so the probe skips it otherwise.
+#let __cetz_probe_open(drawables) = {
+  let path = drawables.find(d => d.type == "path")
+  path != none and path.segments.len() > 0 and not path.segments.first().at(1)
+}
+
 #let __cetz_probe_compass = ("east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east")
 
 #let __cetz_probe(id, elements) = {
@@ -45,8 +55,10 @@
           if ring.len() > 1 and ring.last() == origin { ring.slice(0, -1) } else { ring }
         }
       }
+      let open-path = "centroid" in names and __cetz_probe_open(drawables)
       for name in names {
         if open-arc and name in __cetz_probe_compass { continue }
+        if open-path and name == "centroid" { continue }
         let corner = name.starts-with("corner-") and ring != none and ring.len() == corners
         let edge = name.starts-with("edge-") and ring != none and ring.len() == corners
         anchors.insert(name, if corner {

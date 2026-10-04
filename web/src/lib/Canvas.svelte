@@ -5,8 +5,9 @@
   import { tick, untrack } from "svelte";
   import type { Editor, Frame, Tool } from "./editor.svelte";
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
-  import { baseName, STATE_CALLS, type Call, type Edit, type Range } from "./scene";
+  import { baseName, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
   import { num } from "./format";
+  import { COMPASS, outward, routePoints, STUB, vertical } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
 
@@ -64,7 +65,9 @@
     | { kind: "reshape"; reshape: Reshape; edit?: Edit }
     | { kind: "sweep"; end: ArcEnd; sweep: number; angle?: number; edit?: Edit }
     | { kind: "grow"; grow: Grow; from: number; factor: number; edit?: Edit }
-    | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] };
+    | { kind: "create"; start: Point; end: Point; startSnap?: Snap; endSnap?: Snap; frame: Frame; transform?: number[][] }
+    /** Drawing a connector from one shape to another; `at` is the pointer. */
+    | { kind: "connect"; from: End; to?: End; at: Point };
   let drag = $state<Drag>();
 
   const pageSize = $derived.by(() => {
@@ -523,12 +526,26 @@
    * A rect's (or grid's) other two corners and its four edges, which move
    * parts of its two literal corners. `edit` takes where it's dragged, local.
    */
-  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined };
+  /**
+   * A handle that shows what it's set to while dragged (a connector's bend
+   * or step out): its `value` now, where `at` puts it for another, and how
+   * to `read` one off the edit the drag would make.
+   */
+  type Readout = {
+    key: string;
+    value: number;
+    at: (value: number) => Point;
+    read: (edit: Edit | undefined) => number | undefined;
+    label: (value: number) => string;
+    hint: (value: number) => string;
+  };
+  type Reshape = { point: Point; edge: boolean; probe: Probe; edit: (p: Point) => Edit | undefined; readout?: Readout };
 
   const reshapes = $derived.by((): Reshape[] => {
     if (editor.selected.length !== 1 || editor.tool !== "select" || (drag && drag.kind !== "reshape")) return [];
     const call = editor.wrappedShape(editor.selected[0]) ?? editor.callById.get(editor.selected[0]);
     const probe = call && probeOf.get(call.id);
+    if (call && probe && !call.in_loop && call.connector) return connectorHandles(call, probe);
     if (!call || !probe || call.in_loop || !["rect", "grid"].includes(baseName(call.callee))) return [];
     const at = call.args.flatMap((arg, i) => (arg.key === null ? [i] : [])).slice(0, 2);
     if (at.length < 2 || at.some((i) => call.args[i].point !== null)) return [];
@@ -551,6 +568,85 @@
       [[mx, b.y], true, (p) => set([a.x, a.y], [b.x, p[1]])],
     ];
     return items.map(([q, edge, edit]) => ({ point: localToPage(probe, q), edge, probe, edit }));
+  });
+
+  /**
+   * Handles on a selected elbow connector. One on its middle segment,
+   * dragged along the way the connector runs, moves where it crosses over,
+   * in steps of 5% of the way (⌘: free), keeping clear of the ends. On a
+   * detour, one where each end steps out sets how far both do, in grid
+   * steps (⌘: free).
+   */
+  function connectorHandles(call: Call, probe: Probe): Reshape[] {
+    const connector = call.connector;
+    const at = (anchor: string): Point | undefined => {
+      const id = editor.connectorEnd(anchor);
+      return id === undefined ? undefined : editor.anchorsOf(id)[anchor.slice(anchor.lastIndexOf(".") + 1)];
+    };
+    const [a, b] = connector ? [at(connector.from), at(connector.to)] : [];
+    if (!connector || connector.route !== "elbow" || !a || !b) return [];
+    const handles: Reshape[] = [];
+    const stub = connector.stub ?? STUB;
+    const [da, db] = [outward(connector.from), outward(connector.to)];
+    if (connector.detour) {
+      for (const [key, end, d] of [["stub-from", a, da], ["stub-to", b, db]] as const) {
+        const place = (v: number): Point => [end[0] + d[0] * v * probe.length, end[1] + d[1] * v * probe.length];
+        const edit = (p: Point): Edit | undefined => {
+          const q = localToPage(probe, p);
+          const raw = ((q[0] - end[0]) * d[0] + (q[1] - end[1]) * d[1]) / probe.length;
+          const step = editor.gridStep;
+          const value = mods.free ? Math.max(0.05, raw) : Math.max(step, Math.round(raw / step) * step);
+          return Math.abs(value - stub) < 1e-9 ? undefined : { kind: "set-stub", call: call.id, stub: Math.round(value * 1e4) / 1e4 };
+        };
+        const readout: Readout = {
+          key,
+          value: stub,
+          at: place,
+          read: (e) => (e?.kind === "set-stub" ? e.stub : undefined),
+          label: (v) => num(v),
+          hint: (v) => `step out ${num(v)}`,
+        };
+        handles.push({ point: place(stub), edge: true, probe, edit, readout });
+      }
+    }
+    if (connector.bend === null) return handles;
+    const bend = connector.bend;
+    // Out of a north or south side a plain elbow runs up or down, so it
+    // crosses over at a height; a detour's middle segment runs across.
+    const axis = vertical(connector.from) !== connector.detour ? 1 : 0;
+    const other = 1 - axis;
+    const span = b[axis] - a[axis];
+    if (Math.abs(span) < 1e-9) return handles;
+    const out = connector.detour ? stub * probe.length : 0;
+    const across = (a[other] + da[other] * out + b[other] + db[other] * out) / 2;
+    const place = (t: number): Point => {
+      const q: Point = [0, 0];
+      q[axis] = a[axis] + t * span;
+      q[other] = across;
+      return q;
+    };
+    const edit = (p: Point): Edit | undefined => {
+      const raw = (localToPage(probe, p)[axis] - a[axis]) / span;
+      const ratio = Math.min(0.95, Math.max(0.05, mods.free ? raw : Math.round(raw * 20) / 20));
+      return Math.abs(ratio - bend) < 1e-9 ? undefined : { kind: "bend", call: call.id, ratio };
+    };
+    const readout: Readout = {
+      key: "bend",
+      value: bend,
+      at: place,
+      read: (e) => (e?.kind === "bend" ? e.ratio : undefined),
+      label: (v) => `${num(v * 100)}%`,
+      hint: (v) => `bend ${num(v * 100)}% of the way`,
+    };
+    return [...handles, { point: place(bend), edge: true, probe, edit, readout }];
+  }
+
+  /** While a handle with a readout is dragged: which one, where it is now, and what it reads. */
+  const reading = $derived.by(() => {
+    const r = drag?.kind === "reshape" ? drag.reshape.readout : undefined;
+    if (drag?.kind !== "reshape" || !r) return undefined;
+    const value = r.read(drag.edit) ?? r.value;
+    return { key: r.key, point: r.at(value), label: r.label(value), hint: r.hint(value) };
   });
 
   function reshapeAt(p: Point): Reshape | undefined {
@@ -1226,7 +1322,7 @@
   // Leaving the join tool abandons a half-made path.
   $effect(() => {
     if (!isJoinTool()) joining = undefined;
-    if (editor.tool !== "point" && !isJoinTool() && !isLineTool()) toolHover = undefined;
+    if (editor.tool !== "point" && !isJoinTool() && !isLineTool() && editor.tool !== "connector") toolHover = undefined;
   });
 
   /**
@@ -1366,6 +1462,13 @@
       joinAt(p, e.detail >= 2);
       return;
     }
+    if (e.button === 0 && !spaceHeld && editor.tool === "connector") {
+      const from = connectEndAt(p);
+      if (from) drag = { kind: "connect", from, at: p };
+      else editor.flash("Start a connector on a shape");
+      toolHover = undefined;
+      return;
+    }
     if (e.button === 0 && !spaceHeld && arcing) {
       arcClick(arcing, p);
       return;
@@ -1484,6 +1587,14 @@
       toolHover = toolTarget(p, isJoinTool());
       return;
     }
+    // The connector tool shows the shape (or anchor) a press would start from.
+    if (!drag && editor.tool === "connector") {
+      const end = connectEndAt(p);
+      editor.hoverSource = "canvas";
+      editor.hovered = end?.target;
+      toolHover = endHover(end);
+      return;
+    }
     // Line tools preview where a press would start: just the snap, no ghost.
     if (!drag && isLineTool()) {
       const snap = findSnap(p, undefined, { vertices: true, at: insertAt() });
@@ -1569,6 +1680,11 @@
       }
       case "handle": {
         const d = drag;
+        const connector = editor.callById.get(d.call)?.connector;
+        if (connector) {
+          reconnectDrag(d, connector, p);
+          break;
+        }
         // A shape's only point moves the shape: show it there at once, as a
         // move does, rather than waiting for each compile.
         const shift = (to: Point): [number, number] => {
@@ -1663,6 +1779,12 @@
         editor.previewEdit(drag.edit);
         break;
       }
+      case "connect":
+        drag.to = connectEndAt(p, drag.from.target);
+        drag.at = p;
+        editor.hovered = drag.to?.target;
+        toolHover = endHover(drag.to);
+        break;
       case "create": {
         if (mods.angle && isLineTool()) {
           const from = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -1711,16 +1833,24 @@
         // A click (no drag) on one of several selected points picks just it.
         else if (d.group?.length) editor.pointSelection = [d.point];
         break;
+      case "reshape":
+        // A step out set by dragging is the distance for detours from now on, as the inspector's is.
+        if (d.edit?.kind === "set-stub") editor.prefs.stub = d.edit.stub;
+        editor.endDrag(d.edit);
+        break;
       case "handle":
       case "rotate":
       case "radius":
-      case "reshape":
       case "sweep":
       case "grow":
         editor.endDrag(d.edit);
         break;
       case "create":
         create(d);
+        break;
+      case "connect":
+        toolHover = undefined;
+        addConnector(d);
         break;
     }
   }
@@ -2017,6 +2147,118 @@
     }
   }
 
+  // --- Connector tool ----------------------------------------------------------
+
+  /** One end of a connector being drawn: a shape, and the anchor it was snapped to, if any. */
+  type End = { target: number; anchor?: string };
+
+  /**
+   * The shape a connector joins for a press of `p`. Text placed on a named
+   * shape (a node's label) stands for that shape, and lines aren't joined.
+   */
+  function host(id: number): number | undefined {
+    const call = editor.callById.get(id);
+    if (!call || baseName(call.callee) === "line") return undefined;
+    const on = call.args.find((a) => a.key === null);
+    if (baseName(call.callee) === "content" && on?.value.type === "str" && !on.value.value.includes(".")) {
+      const name = on.value.value;
+      return editor.calls.find((c) => c.name === name && c.parent === null)?.id ?? id;
+    }
+    return id;
+  }
+
+  /** Shapes a connector can join: those with anchors to snap to. */
+  const connectables = $derived([...new Set(snapTargets.map((t) => host(t.target)).filter((id) => id !== undefined))]);
+
+  /**
+   * The connector end at `p`: a compass anchor within reach (not a centre,
+   * which an arrow would end inside), else the smallest shape under the
+   * pointer, its anchor picked on release.
+   */
+  function connectEndAt(p: Point, exclude?: number): End | undefined {
+    let best: End | undefined;
+    let bestDist = mods.free ? 0 : 8 / editor.zoom;
+    for (const t of snapTargets) {
+      const dist = Math.hypot(t.point[0] - p[0], t.point[1] - p[1]);
+      if (dist < bestDist && t.target !== exclude && COMPASS.includes(t.anchor) && host(t.target) === t.target) {
+        [best, bestDist] = [{ target: t.target, anchor: t.anchor }, dist];
+      }
+    }
+    if (best) return best;
+    let bestArea = Infinity;
+    for (const id of connectables) {
+      const b = id === exclude ? undefined : editor.boundsOf(id);
+      if (!b || p[0] < b.x0 || p[0] > b.x1 || p[1] < b.y0 || p[1] > b.y1) continue;
+      const area = (b.x1 - b.x0) * (b.y1 - b.y0);
+      if (area < bestArea) [best, bestArea] = [{ target: id }, area];
+    }
+    return best;
+  }
+
+  /** The snap marker for a connector end on an anchor. */
+  function endHover(end: End | undefined): { page: Point; snap: Snap } | undefined {
+    const q = end?.anchor !== undefined ? editor.anchorsOf(end.target)[end.anchor] : undefined;
+    return end && q ? { page: q, snap: { point: q, target: end.target, anchor: end.anchor } } : undefined;
+  }
+
+  /** The anchors and page path of the connector a drag would draw, once it's over a second shape. */
+  function connectorRoute(d: Extract<Drag, { kind: "connect" }>) {
+    if (!d.to) return undefined;
+    const anchors = editor.connectorAnchors(d.from.target, d.to.target, editor.route, d.from.anchor, d.to.anchor);
+    if (!anchors) return undefined;
+    const [a, b] = [editor.anchorsOf(d.from.target)[anchors[0]], editor.anchorsOf(d.to.target)[anchors[1]]];
+    const stub = editor.prefs.stub * editor.frameFor(editor.canvasOfCall.get(d.from.target)).length;
+    const detour = editor.connectorDetour(d.from.target, d.to.target, anchors, editor.route);
+    return { anchors, detour, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route, { stub }) : [] };
+  }
+
+  /**
+   * Dragging a connector's start or end handle reconnects that end: onto a
+   * shape's anchor, which pins the connector's sides, or onto a shape's
+   * body, picking sides as a new connector does (the other end's too,
+   * unless pinned). Off any shape, it snaps back on release.
+   */
+  function reconnectDrag(d: Extract<Drag, { kind: "handle" }>, connector: Connector, p: Point) {
+    const positional = editor.callById.get(d.call)?.args.flatMap((a, i) => (a.key === null ? [i] : [])) ?? [];
+    const toEnd = d.arg === positional[positional.length - 1];
+    const kept = toEnd ? connector.from : connector.to;
+    const other = editor.connectorEnd(kept);
+    const end = connectEndAt(p, other);
+    editor.hovered = end?.target;
+    d.at = p;
+    d.snap = undefined;
+    d.edit = undefined;
+    const keptSide = connector.fixed ? kept.slice(kept.lastIndexOf(".") + 1) : undefined;
+    const anchors =
+      end &&
+      other !== undefined &&
+      (toEnd
+        ? editor.connectorAnchors(other, end.target, connector.route, keptSide, end.anchor)
+        : editor.connectorAnchors(end.target, other, connector.route, end.anchor, keptSide));
+    if (!end || !anchors) {
+      editor.endDrag();
+      return;
+    }
+    const detour = toEnd
+      ? editor.connectorDetour(other!, end.target, anchors, connector.route)
+      : editor.connectorDetour(end.target, other!, anchors, connector.route);
+    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined, detour, stub: connector.stub ?? editor.prefs.stub };
+    if (!editor.previewEdit(edit)) return editor.endDrag();
+    d.edit = edit;
+    d.snap = endHover(end)?.snap;
+    d.at = editor.anchorsOf(end.target)[anchors[toEnd ? 1 : 0]] ?? p;
+  }
+
+  function addConnector(d: Extract<Drag, { kind: "connect" }>) {
+    const route = connectorRoute(d);
+    if (!d.to || !route) return;
+    const [from_anchor, to_anchor] = route.anchors;
+    const canvas = editor.canvasOfCall.get(d.from.target) ?? null;
+    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route, detour: route.detour, stub: editor.prefs.stub, fixed: d.from.anchor !== undefined || d.to.anchor !== undefined })) {
+      editor.tool = "select";
+    }
+  }
+
   /** Corner radius of a node the node tool draws. */
   const NODE_RADIUS = 0.2;
 
@@ -2044,6 +2286,14 @@
       if (pointer) return radiusGuide(frame, transform, center, pointer);
       const c = editor.toPage(frame, transformPoint(transform, center));
       return `M${c[0] - 3},${c[1]} h6 M${c[0]},${c[1] - 3} v6`;
+    }
+    if (drag?.kind === "connect") {
+      const points = connectorRoute(drag)?.points;
+      if (points?.length) return points.map((q, i) => `${i ? "L" : "M"}${q[0]},${q[1]}`).join(" ");
+      // Not over a second shape yet: from the first toward the pointer.
+      const box = editor.boundsOf(drag.from.target);
+      const a = drag.from.anchor !== undefined ? editor.anchorsOf(drag.from.target)[drag.from.anchor] : box && [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
+      return a && `M${a[0]},${a[1]} L${drag.at[0]},${drag.at[1]}`;
     }
     if (drag?.kind !== "create") return undefined;
     const a = editor.toPage(drag.frame, transformPoint(drag.transform, drag.start));
@@ -2099,7 +2349,7 @@
    * it), so you can see what an end could snap to before you get there.
    */
   const anchorHints = $derived.by(() => {
-    if (!isLineTool() || !pointer || mods.free || (drag && drag.kind !== "create")) return [];
+    if (!(isLineTool() || editor.tool === "connector") || !pointer || mods.free || (drag && drag.kind !== "create" && drag.kind !== "connect")) return [];
     const p: Point = [(pointer[0] - editor.pan[0]) / editor.zoom, (pointer[1] - editor.pan[1]) / editor.zoom];
     const reach = 40 / editor.zoom;
     const near = new Set<number>();
@@ -2298,7 +2548,13 @@
         {/if}
 
         {#each reshapes as r, i (i)}
-          <circle class="handle" class:edge={r.edge} cx={r.point[0]} cy={r.point[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+          <!-- A handle with a readout follows the drag, labelled with what it's set to. -->
+          {@const live = r.readout && reading?.key === r.readout.key ? reading : undefined}
+          {@const at = live ? live.point : r.point}
+          <circle class="handle" class:edge={r.edge} cx={at[0]} cy={at[1]} r={(r.edge ? 3.5 : 4.5) / editor.zoom} />
+          {#if live}
+            <text class="readout" x={at[0] + 8 / editor.zoom} y={at[1] - 8 / editor.zoom} font-size={11 / editor.zoom} stroke-width={3 / editor.zoom}>{live.label}</text>
+          {/if}
         {/each}
 
         {#each arcEnds as k (k.end)}
@@ -2475,6 +2731,8 @@
       <div class="hint">{drag.end.end} {num(drag.angle ?? drag.end[drag.end.end])}° · ⇧ 15° steps · {isMac ? "⌘" : "Ctrl"} no rounding</div>
     {:else if drag?.kind === "radius"}
       <div class="hint">radius {num(drag.r)}{drag.reach.stretchy ? ` · ${isMac ? "⌥" : "Alt"} ellipse` : ""} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
+    {:else if reading}
+      <div class="hint">{reading.hint} · {isMac ? "⌘" : "Ctrl"} no snapping</div>
     {:else if drag?.kind === "rotate"}
       <div class="hint">{num(drag.angle)}° · ⇧ 15° steps</div>
     {:else if drag?.kind === "create" && isLineTool()}
@@ -2649,6 +2907,14 @@
     stroke: white;
     stroke-width: 1.5;
     cursor: grab;
+  }
+  .readout {
+    fill: var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: var(--bg, white);
+    pointer-events: none;
   }
   .point text {
     fill: var(--point);

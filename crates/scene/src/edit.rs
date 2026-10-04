@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use typst_syntax::{LinkedNode, SyntaxKind};
 
+use crate::route::{self, Route};
 use crate::scene::{self, Call, Scene, Value};
 use crate::walk;
 
@@ -87,6 +88,71 @@ pub enum Edit {
     /// moves to just after it (in front of it), when that's allowed as
     /// `Reorder`; `created` then holds the moved call.
     Connect { call: usize, arg: usize, target: usize, anchor: String },
+    /// Draw a connector, an arrow from one call's anchor to another's,
+    /// straight or elbowed (see `route`), at the end of a canvas (default:
+    /// the first), naming either call first if it has no name. `created`
+    /// holds the line.
+    /// `detour` steps out from each side first (see `route`); `fixed` pins
+    /// it, as `SetFixed` does.
+    AddConnector {
+        canvas: Option<usize>,
+        from: usize,
+        from_anchor: String,
+        to: usize,
+        to_anchor: String,
+        route: Route,
+        #[serde(default)]
+        detour: bool,
+        /// How far a detour steps out (default `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
+        #[serde(default)]
+        fixed: bool,
+    },
+    /// Rewrite a connector's route as straight or elbowed, moving its ends
+    /// to other anchors of the same shapes when `from_anchor` or `to_anchor`
+    /// is given. An elbow crosses over halfway again, unless `keep_bend`.
+    Reroute {
+        call: usize,
+        route: Route,
+        from_anchor: Option<String>,
+        to_anchor: Option<String>,
+        #[serde(default)]
+        keep_bend: bool,
+        #[serde(default)]
+        detour: bool,
+        /// How far a detour steps out (default: as it does now, else `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
+    },
+    /// Move one end of a connector (its start, or its end with `to_end`) to
+    /// another call, naming that call if it has no name, joining the anchors
+    /// given for both ends and keeping its route and bend. With `fixed`, the
+    /// connector is pinned too. CeTZ knows names in drawing order, so a
+    /// connector drawn before its new shape moves to the end of the canvas;
+    /// `created` then holds it.
+    Reconnect {
+        call: usize,
+        to_end: bool,
+        target: usize,
+        from_anchor: String,
+        to_anchor: String,
+        fixed: bool,
+        #[serde(default)]
+        detour: bool,
+        /// How far a detour steps out (default: as it does now, else `route::STUB`).
+        #[serde(default)]
+        stub: Option<f64>,
+    },
+    /// Set how far a detouring elbow connector steps out from each side.
+    SetStub { call: usize, stub: f64 },
+    /// Pin a connector's sides (`fixed`) with a `// cetz-editor: fixed`
+    /// comment line above it, or unpin them, removing the comment. The
+    /// editor re-picks an unpinned connector's sides when its shapes move.
+    SetFixed { call: usize, fixed: bool },
+    /// Move where a two-corner elbow connector crosses over: `ratio` (0 to
+    /// 1) of the way from its start to its end.
+    Bend { call: usize, ratio: f64 },
     /// Copy the calls right after themselves, offset by `(dx, dy)`, without
     /// their `name:` so names stay unique.
     Duplicate { calls: Vec<usize>, dx: f64, dy: f64 },
@@ -356,6 +422,10 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
         }
         Edit::Delete { calls } => {
             for call in outermost(&scene, calls)? {
+                // A pinned connector's comment goes too, rather than pin what comes next.
+                if let Some(comment) = scene::fixed_comment(source, call.range.start).filter(|_| call.connector.is_some()) {
+                    patches.push(patch(comment, String::new()));
+                }
                 patches.push(patch(statement_range(source, &call.range), String::new()));
             }
         }
@@ -425,6 +495,136 @@ pub fn apply(source: &str, edit: &Edit) -> Result<EditResult, String> {
                 }
             };
             patches.push(patch(arg.value_range.clone(), format!("{:?}", format!("{name}.{anchor}"))));
+        }
+        Edit::AddConnector { canvas, from, from_anchor, to, to_anchor, route, detour, stub, fixed } => {
+            if from == to {
+                return Err("a connector needs two different shapes".into());
+            }
+            let canvas = match canvas {
+                Some(id) => scene.canvases.iter().find(|c| c.id == *id),
+                None => scene.canvases.first(),
+            }
+            .ok_or("no canvas to draw a connector in")?;
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            let mut fresh = Vec::new();
+            let mut end = |id: usize, anchor: &str, patches: &mut Vec<Patch>| -> Result<String, String> {
+                let target = find_call(&scene, id)?;
+                if !canvas.calls.iter().any(|c| c.id == id) {
+                    return Err("a connector's shapes must be in its canvas".into());
+                }
+                let path = path_from(&scene, target.parent, &(at..at)).ok_or("can't connect to a shape in a group with no name")?;
+                let name = match &target.name {
+                    Some(name) => name.clone(),
+                    None => {
+                        let name = unique_name_avoiding(&scene, base_name(&target.callee), &fresh);
+                        set_named(target, "name", Some(&format!("{name:?}")), patches)?;
+                        fresh.push(name.clone());
+                        name
+                    }
+                };
+                Ok(format!("{path}{name}.{anchor}"))
+            };
+            let from = end(*from, from_anchor, &mut patches)?;
+            let to = end(*to, to_anchor, &mut patches)?;
+            let text = format!("line({}, mark: (end: \">\"))", route::vertices(&from, &to, *route, 0.5, detour.then(|| stub.unwrap_or(route::STUB))).join(", "));
+            let pin = if *fixed { format!("// cetz-editor: fixed\n{}", prefix.trim_start_matches('\n')) } else { String::new() };
+            created.push((patches.len(), prefix.len() + pin.len()));
+            patches.push(patch(at..at, format!("{prefix}{pin}{text}{suffix}")));
+        }
+        Edit::Reroute { call, route, from_anchor, to_anchor, keep_bend, detour, stub } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().ok_or("only a connector can be rerouted")?;
+            let from = from_anchor.as_deref().map_or(connector.from.clone(), |a| route::with_anchor(&connector.from, a));
+            let to = to_anchor.as_deref().map_or(connector.to.clone(), |a| route::with_anchor(&connector.to, a));
+            let bend = if *keep_bend { connector.bend.unwrap_or(0.5) } else { 0.5 };
+            patches.push(patch(connector_points(call)?, route::vertices(&from, &to, *route, bend, detour.then(|| stub.or(connector.stub).unwrap_or(route::STUB))).join(", ")));
+        }
+        Edit::Reconnect { call, to_end, target, from_anchor, to_anchor, fixed, detour, stub } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().ok_or("only a connector can be reconnected")?;
+            let target = find_call(&scene, *target)?;
+            let canvas = scene.canvas_of(call.id).ok_or("the connector isn't in a canvas")?;
+            if target.id == call.id || !canvas.calls.iter().any(|c| c.id == target.id) {
+                return Err("a connector can only join shapes in its own canvas".into());
+            }
+            let moves = !defined_before(&scene, &target.range, call.range.start);
+            let (at, prefix, suffix) = insertion_point(source, canvas);
+            let used_at = if moves { at } else { call.range.start };
+            let path = path_from(&scene, target.parent, &(used_at..used_at)).ok_or("can't connect to a shape in a group with no name")?;
+            let name = match &target.name {
+                Some(name) => name.clone(),
+                None => {
+                    let name = unique_name(&scene, base_name(&target.callee));
+                    set_named(target, "name", Some(&format!("{name:?}")), &mut patches)?;
+                    name
+                }
+            };
+            let (from, to) = if *to_end {
+                (route::with_anchor(&connector.from, from_anchor), format!("{path}{name}.{to_anchor}"))
+            } else {
+                (format!("{path}{name}.{from_anchor}"), route::with_anchor(&connector.to, to_anchor))
+            };
+            let points = route::vertices(&from, &to, connector.route, connector.bend.unwrap_or(0.5), detour.then(|| stub.or(connector.stub).unwrap_or(route::STUB))).join(", ");
+            let range = connector_points(call)?;
+            let pinned = *fixed || connector.fixed;
+            if !moves {
+                patches.push(patch(range, points));
+                if pinned && !connector.fixed {
+                    let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+                    let indent = &source[line_start..call.range.start];
+                    if !indent.trim().is_empty() {
+                        return Err("put the connector on a line of its own to fix its sides".into());
+                    }
+                    patches.push(patch(line_start..line_start, format!("{indent}// cetz-editor: fixed\n")));
+                }
+            } else {
+                // Its text, with the new points, goes to the end of the canvas, its pin with it.
+                let mut text = source[call.range.clone()].to_string();
+                text.replace_range(range.start - call.range.start..range.end - call.range.start, &points);
+                if let Some(comment) = scene::fixed_comment(source, call.range.start) {
+                    patches.push(patch(comment, String::new()));
+                }
+                patches.push(patch(statement_range(source, &call.range), String::new()));
+                let indent = prefix.trim_start_matches('\n');
+                let comment = if pinned { format!("// cetz-editor: fixed\n{indent}") } else { String::new() };
+                created.push((patches.len(), prefix.len() + comment.len()));
+                patches.push(patch(at..at, format!("{prefix}{comment}{text}{suffix}")));
+            }
+        }
+        Edit::SetFixed { call, fixed } => {
+            let call = find_call(&scene, *call)?;
+            if call.connector.is_none() {
+                return Err("only a connector's sides can be fixed".into());
+            }
+            match (scene::fixed_comment(source, call.range.start), fixed) {
+                (None, true) => {
+                    let line_start = source[..call.range.start].rfind('\n').map_or(0, |i| i + 1);
+                    let indent = &source[line_start..call.range.start];
+                    if !indent.trim().is_empty() {
+                        return Err("put the connector on a line of its own to fix its sides".into());
+                    }
+                    patches.push(patch(line_start..line_start, format!("{indent}// cetz-editor: fixed\n")));
+                }
+                (Some(comment), false) => patches.push(patch(comment, String::new())),
+                _ => {}
+            }
+        }
+        Edit::Bend { call, ratio } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().filter(|c| c.bend.is_some()).ok_or("only an elbow with two corners can bend")?;
+            if !(0.0..=1.0).contains(ratio) {
+                return Err("a bend must be between its two ends".into());
+            }
+            patches.push(patch(connector_points(call)?, route::vertices(&connector.from, &connector.to, Route::Elbow, *ratio, connector.detour.then(|| connector.stub.unwrap_or(route::STUB))).join(", ")));
+        }
+        Edit::SetStub { call, stub } => {
+            let call = find_call(&scene, *call)?;
+            let connector = call.connector.as_ref().filter(|c| c.detour).ok_or("only a detouring elbow steps out")?;
+            if !(*stub > 0.0) {
+                return Err("a step out must be more than 0".into());
+            }
+            let points = route::vertices(&connector.from, &connector.to, Route::Elbow, connector.bend.unwrap_or(0.5), Some(*stub));
+            patches.push(patch(connector_points(call)?, points.join(", ")));
         }
         Edit::Duplicate { calls, dx, dy } => {
             for call in outermost(&scene, calls)? {
@@ -881,6 +1081,16 @@ fn connect_after(source: &str, scene: &Scene, call: usize, arg: usize, target: u
     Ok(EditResult { patches: vec![diff(source, &out.source)], source: out.source, created })
 }
 
+/// The range of a connector's points, from its start anchor to its end.
+fn connector_points(call: &Call) -> Result<Range<usize>, String> {
+    let positional: Vec<&scene::Arg> = call.args.iter().filter(|a| a.key.is_none()).collect();
+    let (first, last) = (positional.first().ok_or("no points")?, positional.last().ok_or("no points")?);
+    if call.args.iter().any(|a| a.key.is_some() && first.range.start < a.range.start && a.range.end < last.range.end) {
+        return Err("a connector's points must come before its named arguments".into());
+    }
+    Ok(first.range.start..last.range.end)
+}
+
 /// Where an offset lands after the patches (each from the same source).
 fn map_offset(patches: &[Patch], at: usize) -> usize {
     let shift: isize = patches.iter().filter(|p| p.end <= at).map(|p| p.text.len() as isize - (p.end - p.start) as isize).sum();
@@ -1020,7 +1230,12 @@ fn insertion_point(source: &str, canvas: &scene::Canvas) -> (usize, String, Stri
 
 /// `base`, `base-2`, `base-3`, ... whichever isn't taken in the scene.
 fn unique_name(scene: &Scene, base: &str) -> String {
-    let taken = |n: &str| scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
+    unique_name_avoiding(scene, base, &[])
+}
+
+/// Like `unique_name`, also skipping names the edit has just given out.
+fn unique_name_avoiding(scene: &Scene, base: &str, given: &[String]) -> String {
+    let taken = |n: &str| given.iter().any(|g| g == n) || scene.canvases.iter().flat_map(|c| &c.calls).any(|c| c.name.as_deref() == Some(n));
     if !taken(base) {
         return base.to_string();
     }
@@ -2521,5 +2736,143 @@ mod tests {
         assert_eq!(num(-0.00001), "0");
         assert_eq!(num(1.23456), "1.2346");
         assert_eq!(num(0.1 + 0.2), "0.3");
+    }
+
+    #[test]
+    fn add_connector_names_its_shapes_and_draws_after_them() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1))
+  group(name: "g", { rect((0, -3), (2, -2), name: "b") })
+  rect((4, 0), (5, 1))
+})
+"#;
+        let a = src.find("rect((0, 0)").unwrap();
+        let b = src.find("rect((0, -3)").unwrap();
+        let c = src.find("rect((4, 0)").unwrap();
+        let edit = |from, to, route| Edit::AddConnector { canvas: None, from, from_anchor: "south".into(), to, to_anchor: "north".into(), route, detour: false, stub: None, fixed: false };
+        let out = apply(src, &edit(a, b, Route::Elbow)).unwrap();
+        assert!(out.source.contains(r#"rect((0, 0), (2, 1), name: "rect")"#), "{}", out.source);
+        assert!(out.source.contains(r#"line("rect.south", ("rect.south", "|-", ("rect.south", 50%, "g.b.north")), ("g.b.north", "|-", ("rect.south", 50%, "g.b.north")), "g.b.north", mark: (end: ">"))"#), "{}", out.source);
+        assert!(out.source[out.created[0]..].starts_with("line("));
+
+        // Two unnamed shapes get two different names.
+        let out = apply(src, &edit(a, c, Route::Straight)).unwrap();
+        assert!(out.source.contains(r#"name: "rect")"#) && out.source.contains(r#"name: "rect-2")"#), "{}", out.source);
+        assert!(out.source.contains(r#"line("rect.south", "rect-2.north", mark: (end: ">"))"#), "{}", out.source);
+
+        assert!(apply(src, &edit(a, a, Route::Straight)).is_err());
+
+        let pinned = Edit::AddConnector { canvas: None, from: a, from_anchor: "south".into(), to: c, to_anchor: "north".into(), route: Route::Straight, detour: false, stub: None, fixed: true };
+        let out = apply(src, &pinned).unwrap();
+        assert!(out.source.contains("  // cetz-editor: fixed\n  line(\"rect.south\", \"rect-2.north\""), "{}", out.source);
+        assert!(out.source[out.created[0]..].starts_with("line("));
+    }
+
+    #[test]
+    fn reconnect_moves_an_end_keeping_route_and_bend() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1), name: "a")
+  rect((3, -3), (5, -2), name: "b")
+  rect((6, 0), (8, 1))
+  line("a.south", ("a.south", "|-", ("a.south", 30%, "b.north")), ("b.north", "|-", ("a.south", 30%, "b.north")), "b.north", mark: (end: ">"))
+  rect((0, -6), (2, -5), name: "late")
+})
+"#;
+        let line = src.find("line(").unwrap();
+        let c = src.find("rect((6, 0)").unwrap();
+        let reconnect = |target: usize, to_end, from_anchor: &str, to_anchor: &str, fixed| Edit::Reconnect {
+            call: line,
+            to_end,
+            target,
+            from_anchor: from_anchor.into(),
+            to_anchor: to_anchor.into(),
+            fixed,
+            detour: false,
+            stub: None,
+        };
+        // To a shape drawn before it: rewritten in place, the shape named.
+        let out = apply(src, &reconnect(c, true, "south", "north", false)).unwrap().source;
+        assert!(out.contains(r#"rect((6, 0), (8, 1), name: "rect")"#), "{out}");
+        assert!(out.contains(r#"line("a.south", ("a.south", "|-", ("a.south", 30%, "rect.north")), ("rect.north", "|-", ("a.south", 30%, "rect.north")), "rect.north", mark"#), "{out}");
+        // Onto an anchor: pinned.
+        let out = apply(src, &reconnect(c, false, "west", "north", true)).unwrap().source;
+        assert!(out.contains("  // cetz-editor: fixed\n  line(\"rect.west\", (\"rect.west\", \"-|\", \"b.north\")"), "{out}");
+        // To a shape drawn after it: moved to the end, after that shape.
+        let late = src.find("rect((0, -6)").unwrap();
+        let out = apply(src, &reconnect(late, true, "south", "north", true)).unwrap();
+        assert!(out.source.ends_with("  rect((0, -6), (2, -5), name: \"late\")\n  // cetz-editor: fixed\n  line(\"a.south\", (\"a.south\", \"|-\", (\"a.south\", 30%, \"late.north\")), (\"late.north\", \"|-\", (\"a.south\", 30%, \"late.north\")), \"late.north\", mark: (end: \">\"))\n})\n"), "{}", out.source);
+        assert!(out.source[out.created[0]..].starts_with("line("));
+        assert!(apply(src, &reconnect(line, true, "south", "north", false)).is_err());
+    }
+
+    #[test]
+    fn reroute_switches_between_straight_and_elbow() {
+        let src = r#"#import "@preview/cetz:0.5.2": canvas, draw
+#canvas({
+  import draw: *
+  rect((0, 0), (2, 1), name: "a")
+  rect((3, -3), (5, -2), name: "b")
+  line("a.south", "b.north", mark: (end: ">"), stroke: red)
+})
+"#;
+        let line = src.find("line(").unwrap();
+        let scene = scene::parse(src);
+        assert_eq!(scene.call(line).unwrap().connector.as_ref().map(|c| c.route), Some(Route::Straight));
+
+        let reroute = |src: &str, route, from_anchor: Option<&str>| {
+            let line = src.find("line(").unwrap();
+            apply(src, &Edit::Reroute { call: line, route, from_anchor: from_anchor.map(Into::into), to_anchor: None, keep_bend: false, detour: false, stub: None }).unwrap().source
+        };
+        let elbow = reroute(src, Route::Elbow, None);
+        let call = scene::parse(&elbow).call(line).unwrap().clone();
+        assert_eq!(call.connector.map(|c| c.route), Some(Route::Elbow), "{elbow}");
+        assert!(elbow.contains(r#""b.north", mark: (end: ">"), stroke: red)"#));
+
+        let side = reroute(&elbow, Route::Elbow, Some("east"));
+        assert!(side.contains(r#"line("a.east", ("a.east", "-|", "b.north"), "b.north", mark"#), "{side}");
+        assert_eq!(reroute(&elbow, Route::Straight, None), src);
+
+        // Pinning adds a comment above it; unpinning or deleting it takes the comment away.
+        let fixed = apply(src, &Edit::SetFixed { call: line, fixed: true }).unwrap().source;
+        assert!(fixed.contains("  // cetz-editor: fixed\n  line(\"a.south\""), "{fixed}");
+        let fixed_line = fixed.find("line(").unwrap();
+        assert!(scene::parse(&fixed).call(fixed_line).unwrap().connector.as_ref().unwrap().fixed);
+        assert_eq!(apply(&fixed, &Edit::SetFixed { call: fixed_line, fixed: false }).unwrap().source, src);
+        assert!(!apply(&fixed, &Edit::Delete { calls: vec![fixed_line] }).unwrap().source.contains("cetz-editor"));
+
+        // Bending moves where it crosses over; rerouting puts it back halfway.
+        let line_at = elbow.find("line(").unwrap();
+        assert_eq!(scene::parse(&elbow).call(line_at).unwrap().connector.as_ref().unwrap().bend, Some(0.5));
+        let bent = apply(&elbow, &Edit::Bend { call: line_at, ratio: 0.25 }).unwrap().source;
+        assert!(bent.contains(r#"("a.south", "|-", ("a.south", 25%, "b.north")), ("b.north", "|-", ("a.south", 25%, "b.north"))"#), "{bent}");
+        assert_eq!(scene::parse(&bent).call(line_at).unwrap().connector.as_ref().unwrap().bend, Some(0.25));
+        assert_eq!(reroute(&bent, Route::Elbow, None), elbow);
+        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: Some("east".into()), to_anchor: None, keep_bend: true, detour: false, stub: None }).unwrap().source;
+        assert!(kept.contains(r#"line("a.east", ("a.east", "-|", "b.north")"#), "an L has no bend to keep: {kept}");
+        let kept = apply(&bent, &Edit::Reroute { call: line_at, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: true, detour: false, stub: None }).unwrap().source;
+        assert_eq!(kept, bent);
+        assert!(apply(src, &Edit::Bend { call: line, ratio: 0.25 }).is_err(), "a straight connector doesn't bend");
+
+        // A detour reads back as one, bend and all, and bends as one.
+        let detour = apply(src, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: true, stub: None }).unwrap().source;
+        let c = scene::parse(&detour).call(line).unwrap().connector.clone().unwrap();
+        assert!(c.detour && c.route == Route::Elbow && c.bend == Some(0.5), "{detour}");
+        let bent = apply(&detour, &Edit::Bend { call: line, ratio: 0.25 }).unwrap().source;
+        assert!(bent.contains(r#"((rel: (0, -0.5), to: "a.south"), "-|", ("a.south", 25%, "b.north"))"#), "{bent}");
+        // Its step out can change, and stays through a bend.
+        let far = apply(&bent, &Edit::SetStub { call: line, stub: 1.0 }).unwrap().source;
+        let c = scene::parse(&far).call(line).unwrap().connector.clone().unwrap();
+        assert_eq!((c.stub, c.bend), (Some(1.0), Some(0.25)), "{far}");
+        let rebent = apply(&far, &Edit::Bend { call: line, ratio: 0.5 }).unwrap().source;
+        assert!(rebent.contains(r#"(rel: (0, -1), to: "a.south")"#), "{rebent}");
+        assert!(apply(src, &Edit::SetStub { call: line, stub: 1.0 }).is_err(), "a plain elbow has no step out");
+
+        let plain = src.replace(r#""a.south", "b.north""#, "(0, 0), (1, 1)");
+        let line = plain.find("line(").unwrap();
+        assert!(apply(&plain, &Edit::Reroute { call: line, route: Route::Elbow, from_anchor: None, to_anchor: None, keep_bend: false, detour: false, stub: None }).is_err());
     }
 }

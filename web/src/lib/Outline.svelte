@@ -3,6 +3,7 @@
   // definitions, editable when they're literal points) and shapes (the draw
   // calls; groups fold, loops expand into the repetitions CeTZ drew, read-only).
   import type { Editor } from "./editor.svelte";
+  import { endShape, ROUTE_ICONS } from "./connectors";
   import { num } from "./format";
   import { isVec, type Probe, type Vec3 } from "./probe";
   import { baseName, type Call, type Point, type Variable } from "./scene";
@@ -191,9 +192,10 @@
 
   // --- Icons ---------------------------------------------------------------
 
-  type Kind = "line" | "arrow" | "rect" | "circle" | "polygon" | "curve" | "text" | "anchor" | "group" | "style" | "transform" | "other";
+  type Kind = "connector" | "line" | "arrow" | "rect" | "circle" | "polygon" | "curve" | "text" | "anchor" | "group" | "style" | "transform" | "other";
 
   const ICONS: Record<Kind, string> = {
+    connector: ROUTE_ICONS.elbow,
     line: "M5 19L19 5",
     arrow: "M5 19L19 5M11 5h8v8",
     rect: "M4 6h16v12H4z",
@@ -272,6 +274,7 @@
 
   /** What a call draws: by its name for CeTZ's own functions, else from what the probe saw. */
   function kindOf(call: Call): Kind {
+    if (call.connector) return "connector";
     const known = BY_NAME[baseName(call.callee)];
     if (known === "line") {
       // `line(..., close: true)` draws a polygon; marks come after the path.
@@ -530,16 +533,25 @@
             onpointerleave={() => (editor.hovered = undefined)}
           >
             <span class="icon" title={kind}>
-              <svg viewBox="0 0 24 24"><path d={ICONS[kind]} style:fill={fillOf(call, kind)} /></svg>
+              <svg viewBox="0 0 24 24"><path d={call.connector ? ROUTE_ICONS[call.connector.route] : ICONS[kind]} style:fill={fillOf(call, kind)} /></svg>
               {#if looped}
                 <span class="flow" title="Drawn by a loop">↻</span>
               {:else if call.conditional}
                 <span class="flow" title="Only drawn when its condition holds">⑂</span>
               {/if}
             </span>
-            <span class="name">{call.callee}</span>
-            {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
-            <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
+            {#if call.connector}
+              {@const c = call.connector}
+              <span class="name">connector</span>
+              <span class="meta" title="{c.from} → {c.to}">{call.name ? `${call.name}: ` : ""}{endShape(c.from)} → {endShape(c.to)}</span>
+              <span class="tag" title="Route">{c.route}</span>
+              {#if c.bend !== null && Math.abs(c.bend - 0.5) > 1e-9}<span class="tag" title="Where the elbow crosses over">{num(c.bend * 100)}%</span>{/if}
+              {#if c.fixed}<span class="tag" title="Its sides are fixed: moving its shapes keeps them">fixed</span>{/if}
+            {:else}
+              <span class="name">{call.callee}</span>
+              {#if looped}<span class="pill" title="Shapes this call drew">×{instances.length}</span>{/if}
+              <span class="meta">{looped ? loopLabel(call) : summary(call)}</span>
+            {/if}
           </button>
           {@render removeButton(looped ? "Delete call (all its repetitions)" : "Delete", () => remove([call.id], []))}
         </div>
@@ -818,6 +830,15 @@
     font-size: 8px;
     font-weight: 700;
     line-height: 1;
+  }
+  .tag {
+    flex: none;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font: 500 10.5px ui-monospace, "SF Mono", Menlo, monospace;
+    line-height: 14px;
   }
   .pill {
     flex: none;

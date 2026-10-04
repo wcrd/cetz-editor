@@ -23,9 +23,14 @@ import {
   type Layer,
   type Patch,
   type Range,
+  type Route,
 } from "./scene";
+import { endShape, needsDetour, pickAnchor, STUB } from "./connectors";
 
-export type Tool = "select" | "line" | "arrow" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
+/** The anchor a connector's end joins (`south` of `"g.a.south"`). */
+const sideOf = (anchor: string) => anchor.slice(anchor.lastIndexOf(".") + 1);
+
+export type Tool = "select" | "line" | "arrow" | "connector" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
 
 /** What the code pane exposes to the editor. */
 export interface CodeHandle {
@@ -89,6 +94,10 @@ export class Prefs {
   infinite = $state(true);
   /** Rulers in canvas units along the canvas's top and left edges. */
   showRulers = $state(true);
+  /** How the connector tool routes new connectors. */
+  route = $state<Route>("elbow");
+  /** How far a detouring elbow steps out from each side, unless it already has its own. */
+  stub = $state(STUB);
 }
 
 interface Draft {
@@ -145,6 +154,8 @@ export class Editor {
   set tool(v) { this.prefs.tool = v; }
   get snap() { return this.prefs.snap; }
   set snap(v) { this.prefs.snap = v; }
+  get route() { return this.prefs.route; }
+  set route(v) { this.prefs.route = v; }
   /** The active canvas's grid step: from its file's comment, else the default. */
   gridStep = $derived.by(() => {
     const grid = this.prefs.gridInFile ? this.scene.canvases.find((c) => c.id === this.activeCanvas)?.grid : null;
@@ -320,7 +331,7 @@ export class Editor {
 
   /** Applies an edit as one undoable change. Returns false if it failed. */
   edit(edit: Edit): boolean {
-    return this.chain([edit]);
+    return this.chain([this.withConnectors(edit)]);
   }
 
   /**
@@ -416,6 +427,129 @@ export class Editor {
       const what = points.length === 1 ? `Deleted ${this.pointLabel(points[0])}` : `Deleted ${points.length} points`;
       this.flash(kept > 0 ? `${what} · ${kept} use${kept === 1 ? "" : "s"} kept as coordinates` : what);
     }
+  }
+
+  // --- Connectors ------------------------------------------------------------
+
+  /** A shape's anchors on the page, by name. */
+  anchorsOf(id: number): Record<string, [number, number]> {
+    const probe = this.probes.find((p) => p.id === id);
+    if (!probe) return {};
+    const frame = { origin: probe.origin, length: probe.length };
+    const out: Record<string, [number, number]> = {};
+    for (const [name, v] of Object.entries(probe.anchors)) if (isVec(v)) out[name] = this.toPage(frame, v);
+    return out;
+  }
+
+  /**
+   * The anchors a connector between two shapes joins (see `pickAnchor`).
+   * An end given an anchor keeps it, and the other end faces that point.
+   */
+  connectorAnchors(
+    from: number,
+    to: number,
+    route: Route,
+    fromAnchor?: string,
+    toAnchor?: string,
+    shift?: Map<number, [number, number]>,
+  ): [string, string] | undefined {
+    // Shapes about to move are judged where they'll be, `shift` (page) away.
+    const by = (id: number): [number, number] => shift?.get(id) ?? [0, 0];
+    const box = (id: number) => {
+      const b = this.boundsOf(id);
+      const [sx, sy] = by(id);
+      return b && { x0: b.x0 + sx, y0: b.y0 + sy, x1: b.x1 + sx, y1: b.y1 + sy };
+    };
+    const anchors = (id: number) => {
+      const [sx, sy] = by(id);
+      return Object.fromEntries(Object.entries(this.anchorsOf(id)).map(([k, [x, y]]) => [k, [x + sx, y + sy] as [number, number]]));
+    };
+    const [fromBox, toBox] = [box(from), box(to)];
+    if (!fromBox || !toBox) return undefined;
+    const [fromAnchors, toAnchors] = [anchors(from), anchors(to)];
+    const at = (p: [number, number] | undefined, box: typeof fromBox) => (p ? { x0: p[0], y0: p[1], x1: p[0], y1: p[1] } : box);
+    const a = fromAnchor ?? pickAnchor(fromBox, fromAnchors, at(toAnchor ? toAnchors[toAnchor] : undefined, toBox), route);
+    const b = toAnchor ?? pickAnchor(toBox, toAnchors, at(fromAnchor ? fromAnchors[fromAnchor] : undefined, fromBox), route);
+    return a && b ? [a, b] : undefined;
+  }
+
+  /**
+   * Reroutes connectors as straight or elbowed, re-picking the anchors of
+   * the shapes they join (by name, at the top level) to suit the new route.
+   * Pinned connectors keep their anchors, and their bend unless the route
+   * changes.
+   */
+  reroute(ids: number[], route: Route): boolean {
+    const edits: Edit[] = ids.flatMap((id) => {
+      const connector = this.callById.get(id)?.connector;
+      if (!connector) return [];
+      const [from, to] = [this.connectorEnd(connector.from), this.connectorEnd(connector.to)];
+      const both = from !== undefined && to !== undefined;
+      if (connector.fixed) {
+        const detour = both && this.connectorDetour(from, to, [sideOf(connector.from), sideOf(connector.to)], route);
+        return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route, detour, stub: connector.stub ?? this.prefs.stub }];
+      }
+      const anchors = both ? this.connectorAnchors(from, to, route) : undefined;
+      const detour = both && anchors !== undefined && this.connectorDetour(from, to, anchors, route);
+      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null, detour, stub: connector.stub ?? this.prefs.stub }];
+    });
+    return edits.length > 0 && this.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
+  /**
+   * Whether an elbow joining these anchors of two shapes must detour (see
+   * `needsDetour`), judging shapes about to move `shift` (page) away.
+   */
+  connectorDetour(from: number, to: number, [fromAnchor, toAnchor]: [string, string], route: Route, shift?: Map<number, [number, number]>): boolean {
+    if (route !== "elbow") return false;
+    const at = (id: number, anchor: string): [number, number] | undefined => {
+      const p = this.anchorsOf(id)[anchor];
+      const [sx, sy] = shift?.get(id) ?? [0, 0];
+      return p && [p[0] + sx, p[1] + sy];
+    };
+    const [a, b] = [at(from, fromAnchor), at(to, toAnchor)];
+    return a !== undefined && b !== undefined && needsDetour(a, fromAnchor, b, toAnchor);
+  }
+
+  /** The top-level shape a connector's end (`"a.south"`) names. */
+  connectorEnd(anchor: string): number | undefined {
+    const name = endShape(anchor);
+    return this.calls.find((c) => c.name === name && c.parent === null)?.id;
+  }
+
+  /**
+   * `edit`, plus re-picking the sides of the connectors joined to shapes it
+   * moves, unless they're pinned (`fixed`), and whether elbows detour,
+   * pinned or not. All of it is worked out from where the shapes will be,
+   * so it shows in a drag's preview too, and a bend stays where it was
+   * along the way.
+   */
+  withConnectors(edit: Edit): Edit {
+    const moves = (edit.kind === "batch" ? edit.edits : [edit]).filter((e) => e.kind === "move");
+    if (moves.length === 0 || !this.calls.some((c) => c.connector)) return edit;
+    const shift = new Map<number, [number, number]>();
+    for (const move of moves) {
+      for (const id of move.calls) {
+        const family = this.family(id);
+        const probe = this.probes.find((p) => family.has(p.id));
+        if (!probe) continue;
+        const m = probe.transform;
+        const [wx, wy] = m ? [m[0][0] * move.dx + m[0][1] * move.dy, m[1][0] * move.dx + m[1][1] * move.dy] : [move.dx, move.dy];
+        for (const f of family) shift.set(f, [wx * probe.length, -wy * probe.length]);
+      }
+    }
+    const reroutes: Edit[] = this.calls.flatMap((call) => {
+      const c = call.connector;
+      const [from, to] = c ? [this.connectorEnd(c.from), this.connectorEnd(c.to)] : [];
+      if (!c || from === undefined || to === undefined || (!shift.has(from) && !shift.has(to))) return [];
+      const kept: [string, string] = [sideOf(c.from), sideOf(c.to)];
+      const anchors = c.fixed ? kept : this.connectorAnchors(from, to, c.route, undefined, undefined, shift);
+      if (!anchors) return [];
+      const detour = this.connectorDetour(from, to, anchors, c.route, shift);
+      if (anchors[0] === kept[0] && anchors[1] === kept[1] && detour === c.detour) return [];
+      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: c.fixed ? null : anchors[0], to_anchor: c.fixed ? null : anchors[1], keep_bend: true, detour, stub: c.stub ?? this.prefs.stub }];
+    });
+    return reroutes.length ? { kind: "batch", edits: [edit, ...reroutes] } : edit;
   }
 
   // --- Align and distribute ---------------------------------------------------
@@ -611,7 +745,7 @@ export class Editor {
       return true;
     }
     try {
-      const result = applyEdit(this.source, edit);
+      const result = applyEdit(this.source, this.withConnectors(edit));
       this.draft = { source: result.source, patches: result.patches, dx, dy };
       return true;
     } catch {
