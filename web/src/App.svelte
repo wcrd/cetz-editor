@@ -36,7 +36,7 @@
   });
 
   function onbeforeunload(e: BeforeUnloadEvent) {
-    saveSession(tabs);
+    saveSession(tabs, true);
     if (tabs.editors.some((t) => t.dirty)) e.preventDefault();
   }
 

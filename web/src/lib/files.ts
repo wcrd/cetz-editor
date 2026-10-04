@@ -216,7 +216,13 @@ export function restoreSession(tabs: Tabs, session: { tabs: SavedTab[]; active: 
   });
 }
 
-export function saveSession(tabs: Tabs) {
+/**
+ * Saves the open tabs. While the page is `unloading`, only the synchronous
+ * part: an IndexedDB write of file handles still in flight as the tab closes
+ * crashes Edge's whole browser process. The handles were saved when they last
+ * changed anyway (the debounced save while the page was open).
+ */
+export function saveSession(tabs: Tabs, unloading = false) {
   try {
     const saved: SavedTab[] = tabs.editors.map((editor) => ({
       source: editor.source,
@@ -229,8 +235,12 @@ export function saveSession(tabs: Tabs) {
   } catch {
     // Ignore: the session just won't be restored.
   }
+  if (unloading) return;
+  const handles = tabs.editors.map((editor) => editor.handle);
+  if (handles.length === savedHandles?.length && handles.every((h, i) => h === savedHandles![i])) return;
+  savedHandles = handles;
   // Wait for the restore, or this could overwrite the handles it's reading.
-  void relinked.then(() => saveHandles(tabs.editors.map((editor) => editor.handle)));
+  void relinked.then(() => saveHandles(handles));
 }
 
 // File handles can't go in localStorage, but IndexedDB can store them: one
@@ -238,6 +248,8 @@ export function saveSession(tabs: Tabs) {
 // package cache owns the "cetz-editor" one and its version.)
 const HANDLES_KEY = "tab-handles";
 let relinked: Promise<void> = Promise.resolve();
+/** The handles last written, to skip writes when only the text changed. */
+let savedHandles: (FileHandle | undefined)[] | undefined;
 
 function handleStore<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
