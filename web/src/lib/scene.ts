@@ -67,6 +67,8 @@ export interface Connector {
   to: string;
   /** How far from `from` to `to` (0 to 1) a two-corner elbow crosses over. */
   bend: number | null;
+  /** Steps out from each side first, as an elbow whose side faces away from the other end does. */
+  detour: boolean;
   /** Pinned by a `// cetz-editor: fixed` comment: its sides stay put when its shapes move. */
   fixed: boolean;
 }
@@ -126,10 +128,10 @@ export type Edit =
   | { kind: "insert-library"; canvas: number | null; module: string; text: string }
   | { kind: "paste"; canvas: number | null; text: string; dx: number; dy: number }
   | { kind: "connect"; call: number; arg: number; target: number; anchor: string }
-  | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route }
-  | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null; keep_bend?: boolean }
+  | { kind: "add-connector"; canvas: number | null; from: number; from_anchor: string; to: number; to_anchor: string; route: Route; detour?: boolean; fixed?: boolean }
+  | { kind: "reroute"; call: number; route: Route; from_anchor: string | null; to_anchor: string | null; keep_bend?: boolean; detour?: boolean }
   | { kind: "set-fixed"; call: number; fixed: boolean }
-  | { kind: "reconnect"; call: number; to_end: boolean; target: number; from_anchor: string; to_anchor: string; fixed: boolean }
+  | { kind: "reconnect"; call: number; to_end: boolean; target: number; from_anchor: string; to_anchor: string; fixed: boolean; detour?: boolean }
   | { kind: "bend"; call: number; ratio: number }
   | { kind: "duplicate"; calls: number[]; dx: number; dy: number }
   | { kind: "rotate"; call: number; angle: number; x: number; y: number }

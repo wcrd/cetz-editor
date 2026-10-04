@@ -7,7 +7,7 @@
   import { isVec, pathData, probeBounds, transformPoint, untransformDelta, type Probe, type Vec3 } from "./probe";
   import { baseName, STATE_CALLS, type Call, type Connector, type Edit, type Range } from "./scene";
   import { num } from "./format";
-  import { COMPASS, routePoints } from "./connectors";
+  import { COMPASS, outward, routePoints, STUB, vertical } from "./connectors";
   import { crisp, visibleStep } from "./pixels";
   import Rulers from "./Rulers.svelte";
 
@@ -559,26 +559,34 @@
   });
 
   /**
-   * The handle on a two-corner elbow connector's middle segment: dragged
-   * along the way the connector runs, it moves where it crosses over, in
-   * steps of 5% of the way (⌘: free), keeping clear of the ends.
+   * The handle on an elbow connector's middle segment: dragged along the
+   * way the connector runs, it moves where it crosses over, in steps of 5%
+   * of the way (⌘: free), keeping clear of the ends.
    */
   function bendHandles(call: Call, probe: Probe): Reshape[] {
     const connector = call.connector;
     const at = (anchor: string): Point | undefined => {
-      const dot = anchor.lastIndexOf(".");
-      const id = editor.calls.find((c) => c.name === anchor.slice(0, dot) && c.parent === null)?.id;
-      return id === undefined ? undefined : editor.anchorsOf(id)[anchor.slice(dot + 1)];
+      const id = editor.connectorEnd(anchor);
+      return id === undefined ? undefined : editor.anchorsOf(id)[anchor.slice(anchor.lastIndexOf(".") + 1)];
     };
     const [a, b] = connector ? [at(connector.from), at(connector.to)] : [];
     if (!connector || connector.bend === null || !a || !b) return [];
     const bend = connector.bend;
-    // Out of a north or south side it runs up or down, so it crosses over at a height.
-    const down = !/(east|west)$/.test(connector.from);
-    const axis = down ? 1 : 0;
+    // Out of a north or south side a plain elbow runs up or down, so it
+    // crosses over at a height; a detour's middle segment runs across.
+    const axis = vertical(connector.from) !== connector.detour ? 1 : 0;
+    const other = 1 - axis;
     const span = b[axis] - a[axis];
     if (Math.abs(span) < 1e-9) return [];
-    const place = (t: number): Point => (down ? [(a[0] + b[0]) / 2, a[1] + t * span] : [a[0] + t * span, (a[1] + b[1]) / 2]);
+    const stub = connector.detour ? STUB * probe.length : 0;
+    const [da, db] = [outward(connector.from), outward(connector.to)];
+    const across = (a[other] + da[other] * stub + b[other] + db[other] * stub) / 2;
+    const place = (t: number): Point => {
+      const q: Point = [0, 0];
+      q[axis] = a[axis] + t * span;
+      q[other] = across;
+      return q;
+    };
     const edit = (p: Point): Edit | undefined => {
       const raw = (localToPage(probe, p)[axis] - a[axis]) / span;
       const ratio = Math.min(0.95, Math.max(0.05, mods.free ? raw : Math.round(raw * 20) / 20));
@@ -2149,7 +2157,9 @@
     const anchors = editor.connectorAnchors(d.from.target, d.to.target, editor.route, d.from.anchor, d.to.anchor);
     if (!anchors) return undefined;
     const [a, b] = [editor.anchorsOf(d.from.target)[anchors[0]], editor.anchorsOf(d.to.target)[anchors[1]]];
-    return { anchors, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route) : [] };
+    const stub = STUB * editor.frameFor(editor.canvasOfCall.get(d.from.target)).length;
+    const detour = editor.connectorDetour(d.from.target, d.to.target, anchors, editor.route);
+    return { anchors, detour, points: a && b ? routePoints(a, anchors[0], b, anchors[1], editor.route, { stub }) : [] };
   }
 
   /**
@@ -2179,7 +2189,10 @@
       editor.endDrag();
       return;
     }
-    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined };
+    const detour = toEnd
+      ? editor.connectorDetour(other!, end.target, anchors, connector.route)
+      : editor.connectorDetour(end.target, other!, anchors, connector.route);
+    const edit: Edit = { kind: "reconnect", call: d.call, to_end: toEnd, target: end.target, from_anchor: anchors[0], to_anchor: anchors[1], fixed: end.anchor !== undefined, detour };
     if (!editor.previewEdit(edit)) return editor.endDrag();
     d.edit = edit;
     d.snap = endHover(end)?.snap;
@@ -2191,7 +2204,7 @@
     if (!d.to || !route) return;
     const [from_anchor, to_anchor] = route.anchors;
     const canvas = editor.canvasOfCall.get(d.from.target) ?? null;
-    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route })) {
+    if (editor.edit({ kind: "add-connector", canvas, from: d.from.target, from_anchor, to: d.to.target, to_anchor, route: editor.route, detour: route.detour, fixed: d.from.anchor !== undefined || d.to.anchor !== undefined })) {
       editor.tool = "select";
     }
   }

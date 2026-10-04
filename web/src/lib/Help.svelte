@@ -39,7 +39,7 @@
         inspector's Route switches a selected one and re-picks its sides. Drag the dot on a selected elbow's middle segment to
         move where it crosses over, or set it as a percentage in the inspector's Bend. Moving shapes re-picks their connectors'
         sides, unless Sides is Fixed. Drag a connector's end handle onto another shape to reconnect it; dropping it on an anchor
-        pins it.
+        pins it. An elbow whose side faces away from the other end steps out from it first and goes around.
       </p>
     </section>
 

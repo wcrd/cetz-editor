@@ -1,7 +1,12 @@
 //! Connectors: lines from one shape's anchor to another's, straight or
 //! elbowed. An elbow's corners are written relative to the two anchors
 //! (`("a.south", "|-", ("a.south", 50%, "b.north"))`), so CeTZ routes it
-//! afresh whenever either shape moves.
+//! afresh whenever either shape moves. When a side faces away from the other
+//! end (out of `a.south` to a shape above), the elbow detours: each end
+//! steps `STUB` out from its side first (`(rel: (0, -0.5), to: "a.south")`)
+//! and the route joins those two points. Which form fits depends on where
+//! the shapes are, which the editor knows and CeTZ code can't ask, so the
+//! editor picks it when it writes the connector.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +29,9 @@ pub struct Connector {
     /// How far from `from` to `to` (0 to 1) a two-corner elbow crosses
     /// over, when it's written as a plain percentage.
     pub bend: Option<f64>,
+    /// Steps out from each side first, as an elbow whose side faces away
+    /// from the other end does.
+    pub detour: bool,
     /// Pinned by a `// cetz-editor: fixed` comment above it: its sides stay
     /// put when the shapes it joins move.
     pub fixed: bool,
@@ -45,11 +53,32 @@ pub fn detect(callee: &str, args: &[Arg]) -> Option<Connector> {
     let corners = &positional[1..positional.len() - 1];
     let route = match corners.len() {
         0 if positional.len() == 2 => Route::Straight,
-        1 | 2 if corners.iter().all(|a| matches!(a.value, Value::Expr) && (a.text.contains("\"|-\"") || a.text.contains("\"-|\""))) => Route::Elbow,
+        1..=4 if corners.iter().all(|a| matches!(a.value, Value::Expr) && (is_stub(&a.text) || a.text.contains("\"|-\"") || a.text.contains("\"-|\""))) => Route::Elbow,
         _ => return None,
     };
-    let bend = (corners.len() == 2).then(|| bend(&corners[0].text, &from)).flatten();
-    Some(Connector { route, from, to, bend, fixed: false })
+    let detour = corners.iter().any(|a| is_stub(&a.text));
+    let bend = if detour || corners.len() == 2 { corners.iter().find_map(|c| bend(&c.text, &from)) } else { None };
+    Some(Connector { route, from, to, bend, detour, fixed: false })
+}
+
+/// How far (canvas units) a detouring elbow steps out from each side.
+pub const STUB: f64 = 0.5;
+
+fn is_stub(text: &str) -> bool {
+    text.starts_with("(rel:")
+}
+
+/// The point `STUB` out from an anchor, the way its side faces:
+/// `(rel: (0, -0.5), to: "a.south")`.
+fn stub(anchor: &str) -> String {
+    let side = anchor.rsplit('.').next().unwrap_or(anchor);
+    let (dx, dy) = match side {
+        "east" => (STUB, 0.0),
+        "west" => (-STUB, 0.0),
+        s if s.contains("north") => (0.0, STUB),
+        _ => (0.0, -STUB),
+    };
+    format!("(rel: ({}, {}), to: {anchor:?})", num(dx), num(dy))
 }
 
 /// The `50%` in a corner `("a.south", "|-", ("a.south", 50%, "b.north"))`.
@@ -63,13 +92,26 @@ fn bend(corner: &str, from: &str) -> Option<f64> {
 /// anchors. An elbow leaves and enters each shape square to the side it's
 /// on: two corners halfway along when both sides face the same way (south
 /// to north), `bend` (0 to 1) of the way along, or one where the two
-/// directions meet otherwise (east to north).
-pub fn vertices(from: &str, to: &str, route: Route, bend: f64) -> Vec<String> {
+/// directions meet otherwise (east to north). A `detour` steps out from
+/// both sides first, then joins those points the same way, its middle
+/// segment `bend` of the way across when the sides face the same way.
+pub fn vertices(from: &str, to: &str, route: Route, bend: f64, detour: bool) -> Vec<String> {
     let (a, b) = (format!("{from:?}"), format!("{to:?}"));
     if route == Route::Straight {
         return vec![a, b];
     }
     let corner = |p: &str, turn: &str, q: &str| format!("({p}, {turn:?}, {q})");
+    if detour {
+        let (sa, sb) = (stub(from), stub(to));
+        let mid = format!("({a}, {}%, {b})", num(bend * 100.0));
+        let joins = match (vertical(from), vertical(to)) {
+            (true, true) => vec![corner(&sa, "-|", &mid), corner(&mid, "|-", &sb)],
+            (false, false) => vec![corner(&sa, "|-", &mid), corner(&mid, "-|", &sb)],
+            (true, false) => vec![corner(&sa, "-|", &sb)],
+            (false, true) => vec![corner(&sa, "|-", &sb)],
+        };
+        return [vec![a, sa], joins, vec![sb, b]].concat();
+    }
     match (vertical(from), vertical(to)) {
         (true, true) | (false, false) => {
             let turn = if vertical(from) { "|-" } else { "-|" };
@@ -101,9 +143,9 @@ mod tests {
 
     #[test]
     fn elbows_turn_where_the_sides_meet() {
-        assert_eq!(vertices("a.south", "b.north", Route::Straight, 0.5), [r#""a.south""#, r#""b.north""#]);
+        assert_eq!(vertices("a.south", "b.north", Route::Straight, 0.5, false), [r#""a.south""#, r#""b.north""#]);
         assert_eq!(
-            vertices("a.south", "b.north", Route::Elbow, 0.5),
+            vertices("a.south", "b.north", Route::Elbow, 0.5, false),
             [
                 r#""a.south""#,
                 r#"("a.south", "|-", ("a.south", 50%, "b.north"))"#,
@@ -111,9 +153,34 @@ mod tests {
                 r#""b.north""#,
             ]
         );
-        assert_eq!(vertices("a.east", "b.west", Route::Elbow, 0.25)[1], r#"("a.east", "-|", ("a.east", 25%, "b.west"))"#);
-        assert_eq!(vertices("a.east", "b.north", Route::Elbow, 0.5), [r#""a.east""#, r#"("a.east", "-|", "b.north")"#, r#""b.north""#]);
-        assert_eq!(vertices("a.south", "b.west", Route::Elbow, 0.5)[1], r#"("a.south", "|-", "b.west")"#);
+        assert_eq!(vertices("a.east", "b.west", Route::Elbow, 0.25, false)[1], r#"("a.east", "-|", ("a.east", 25%, "b.west"))"#);
+        assert_eq!(vertices("a.east", "b.north", Route::Elbow, 0.5, false), [r#""a.east""#, r#"("a.east", "-|", "b.north")"#, r#""b.north""#]);
+        assert_eq!(vertices("a.south", "b.west", Route::Elbow, 0.5, false)[1], r#"("a.south", "|-", "b.west")"#);
+    }
+
+    #[test]
+    fn detours_step_out_from_each_side() {
+        assert_eq!(
+            vertices("a.south", "b.north", Route::Elbow, 0.5, true),
+            [
+                r#""a.south""#,
+                r#"(rel: (0, -0.5), to: "a.south")"#,
+                r#"((rel: (0, -0.5), to: "a.south"), "-|", ("a.south", 50%, "b.north"))"#,
+                r#"(("a.south", 50%, "b.north"), "|-", (rel: (0, 0.5), to: "b.north"))"#,
+                r#"(rel: (0, 0.5), to: "b.north")"#,
+                r#""b.north""#,
+            ]
+        );
+        assert_eq!(
+            vertices("c.east", "d.north", Route::Elbow, 0.5, true),
+            [
+                r#""c.east""#,
+                r#"(rel: (0.5, 0), to: "c.east")"#,
+                r#"((rel: (0.5, 0), to: "c.east"), "|-", (rel: (0, 0.5), to: "d.north"))"#,
+                r#"(rel: (0, 0.5), to: "d.north")"#,
+                r#""d.north""#,
+            ]
+        );
     }
 
     #[test]

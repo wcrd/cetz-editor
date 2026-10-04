@@ -25,7 +25,10 @@ import {
   type Range,
   type Route,
 } from "./scene";
-import { endShape, pickAnchor } from "./connectors";
+import { endShape, needsDetour, pickAnchor } from "./connectors";
+
+/** The anchor a connector's end joins (`south` of `"g.a.south"`). */
+const sideOf = (anchor: string) => anchor.slice(anchor.lastIndexOf(".") + 1);
 
 export type Tool = "select" | "line" | "arrow" | "connector" | "rect" | "node" | "circle" | "polygon" | "star" | "arc" | "text" | "point" | "join" | "curve" | "brace" | "angle";
 
@@ -478,12 +481,32 @@ export class Editor {
     const edits: Edit[] = ids.flatMap((id) => {
       const connector = this.callById.get(id)?.connector;
       if (!connector) return [];
-      if (connector.fixed) return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route }];
       const [from, to] = [this.connectorEnd(connector.from), this.connectorEnd(connector.to)];
-      const anchors = from !== undefined && to !== undefined ? this.connectorAnchors(from, to, route) : undefined;
-      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null }];
+      const both = from !== undefined && to !== undefined;
+      if (connector.fixed) {
+        const detour = both && this.connectorDetour(from, to, [sideOf(connector.from), sideOf(connector.to)], route);
+        return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route, detour }];
+      }
+      const anchors = both ? this.connectorAnchors(from, to, route) : undefined;
+      const detour = both && anchors !== undefined && this.connectorDetour(from, to, anchors, route);
+      return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null, detour }];
     });
     return edits.length > 0 && this.edit(edits.length === 1 ? edits[0] : { kind: "batch", edits });
+  }
+
+  /**
+   * Whether an elbow joining these anchors of two shapes must detour (see
+   * `needsDetour`), judging shapes about to move `shift` (page) away.
+   */
+  connectorDetour(from: number, to: number, [fromAnchor, toAnchor]: [string, string], route: Route, shift?: Map<number, [number, number]>): boolean {
+    if (route !== "elbow") return false;
+    const at = (id: number, anchor: string): [number, number] | undefined => {
+      const p = this.anchorsOf(id)[anchor];
+      const [sx, sy] = shift?.get(id) ?? [0, 0];
+      return p && [p[0] + sx, p[1] + sy];
+    };
+    const [a, b] = [at(from, fromAnchor), at(to, toAnchor)];
+    return a !== undefined && b !== undefined && needsDetour(a, fromAnchor, b, toAnchor);
   }
 
   /** The top-level shape a connector's end (`"a.south"`) names. */
@@ -494,13 +517,14 @@ export class Editor {
 
   /**
    * `edit`, plus re-picking the sides of the connectors joined to shapes it
-   * moves, unless they're pinned (`fixed`). The new sides are worked out
-   * from where the shapes will be, so they show in a drag's preview too,
-   * and a bend stays where it was along the way.
+   * moves, unless they're pinned (`fixed`), and whether elbows detour,
+   * pinned or not. All of it is worked out from where the shapes will be,
+   * so it shows in a drag's preview too, and a bend stays where it was
+   * along the way.
    */
   withConnectors(edit: Edit): Edit {
     const moves = (edit.kind === "batch" ? edit.edits : [edit]).filter((e) => e.kind === "move");
-    if (moves.length === 0 || !this.calls.some((c) => c.connector && !c.connector.fixed)) return edit;
+    if (moves.length === 0 || !this.calls.some((c) => c.connector)) return edit;
     const shift = new Map<number, [number, number]>();
     for (const move of moves) {
       for (const id of move.calls) {
@@ -512,14 +536,16 @@ export class Editor {
         for (const f of family) shift.set(f, [wx * probe.length, -wy * probe.length]);
       }
     }
-    const side = (anchor: string) => anchor.slice(anchor.lastIndexOf(".") + 1);
     const reroutes: Edit[] = this.calls.flatMap((call) => {
       const c = call.connector;
-      const [from, to] = c && !c.fixed ? [this.connectorEnd(c.from), this.connectorEnd(c.to)] : [];
+      const [from, to] = c ? [this.connectorEnd(c.from), this.connectorEnd(c.to)] : [];
       if (!c || from === undefined || to === undefined || (!shift.has(from) && !shift.has(to))) return [];
-      const anchors = this.connectorAnchors(from, to, c.route, undefined, undefined, shift);
-      if (!anchors || (anchors[0] === side(c.from) && anchors[1] === side(c.to))) return [];
-      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: anchors[0], to_anchor: anchors[1], keep_bend: true }];
+      const kept: [string, string] = [sideOf(c.from), sideOf(c.to)];
+      const anchors = c.fixed ? kept : this.connectorAnchors(from, to, c.route, undefined, undefined, shift);
+      if (!anchors) return [];
+      const detour = this.connectorDetour(from, to, anchors, c.route, shift);
+      if (anchors[0] === kept[0] && anchors[1] === kept[1] && detour === c.detour) return [];
+      return [{ kind: "reroute", call: call.id, route: c.route, from_anchor: c.fixed ? null : anchors[0], to_anchor: c.fixed ? null : anchors[1], keep_bend: true, detour }];
     });
     return reroutes.length ? { kind: "batch", edits: [edit, ...reroutes] } : edit;
   }
