@@ -8,7 +8,8 @@
 //! - **Edits**: moving, restyling, duplicating, grouping and rotating a sample
 //!   of shapes must compile, land where expected, and reverse cleanly.
 //!
-//! Usage: `cetz-corpus [dir ...]` (default: `examples/` and `corpus/`).
+//! Usage: `cetz-corpus [dir ...]` (default: `examples/` and `corpus/`), or
+//! `--instrument <file>` / `--probes <file>` to debug the probe.
 //! Packages come from the local Typst cache; `just corpus-fetch` fills it.
 
 use std::collections::{BTreeMap, HashMap};
@@ -49,6 +50,18 @@ fn main() {
         && flag == "--instrument"
     {
         print!("{}", cetz_scene::instrument(&std::fs::read_to_string(path).unwrap()).text);
+        return;
+    }
+
+    // For debugging the probe: print what it records for a diagram.
+    if let [flag, path] = args.as_slice()
+        && flag == "--probes"
+    {
+        let mut compiler = Compiler { world: EditorWorld::new(), cache };
+        match compiler.compile(&std::fs::read_to_string(path).unwrap(), true) {
+            Ok(out) => println!("{}", out.probes.unwrap_or_default()),
+            Err(e) => eprintln!("{e}"),
+        }
         return;
     }
 
