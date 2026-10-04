@@ -181,7 +181,7 @@
     { id: "arrow", label: "Arrow", key: "A", icon: "M5 19L19 5M11 5h8v8" },
     { id: "rect", label: "Rectangle", key: "R", icon: "M4 6h16v12H4z" },
     { id: "circle", label: "Circle", key: "C", icon: "M12 4a8 8 0 1 0 0.01 0z" },
-    { id: "polygon", label: "Polygon", key: "N", icon: "M8 5h8l4 7-4 7H8l-4-7z" },
+    { id: "polygon", label: "Polygon", key: "G", icon: "M8 5h8l4 7-4 7H8l-4-7z" },
     { id: "star", label: "Star", key: "S", icon: "M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6l-5.4 2.9 1.2-6-4.5-4.2 6.1-.7z" },
     { id: "arc", label: "Arc", key: "U", icon: "M5 19A14 14 0 0 1 19 5" },
     { id: "text", label: "Text", key: "T", icon: "M5 6V4h14v2M12 4v16M9 20h6" },
@@ -343,9 +343,17 @@
       helpOpen = true;
       return;
     }
-    // Before the tools: plain R is the rectangle.
-    if (e.key === "R" && e.shiftKey) {
+    // Before the tools: plain R, G and S are the rectangle, polygon and star.
+    if (e.shiftKey && e.key.toLowerCase() === "r") {
       toggleRulers();
+      return;
+    }
+    if (e.shiftKey && e.key.toLowerCase() === "g") {
+      editor.showGrid = !editor.showGrid;
+      return;
+    }
+    if (e.shiftKey && e.key.toLowerCase() === "s") {
+      editor.snap = !editor.snap;
       return;
     }
     const tool = tools.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
@@ -353,7 +361,6 @@
       editor.tool = tool.id;
       return;
     }
-    if (e.key === "g") editor.showGrid = !editor.showGrid;
     if (e.key === "p") editor.showPoints = !editor.showPoints;
     if (e.key === "i") toggleInfinite();
   }
@@ -500,8 +507,8 @@
           <svg viewBox="0 0 24 24"><path d="M3 8h18v8H3zM7 8v3M11 8v4M15 8v3M19 8v4" /></svg>
         </button>
         <label title="Show shared points (P)"><input type="checkbox" bind:checked={editor.showPoints} /> Points</label>
-        <label title="Show grid (G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
-        <label title="Snap to grid"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
+        <label title="Show grid (⇧G)"><input type="checkbox" bind:checked={editor.showGrid} /> Grid</label>
+        <label title="Snap to grid (⇧S)"><input type="checkbox" bind:checked={editor.snap} /> Snap</label>
         <GridStep {editor} />
         <button
           class:active={tabs.prefs.gridInFile}

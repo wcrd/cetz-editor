@@ -66,7 +66,7 @@
     </section>
 
     <section>
-      <h3><kbd>N</kbd> Polygon · <kbd>S</kbd> Star · <kbd>U</kbd> Arc</h3>
+      <h3><kbd>G</kbd> Polygon · <kbd>S</kbd> Star · <kbd>U</kbd> Arc</h3>
       <p>
         All three start at the centre. A polygon's drag ends on a corner, and a star's on an outer point, setting its size and rotation. An arc's drag ends where
         it starts (or click the centre, then the start); move to sweep it either way round, and click to finish. Radii snap to
