@@ -28,3 +28,11 @@ test: wasm
 # Render fixtures to generated/ (all, or the named ones)
 render *names:
     scripts/render-fixtures.sh {{names}}
+
+# Fetch the external diagram corpus into corpus/ and cache its packages
+corpus-fetch:
+    scripts/fetch-corpus.sh
+
+# Check the editor against the bundled examples and corpus/; writes crates/corpus/report.md
+corpus:
+    cargo run -p cetz-corpus

@@ -13,7 +13,7 @@ pub use edit::{Edit, EditResult, Patch, apply};
 pub use highlight::highlight;
 pub use instrument::{Instrumented, PROBE_PATH, instrument};
 pub use points::Point;
-pub use scene::{Arg, Call, Canvas, Scene, Value, parse};
+pub use scene::{Arg, Call, Canvas, Scene, Value, Variable, VariableKind, parse};
 
 use std::ops::Range;
 
