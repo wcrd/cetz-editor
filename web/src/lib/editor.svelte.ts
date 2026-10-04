@@ -471,11 +471,14 @@ export class Editor {
   /**
    * Reroutes connectors as straight or elbowed, re-picking the anchors of
    * the shapes they join (by name, at the top level) to suit the new route.
+   * Pinned connectors keep their anchors, and their bend unless the route
+   * changes.
    */
   reroute(ids: number[], route: Route): boolean {
     const edits: Edit[] = ids.flatMap((id) => {
       const connector = this.callById.get(id)?.connector;
       if (!connector) return [];
+      if (connector.fixed) return [{ kind: "reroute", call: id, route, from_anchor: null, to_anchor: null, keep_bend: connector.route === route }];
       const [from, to] = [this.connectorEnd(connector.from), this.connectorEnd(connector.to)];
       const anchors = from !== undefined && to !== undefined ? this.connectorAnchors(from, to, route) : undefined;
       return [{ kind: "reroute", call: id, route, from_anchor: anchors?.[0] ?? null, to_anchor: anchors?.[1] ?? null }];

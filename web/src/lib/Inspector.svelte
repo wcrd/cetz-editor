@@ -33,8 +33,8 @@
   ];
 
   const ROUTES: { route: Route; label: string; title: string }[] = [
-    { route: "straight", label: "Straight", title: "A straight arrow between the nearest anchors (again to re-pick them)" },
-    { route: "elbow", label: "Elbow", title: "Right-angled, leaving and entering square to the shapes (again to re-pick sides)" },
+    { route: "straight", label: "Straight", title: "A straight arrow between the nearest anchors (again to re-pick them, unless its sides are fixed)" },
+    { route: "elbow", label: "Elbow", title: "Right-angled, leaving and entering square to the shapes (again to re-pick sides, unless they're fixed)" },
   ];
 
   const SIDES: { fixed: boolean; label: string; title: string }[] = [
